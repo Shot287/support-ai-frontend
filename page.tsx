@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 type Health = { ok: boolean };
 type Echo = { echo: string };
@@ -29,8 +29,9 @@ export default function Home() {
   const [token, setToken] = useState(DEFAULT_TOKEN);
   const [err, setErr] = useState<string>("");
 
+  const hasApiBase = !!API_BASE && API_BASE.startsWith("http");
+
   // APIヘルパ
-  const hasApiBase = useMemo(() => API_BASE && API_BASE.startsWith("http"), []);
   async function apiGet<T>(path: string, init?: RequestInit): Promise<T> {
     if (!hasApiBase) throw new Error("NEXT_PUBLIC_API_BASE が未設定です。");
     const res = await fetch(`${API_BASE}${path}`, {
@@ -86,11 +87,12 @@ export default function Home() {
         const r = await apiGet<Health>("/health");
         setHealth(r);
       } catch (e: any) {
-        setErr(e.message ?? String(e));
+        setErr(e?.message ?? String(e));
       }
     })();
+    // API_BASE はビルド時に埋め込まれるため依存なしでOK
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasApiBase]);
+  }, []);
 
   return (
     <main className="min-h-screen bg-background text-foreground">
@@ -98,7 +100,7 @@ export default function Home() {
       <header className="sticky top-0 z-10 border-b border-black/10 dark:border-white/15 bg-background/80 backdrop-blur">
         <div className="mx-auto max-w-3xl px-4 py-3 flex items-center justify-between">
           <h1 className="text-base font-bold">スマホ動作確認ページ</h1>
-          <span className="text-xs opacity-70">Tailwind v4 / PWA準備済み</span>
+          <span className="text-xs opacity-70">Tailwind v4 / PWA 準備済み</span>
         </div>
       </header>
 
@@ -107,7 +109,7 @@ export default function Home() {
         <div className="mx-auto max-w-3xl px-4 pt-4">
           <div className="rounded border border-amber-500/40 bg-amber-50 text-amber-900 dark:bg-amber-900/20 dark:text-amber-200 p-3 text-sm">
             <strong>注意:</strong> <code>NEXT_PUBLIC_API_BASE</code> が未設定です。
-            Vercelの「環境変数（Preview）」に
+            Vercel の環境変数（Preview）に
             <code>https://support-ai-os6k.onrender.com</code> を設定してください。
           </div>
         </div>
@@ -119,14 +121,10 @@ export default function Home() {
         <section className="rounded border border-black/10 dark:border-white/15 p-3 bg-white dark:bg-black/10">
           <h2 className="font-semibold mb-2">デバイス情報</h2>
           <div className="grid grid-cols-2 gap-y-1 text-sm">
-            <div>innerWidth</div>
-            <div className="text-right">{info.w}px</div>
-            <div>innerHeight</div>
-            <div className="text-right">{info.h}px</div>
-            <div>devicePixelRatio</div>
-            <div className="text-right">{info.dpr}</div>
-            <div>online</div>
-            <div className="text-right">{String(info.online)}</div>
+            <div>innerWidth</div><div className="text-right">{info.w}px</div>
+            <div>innerHeight</div><div className="text-right">{info.h}px</div>
+            <div>devicePixelRatio</div><div className="text-right">{info.dpr}</div>
+            <div>online</div><div className="text-right">{String(info.online)}</div>
           </div>
           <details className="mt-2 text-xs opacity-80 break-all">
             <summary>userAgent</summary>
@@ -139,44 +137,66 @@ export default function Home() {
           <h2 className="font-semibold">API 接続テスト</h2>
 
           <div className="text-xs opacity-80 break-all">
-            <div>
-              <span className="opacity-70">API_BASE:</span>{" "}
-              <code>{API_BASE || "(未設定)"}</code>
-            </div>
-            <div className="mt-1">
-              <span className="opacity-70">/health:</span>{" "}
-              <code>{health ? JSON.stringify(health) : "(未取得)"}</code>
-            </div>
+            <div><span className="opacity-70">API_BASE:</span> <code>{API_BASE || "(未設定)"}</code></div>
+            <div className="mt-1"><span className="opacity-70">/health:</span> <code>{health ? JSON.stringify(health) : "(未取得)"}</code></div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              className="rounded bg-black text-white h-10 px-4"
-              onClick={async () => {
-                setErr("");
-                setEcho(null);
-                try {
-                  const r = await apiGet<Echo>("/v1/echo?q=from phone");
-                  setEcho(r);
-                } catch (e: any) {
-                  setErr(e.message ?? String(e));
-                }
-              }}
-              disabled={!hasApiBase}
-            >
-              /v1/echo を呼ぶ
-            </button>
-            <span className="text-sm break-all">
-              結果: <code>{echo ? JSON.stringify(echo) : "(未実行)"}</code>
-            </span>
-          </div>
-
+          {/* /v1/echo */}
           <div className="space-y-2">
             <label className="block text-sm">
-              x-token（任意・保護API用）
+              エコー文字列
               <input
                 className="mt-1 w-full rounded border border-black/10 dark:border-white/15 p-2 bg-white dark:bg-black/10 outline-none focus:ring-2 focus:ring-black/20"
-                placeholder="API_TOKEN を入れると /v1/private が成功します"
+                placeholder="from phone など"
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+              />
+            </label>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                className="rounded bg-black text-white h-10 px-4"
+                onClick={async () => {
+                  setErr(""); setEcho(null);
+                  try {
+                    const q = text || "from phone";
+                    const r = await apiGet<Echo>(`/v1/echo?q=${encodeURIComponent(q)}`);
+                    setEcho(r);
+                  } catch (e: any) {
+                    setErr(e?.message ?? String(e));
+                  }
+                }}
+                disabled={!hasApiBase}
+              >
+                /v1/echo を呼ぶ
+              </button>
+              <span className="text-sm break-all">
+                結果: <code>{echo ? JSON.stringify(echo) : "(未実行)"}</code>
+              </span>
+              <button
+                className="rounded border border-black/10 dark:border-white/15 h-10 px-3"
+                onClick={async () => {
+                  setErr("");
+                  try {
+                    const r = await apiGet<Health>("/health");
+                    setHealth(r);
+                  } catch (e: any) {
+                    setErr(e?.message ?? String(e));
+                  }
+                }}
+                disabled={!hasApiBase}
+              >
+                /health リトライ
+              </button>
+            </div>
+          </div>
+
+          {/* /v1/private */}
+          <div className="space-y-2">
+            <label className="block text-sm">
+              x-token（保護API用）
+              <input
+                className="mt-1 w-full rounded border border-black/10 dark:border-white/15 p-2 bg-white dark:bg-black/10 outline-none focus:ring-2 focus:ring-black/20"
+                placeholder="Render の API_TOKEN と同じ値"
                 value={token}
                 onChange={(e) => setToken(e.target.value)}
               />
@@ -185,15 +205,14 @@ export default function Home() {
               <button
                 className="rounded border border-black/10 dark:border-white/15 h-10 px-4"
                 onClick={async () => {
-                  setErr("");
-                  setPriv(null);
+                  setErr(""); setPriv(null);
                   try {
                     const r = await apiGet<PrivateResp>("/v1/private", {
                       headers: { "x-token": token || "" },
                     });
                     setPriv(r);
                   } catch (e: any) {
-                    setErr(e.message ?? String(e));
+                    setErr(e?.message ?? String(e));
                   }
                 }}
                 disabled={!hasApiBase}
@@ -206,39 +225,25 @@ export default function Home() {
             </div>
           </div>
 
-          {err && (
-            <p className="text-sm text-red-600 break-all">Error: {err}</p>
-          )}
+          {err && <p className="text-sm text-red-600 break-all">Error: {err}</p>}
         </section>
 
         {/* タップ&スクロール確認 */}
         <section className="space-y-3">
           <div className="flex items-center gap-3">
-            <button
-              className="rounded bg-black text-white h-10 px-4"
-              onClick={() => setCount((c) => c + 1)}
-            >
+            <button className="rounded bg-black text-white h-10 px-4" onClick={() => setCount((c) => c + 1)}>
               タップ (+1)
             </button>
-            <span>
-              count: <strong>{count}</strong>
-            </span>
-            <button
-              className="rounded border border-black/10 dark:border-white/15 h-10 px-4"
-              onClick={() => setCount(0)}
-            >
+            <span>count: <strong>{count}</strong></span>
+            <button className="rounded border border-black/10 dark:border-white/15 h-10 px-4" onClick={() => setCount(0)}>
               リセット
             </button>
           </div>
 
           <div className="rounded border border-black/10 dark:border-white/15 p-3 bg-white dark:bg-black/10 h-48 overflow-y-auto">
-            <p className="text-sm opacity-80">
-              スクロール確認用のボックスです。スマホで指でスクロールしてみてください。
-            </p>
+            <p className="text-sm opacity-80">スクロール確認用のボックスです。スマホで指でスクロールしてみてください。</p>
             <ul className="list-disc pl-5 text-sm space-y-1 mt-2">
-              {Array.from({ length: 30 }).map((_, i) => (
-                <li key={i}>Item {i + 1}</li>
-              ))}
+              {Array.from({ length: 30 }).map((_, i) => (<li key={i}>Item {i + 1}</li>))}
             </ul>
           </div>
         </section>
@@ -261,7 +266,7 @@ export default function Home() {
         <div className="h-[16dvh]" />
       </div>
 
-      {/* 固定ボトムバー（キーボードで隠れないか確認） */}
+      {/* 固定ボトムバー */}
       <div className="fixed inset-x-0 bottom-0 bg-background/90 backdrop-blur border-t border-black/10 dark:border-white/15">
         <div className="mx-auto max-w-3xl px-4 py-3 flex items-center justify-between">
           <span className="text-sm opacity-70">Bottom Bar</span>
