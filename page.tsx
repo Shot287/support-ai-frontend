@@ -8,6 +8,9 @@ type PrivateResp = { secret: boolean; msg: string };
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "";
 const DEFAULT_TOKEN = process.env.NEXT_PUBLIC_API_TOKEN ?? "";
+const COMMIT = process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ||
+               process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ||
+               "local";
 
 export default function Home() {
   // 画面情報
@@ -90,17 +93,46 @@ export default function Home() {
         setErr(e?.message ?? String(e));
       }
     })();
-    // API_BASE はビルド時に埋め込まれるため依存なしでOK
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // SW/キャッシュ一括クリア
+  async function clearCaches() {
+    try {
+      if ("caches" in window) {
+        const keys = await caches.keys();
+        await Promise.all(keys.map((k) => caches.delete(k)));
+      }
+      if ("serviceWorker" in navigator) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map((r) => r.unregister()));
+      }
+      location.reload();
+    } catch (e) {
+      console.warn(e);
+      alert("キャッシュのクリアでエラーが発生しました。");
+    }
+  }
 
   return (
     <main className="min-h-screen bg-background text-foreground">
       {/* 固定ヘッダ */}
       <header className="sticky top-0 z-10 border-b border-black/10 dark:border-white/15 bg-background/80 backdrop-blur">
         <div className="mx-auto max-w-3xl px-4 py-3 flex items-center justify-between">
-          <h1 className="text-base font-bold">スマホ動作確認ページ</h1>
-          <span className="text-xs opacity-70">Tailwind v4 / PWA 準備済み</span>
+          <div className="flex items-center gap-3">
+            <h1 className="text-base font-bold">スマホ動作確認ページ</h1>
+            <span className="text-[11px] opacity-70">commit: {COMMIT}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs opacity-70">Tailwind v4 / PWA 準備済み</span>
+            <button
+              className="text-xs rounded border px-2 py-1"
+              onClick={clearCaches}
+              title="古いPWAキャッシュ/Service Workerを削除してリロード"
+            >
+              キャッシュ削除
+            </button>
+          </div>
         </div>
       </header>
 
