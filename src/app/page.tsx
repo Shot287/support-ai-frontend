@@ -1,25 +1,91 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
-export default function Home() {
+/** ====== types ====== */
+type Health = { ok: boolean };
+type Echo = { echo: string };
+type PrivateResp = { secret: boolean; msg: string };
+
+/** ====== env ====== */
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "";
+const DEFAULT_TOKEN = process.env.NEXT_PUBLIC_API_TOKEN ?? "";
+const COMMIT =
+  process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ||
+  process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ||
+  "local";
+
+/** ====== BIG UI (verifier) ======
+ * この文字列が表示されれば “新しいフロントが出ている” と判定できます。
+ */
+const BIG_TAGLINE =
+  "✅ Support-AI v2 — Connectivity Dashboard / これは新しいUIです";
+
+/** ====== helpers ====== */
+async function clearAllCaches() {
+  try {
+    if ("caches" in window) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((k) => caches.delete(k)));
+    }
+    if ("serviceWorker" in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map((r) => r.unregister()));
+    }
+  } finally {
+    location.reload();
+  }
+}
+
+export default function Page() {
+  /* ====== device info ====== */
   const [info, setInfo] = useState({
-    w: 0, h: 0, dvh: 0, dpr: 0, ua: "", online: true
-  });
-  const [text, setText] = useState("");
-  const [count, setCount] = useState(0);
-
-  // 画面情報の更新
-  const read = () => setInfo({
-    w: window.innerWidth,
-    h: window.innerHeight,
-    dvh: Math.round((window.innerHeight / 100) * 100) / 100,
-    dpr: window.devicePixelRatio ?? 1,
-    ua: navigator.userAgent,
-    online: navigator.onLine
+    w: 0,
+    h: 0,
+    dpr: 1,
+    ua: "",
+    online: true,
   });
 
+  /* ====== api states ====== */
+  const [text, setText] = useState("from brand-new UI");
+  const [token, setToken] = useState(DEFAULT_TOKEN);
+  const [health, setHealth] = useState<Health | null>(null);
+  const [echo, setEcho] = useState<Echo | null>(null);
+  const [priv, setPriv] = useState<PrivateResp | null>(null);
+  const [err, setErr] = useState("");
+
+  const hasApiBase = useMemo(
+    () => !!API_BASE && API_BASE.startsWith("http"),
+    []
+  );
+
+  /* ====== api helper ====== */
+  async function apiGet<T>(path: string, init?: RequestInit): Promise<T> {
+    if (!hasApiBase) throw new Error("NEXT_PUBLIC_API_BASE が未設定です。");
+    const res = await fetch(`${API_BASE}${path}`, {
+      ...init,
+      headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
+      cache: "no-store",
+      credentials: "omit",
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`API ${res.status} ${res.statusText}: ${body}`);
+    }
+    return res.json() as Promise<T>;
+  }
+
+  /* ====== lifecycle ====== */
   useEffect(() => {
+    const read = () =>
+      setInfo({
+        w: window.innerWidth,
+        h: window.innerHeight,
+        dpr: window.devicePixelRatio ?? 1,
+        ua: navigator.userAgent,
+        online: navigator.onLine,
+      });
     read();
     const onResize = () => read();
     const onOnline = () => read();
@@ -35,93 +101,196 @@ export default function Home() {
     };
   }, []);
 
-  return (
-    <main className="min-h-screen bg-background text-foreground">
-      {/* 固定ヘッダ */}
-      <header className="sticky top-0 z-10 border-b border-black/10 dark:border-white/15 bg-background/80 backdrop-blur">
-        <div className="mx-auto max-w-3xl px-4 py-3 flex items-center justify-between">
-          <h1 className="text-base font-bold">スマホ動作確認ページ</h1>
-          <span className="text-xs opacity-70">Tailwind v4 / PWA準備済み</span>
-        </div>
-      </header>
+  // 初回に /health
+  useEffect(() => {
+    (async () => {
+      setErr("");
+      setHealth(null);
+      if (!hasApiBase) return;
+      try {
+        const r = await apiGet<Health>("/health");
+        setHealth(r);
+      } catch (e: any) {
+        setErr(e?.message ?? String(e));
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-      {/* 本体 */}
-      <div className="mx-auto max-w-3xl px-4 py-5 space-y-6">
-        {/* デバイス情報 */}
-        <section className="rounded border border-black/10 dark:border-white/15 p-3 bg-white dark:bg-black/10">
-          <h2 className="font-semibold mb-2">デバイス情報</h2>
-          <div className="grid grid-cols-2 gap-y-1 text-sm">
+  /* ====== UI ====== */
+  return (
+    <main className="min-h-screen bg-gradient-to-b from-zinc-950 via-zinc-900 to-zinc-950 text-zinc-50">
+      {/* HERO */}
+      <section className="border-b border-white/10">
+        <div className="mx-auto max-w-5xl px-4 py-10">
+          <p className="text-xs tracking-widest text-emerald-300/80">NEW UI</p>
+          <h1 className="mt-2 text-3xl sm:text-4xl font-extrabold">
+            {BIG_TAGLINE}
+          </h1>
+          <p className="mt-2 text-sm text-zinc-300/80">
+            commit: <code className="text-emerald-300">{COMMIT}</code> / API_BASE:{" "}
+            <code className="text-emerald-300">
+              {API_BASE || "(未設定 — Vercel の環境変数を確認)"}
+            </code>
+          </p>
+
+          <div className="mt-6 flex flex-wrap gap-3">
+            <button
+              onClick={clearAllCaches}
+              className="rounded-lg bg-emerald-500/90 hover:bg-emerald-400 px-4 py-2 text-sm font-semibold text-zinc-900"
+              title="Service Worker とブラウザキャッシュを全削除して再読込します"
+            >
+              キャッシュ削除 & 再読込
+            </button>
+            <a
+              href="#diagnostics"
+              className="rounded-lg border border-white/20 px-4 py-2 text-sm hover:bg-white/5"
+            >
+              下の診断にジャンプ
+            </a>
+          </div>
+        </div>
+      </section>
+
+      {/* DIAGNOSTICS */}
+      <section id="diagnostics" className="mx-auto max-w-5xl px-4 py-8 grid gap-6 md:grid-cols-2">
+        {/* device card */}
+        <div className="rounded-2xl border border-white/10 bg-white/5 p-5 backdrop-blur">
+          <h2 className="text-lg font-bold">端末情報</h2>
+          <div className="mt-3 grid grid-cols-2 gap-y-1 text-sm text-zinc-300">
             <div>innerWidth</div><div className="text-right">{info.w}px</div>
             <div>innerHeight</div><div className="text-right">{info.h}px</div>
             <div>devicePixelRatio</div><div className="text-right">{info.dpr}</div>
             <div>online</div><div className="text-right">{String(info.online)}</div>
           </div>
-          <details className="mt-2 text-xs opacity-80 break-all">
+          <details className="mt-3 text-xs text-zinc-400 break-all">
             <summary>userAgent</summary>
             {info.ua}
           </details>
-        </section>
+        </div>
 
-        {/* タップ&スクロール確認 */}
-        <section className="space-y-3">
-          <div className="flex items-center gap-3">
-            <button
-              className="rounded bg-black text-white h-10 px-4"
-              onClick={() => setCount((c) => c + 1)}
-            >
-              タップ (+1)
-            </button>
-            <span>count: <strong>{count}</strong></span>
-            <button
-              className="rounded border border-black/10 dark:border-white/15 h-10 px-4"
-              onClick={() => setCount(0)}
-            >
-              リセット
-            </button>
+        {/* api card */}
+        <div className="rounded-2xl border border-white/10 bg-white/5 p-5 backdrop-blur">
+          <h2 className="text-lg font-bold">API 診断</h2>
+
+          <div className="mt-2 text-xs text-zinc-300/80">
+            <div>API_BASE: <code className="text-emerald-300">{API_BASE || "(未設定)"}</code></div>
+            <div className="mt-1">/health: <code className="text-emerald-300">{health ? JSON.stringify(health) : "(未取得)"}</code></div>
           </div>
 
-          <div className="rounded border border-black/10 dark:border-white/15 p-3 bg-white dark:bg-black/10 h-48 overflow-y-auto">
-            <p className="text-sm opacity-80">
-              スクロール確認用のボックスです。スマホで指でスクロールしてみてください。
+          {/* echo */}
+          <div className="mt-4 space-y-2">
+            <label className="block text-sm">
+              エコー文字列
+              <input
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                className="mt-1 w-full rounded-md border border-white/15 bg-black/30 px-3 py-2 outline-none focus:ring-2 focus:ring-emerald-400"
+                placeholder="from phone など"
+              />
+            </label>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                className="rounded-md bg-white text-zinc-900 px-3 py-2 text-sm font-semibold"
+                onClick={async () => {
+                  setErr(""); setEcho(null);
+                  try {
+                    const q = text || "from phone";
+                    const r = await apiGet<Echo>(`/v1/echo?q=${encodeURIComponent(q)}`);
+                    setEcho(r);
+                  } catch (e: any) {
+                    setErr(e?.message ?? String(e));
+                  }
+                }}
+                disabled={!hasApiBase}
+              >
+                /v1/echo
+              </button>
+              <button
+                className="rounded-md border border-white/20 px-3 py-2 text-sm"
+                onClick={async () => {
+                  setErr("");
+                  try {
+                    const r = await apiGet<Health>("/health");
+                    setHealth(r);
+                  } catch (e: any) {
+                    setErr(e?.message ?? String(e));
+                  }
+                }}
+                disabled={!hasApiBase}
+              >
+                /health 再取得
+              </button>
+            </div>
+            <div className="text-sm text-zinc-300">
+              結果: <code className="text-emerald-300">{echo ? JSON.stringify(echo) : "(未実行)"}</code>
+            </div>
+          </div>
+
+          {/* private */}
+          <div className="mt-5 space-y-2">
+            <label className="block text-sm">
+              x-token（保護API）
+              <input
+                value={token}
+                onChange={(e) => setToken(e.target.value)}
+                className="mt-1 w-full rounded-md border border-white/15 bg-black/30 px-3 py-2 outline-none focus:ring-2 focus:ring-emerald-400"
+                placeholder="Render の API_TOKEN と同じ値"
+              />
+            </label>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                className="rounded-md border border-white/20 px-3 py-2 text-sm"
+                onClick={async () => {
+                  setErr(""); setPriv(null);
+                  try {
+                    const r = await apiGet<PrivateResp>("/v1/private", {
+                      headers: { "x-token": token || "" },
+                    });
+                    setPriv(r);
+                  } catch (e: any) {
+                    setErr(e?.message ?? String(e));
+                  }
+                }}
+                disabled={!hasApiBase}
+              >
+                /v1/private
+              </button>
+            </div>
+            <div className="text-sm text-zinc-300">
+              結果: <code className="text-emerald-300">{priv ? JSON.stringify(priv) : "(未実行)"}</code>
+            </div>
+          </div>
+
+          {err && (
+            <p className="mt-4 rounded-md border border-red-500/30 bg-red-500/10 p-2 text-sm text-red-300">
+              Error: {err}
             </p>
-            <ul className="list-disc pl-5 text-sm space-y-1 mt-2">
-              {Array.from({ length: 30 }).map((_, i) => (
-                <li key={i}>Item {i + 1}</li>
-              ))}
-            </ul>
+          )}
+        </div>
+      </section>
+
+      {/* SCROLLER */}
+      <section className="mx-auto max-w-5xl px-4 pb-16">
+        <div className="rounded-2xl border border-white/10 bg-white/5 p-5 backdrop-blur">
+          <h2 className="text-lg font-bold">スクロール検証</h2>
+          <div className="mt-3 h-48 overflow-y-auto rounded-md border border-white/10 bg-black/30 p-3 text-sm text-zinc-300">
+            {Array.from({ length: 40 }).map((_, i) => (
+              <div key={i}>Item {i + 1}</div>
+            ))}
           </div>
-        </section>
+        </div>
+      </section>
 
-        {/* キーボード挙動確認 */}
-        <section className="space-y-2">
-          <label className="block text-sm font-medium">
-            入力（ソフトキーボード表示・隠れるか確認）
-            <input
-              className="mt-1 w-full rounded border border-black/10 dark:border-white/15 p-2 bg-white dark:bg-black/10 outline-none focus:ring-2 focus:ring-black/20"
-              placeholder="ここに入力"
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-            />
-          </label>
-          <p className="text-sm opacity-70">値: {text || "(空)"}</p>
-        </section>
-
-        {/* 下部余白（安全領域） */}
-        <div className="h-[16dvh]" />
-      </div>
-
-      {/* 固定ボトムバー（キーボードで隠れないか確認） */}
-      <div className="fixed inset-x-0 bottom-0 bg-background/90 backdrop-blur border-t border-black/10 dark:border-white/15">
-        <div className="mx-auto max-w-3xl px-4 py-3 flex items-center justify-between">
-          <span className="text-sm opacity-70">Bottom Bar</span>
-          <a
-            className="rounded bg-black text-white h-10 px-4 flex items-center"
-            href="#top"
-          >
+      {/* FOOTER / ANCHOR */}
+      <footer className="border-t border-white/10 bg-black/30">
+        <div className="mx-auto max-w-5xl px-4 py-4 flex items-center justify-between text-sm text-zinc-400">
+          <span>Bottom Bar — {BIG_TAGLINE}</span>
+          <a href="#top" className="rounded-md border border-white/20 px-3 py-1 hover:bg-white/5">
             上へ
           </a>
         </div>
-      </div>
+      </footer>
     </main>
   );
 }
