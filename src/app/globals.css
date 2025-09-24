@@ -1,0 +1,4 @@
+/* 必要最低限（Tailwind使用なら @tailwind をここに） */
+* { box-sizing: border-box; }
+html,body { margin: 0; padding: 0; }
+a { text-decoration: none; color: inherit; }
