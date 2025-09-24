@@ -1,21 +1,17 @@
-import FiveSecondCountdown from "./techniques/five-second";
-import type { TechniqueId, TechniqueMeta } from "./types";
+// src/features/nudge/registry.ts
+import type { Technique } from "./types";
 
-// ここは "TECHNIQUES" をエクスポートします（大文字）
-export const TECHNIQUES: TechniqueMeta[] = [
+export const techniques: Technique[] = [
   {
     id: "five-second",
-    name: "5秒カウントダウン",
-    description: "5→0 のカウント後に即開始する起動テクニック",
-    Component: FiveSecondCountdown,
+    title: "5秒カウントダウン",
+    description: "5→1で迷いを断ち切って即行動！",
+    href: "/nudge/five-second",
+  },
+  {
+    id: "pomodoro",
+    title: "ポモドーロ",
+    description: "25分集中＋5分休憩で生産性アップ",
+    href: "/nudge/pomodoro",
   },
 ];
-
-// id → メタ取得
-export function getTechniqueMetaById(id: TechniqueId): TechniqueMeta {
-  const found = TECHNIQUES.find((t) => t.id === id);
-  if (!found) {
-    throw new Error(`Technique not found: ${id}`);
-  }
-  return found;
-}
