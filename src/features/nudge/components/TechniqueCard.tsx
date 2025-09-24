@@ -1,6 +1,6 @@
 // src/features/nudge/components/TechniqueCard.tsx
 import Link from "next/link";
-import type { Technique } from "../types";
+import type { Technique } from "../types"; // ← ここを ../types に修正
 import type { JSX } from "react";
 
 export function TechniqueCard({ technique }: { technique: Technique }): JSX.Element {
@@ -14,3 +14,5 @@ export function TechniqueCard({ technique }: { technique: Technique }): JSX.Elem
     </Link>
   );
 }
+
+export default TechniqueCard;
