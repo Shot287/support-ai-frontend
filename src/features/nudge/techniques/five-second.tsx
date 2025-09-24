@@ -1,59 +1,82 @@
-// src/features/nudge/techniques/five-second.tsx
-import { useEffect, useState } from "react";
-import { NudgeTechnique } from "../types";
+"use client";
 
-function beep() {
-  try {
-    const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-    const o = ctx.createOscillator(); const g = ctx.createGain();
-    o.frequency.value = 880; o.connect(g); g.connect(ctx.destination);
-    o.start(); setTimeout(() => { o.stop(); ctx.close(); }, 100);
-  } catch {}
-}
-function vibrate(ms = 80) { if ("vibrate" in navigator) navigator.vibrate(ms); }
+import { useEffect, useRef, useState } from "react";
+import type { TechniqueComponentProps, TechniqueResult } from "../types";
 
-const FiveSecond: React.FC<{ onDone?: (note?: string) => void }> = ({ onDone }) => {
-  const [running, setRunning] = useState(false);
-  const [remain, setRemain] = useState(5);
+export default function FiveSecondCountdown({
+  onComplete,
+  onCancel,
+}: TechniqueComponentProps) {
+  const [secondsLeft, setSecondsLeft] = useState<number>(5);
+  const startedAtRef = useRef<number | null>(null);
+  const timerRef = useRef<number | null>(null);
 
+  // 開始
   useEffect(() => {
-    if (!running) return;
-    const started = Date.now();
-    beep(); vibrate(60);
-    const id = setInterval(() => {
-      setRemain((r) => {
-        if (r <= 1) {
-          clearInterval(id);
-          beep(); vibrate(120);
-          setRunning(false);
-          onDone?.();
-          return 5;
-        }
-        beep(); vibrate(30);
-        return r - 1;
-      });
+    startedAtRef.current = performance.now();
+    timerRef.current = window.setInterval(() => {
+      setSecondsLeft((s) => Math.max(0, s - 1));
     }, 1000);
-    return () => clearInterval(id);
-  }, [running, onDone]);
+    return () => {
+      if (timerRef.current != null) clearInterval(timerRef.current);
+    };
+  }, []);
+
+  // 0 で完了通知
+  useEffect(() => {
+    if (secondsLeft === 0) {
+      if (timerRef.current != null) clearInterval(timerRef.current);
+      const end = performance.now();
+      const durationMs =
+        startedAtRef.current != null
+          ? Math.round(end - startedAtRef.current)
+          : undefined;
+      const result: TechniqueResult = {
+        techniqueId: "five-second",
+        success: true,
+        durationMs,
+        notes: "自発的開始のきっかけ作りに成功",
+      };
+      onComplete(result);
+    }
+  }, [secondsLeft, onComplete]);
 
   return (
-    <div className="space-y-3">
-      <div className="text-5xl font-extrabold tabular-nums">{remain}</div>
-      <button
-        className="rounded bg-emerald-500 px-4 py-2 text-black disabled:opacity-60"
-        onClick={() => setRunning(true)}
-        disabled={running}
-      >
-        5秒カウント開始
-      </button>
+    <div className="rounded-xl border border-black/10 dark:border-white/15 p-4 bg-white dark:bg-black/10">
+      <div className="text-6xl font-extrabold text-center tabular-nums">
+        {secondsLeft}
+      </div>
+      <p className="mt-2 text-sm text-center opacity-70">
+        「5」から「0」になったら、すぐに最初の1分だけ手を動かそう。
+      </p>
+      <div className="mt-3 flex justify-center gap-2">
+        <button
+          className="rounded bg-black text-white h-10 px-4"
+          onClick={() => {
+            if (timerRef.current != null) clearInterval(timerRef.current);
+            const end = performance.now();
+            const durationMs =
+              startedAtRef.current != null
+                ? Math.round(end - startedAtRef.current)
+                : undefined;
+            const result: TechniqueResult = {
+              techniqueId: "five-second",
+              success: false,
+              durationMs,
+              notes: "カウント途中で完了扱いにした",
+            };
+            onComplete(result);
+          }}
+        >
+          途中で完了扱い
+        </button>
+        <button
+          className="rounded border border-black/10 dark:border-white/15 h-10 px-4"
+          onClick={onCancel}
+        >
+          閉じる
+        </button>
+      </div>
     </div>
   );
-};
-
-const meta: NudgeTechnique = {
-  id: "five-second",
-  name: "5秒ルール",
-  description: "決めたら5秒以内に動く。グズる前に身体を動かす！",
-  Component: FiveSecond,
-};
-export default meta;
+}
