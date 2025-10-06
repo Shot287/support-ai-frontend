@@ -1,0 +1,499 @@
+// src/features/nudge/techniques/work-log.tsx 
+"use client";
+
+import { useEffect, useMemo, useRef, useState } from "react";
+import { apiPost } from "../../../lib/api"; // ★ 追加：バックエンド呼び出し
+
+/** ========== 型 ========== */
+type ID = string;
+type Group = { id: ID; name: string; color?: string; createdAt: number };
+type Card  = { id: ID; groupId: ID; name: string; color?: string; createdAt: number };
+type Session = {
+  id: ID;
+  cardId: ID;
+  start: number;       // epoch ms (UTC)
+  end?: number;        // epoch ms (UTC), 計測中は undefined
+  note?: string;
+};
+
+type StoreShape = {
+  groups: Group[];
+  cards: Card[];
+  sessions: Session[];
+  version: 1;
+};
+
+const STORE_KEY = "worklog_v1";
+
+/** ========== ユーティリティ ========== */
+const uid = () =>
+  (typeof crypto !== "undefined" && "randomUUID" in crypto)
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+
+function loadStore(): StoreShape {
+  try {
+    const raw = typeof window !== "undefined" ? localStorage.getItem(STORE_KEY) : null;
+    if (!raw) return { groups: [], cards: [], sessions: [], version: 1 };
+    const parsed = JSON.parse(raw) as StoreShape;
+    if (!parsed.version) throw new Error("invalid store");
+    return parsed;
+  } catch {
+    return { groups: [], cards: [], sessions: [], version: 1 };
+  }
+}
+function saveStore(s: StoreShape) {
+  if (typeof window !== "undefined") {
+    localStorage.setItem(STORE_KEY, JSON.stringify(s));
+  }
+}
+
+function minutesBetween(a: number, b: number) {
+  return Math.max(0, Math.round((b - a) / 60000));
+}
+function clamp(n: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, n));
+}
+function startOfDay(ts: number) {
+  const d = new Date(ts);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+}
+function endOfDay(ts: number) {
+  return startOfDay(ts) + 24 * 60 * 60 * 1000 - 1;
+}
+
+/** ========== メイン ========== */
+export default function WorkLog() {
+  const [store, setStore] = useState<StoreShape>(() => loadStore());
+  const [groupName, setGroupName] = useState("");
+  const [cardName, setCardName] = useState("");
+  const [selectedGroupId, setSelectedGroupId] = useState<ID | "">("");
+  const [selectedCardId, setSelectedCardId] = useState<ID | "">("");
+  const [dateStr, setDateStr] = useState<string>(() => {
+    const d = new Date();
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    return `${yyyy}-${mm}-${dd}`;
+  });
+  const [note, setNote] = useState("");
+
+  // 計測中セッション（カードごとに最大1つ）
+  const running = useMemo(() => store.sessions.find(s => !s.end), [store.sessions]);
+
+  // 派生マップ
+  const groupMap = useMemo(() => Object.fromEntries(store.groups.map(g => [g.id, g])), [store.groups]);
+  const cardMap  = useMemo(() => Object.fromEntries(store.cards.map(c => [c.id, c])), [store.cards]);
+  const cardsInSelectedGroup = useMemo(
+    () => store.cards.filter(c => !selectedGroupId ? true : c.groupId === selectedGroupId),
+    [store.cards, selectedGroupId]
+  );
+
+  // 日付の範囲
+  const currentDayStart = useMemo(() => {
+    const [y, m, d] = dateStr.split("-").map(Number);
+    return Date.UTC(y, (m - 1), d);
+  }, [dateStr]);
+  const currentDayEnd = currentDayStart + 24 * 60 * 60 * 1000 - 1;
+
+  useEffect(() => saveStore(store), [store]);
+
+  /** ========== 追加/削除 ========== */
+  const addGroup = () => {
+    const name = groupName.trim();
+    if (!name) return;
+    const g: Group = { id: uid(), name, color: pickColor(name), createdAt: Date.now() };
+    setStore(s => ({ ...s, groups: [...s.groups, g] }));
+    setGroupName("");
+    if (!selectedGroupId) setSelectedGroupId(g.id);
+  };
+
+  const addCard = () => {
+    if (!selectedGroupId) return;
+    const name = cardName.trim();
+    if (!name) return;
+    const c: Card = { id: uid(), groupId: selectedGroupId, name, color: pickColor(name), createdAt: Date.now() };
+    setStore(s => ({ ...s, cards: [...s.cards, c] }));
+    setCardName("");
+    if (!selectedCardId) setSelectedCardId(c.id);
+  };
+
+  const deleteSession = (id: ID) => {
+    setStore(s => ({ ...s, sessions: s.sessions.filter(x => x.id !== id) }));
+  };
+
+  /** ========== 計測（サーバ連携を追加） ========== */
+  const startWork = async () => {
+    if (!selectedCardId) return;
+    if (running) return; // 既に走っている
+
+    // 先にUIを更新（楽観的）
+    const newS: Session = { id: uid(), cardId: selectedCardId as ID, start: Date.now() };
+    setStore(s => ({ ...s, sessions: [...s.sessions, newS] }));
+
+    // ★ サーバに開始を通知
+    try {
+      await apiPost<{ ok: true }>(`/nudge/work-log/sessions/start`, { card_id: selectedCardId });
+    } catch (e) {
+      // 失敗したらUIを元に戻す
+      console.error("start API failed", e);
+      setStore(s => ({ ...s, sessions: s.sessions.filter(x => x.id !== newS.id) }));
+      alert("開始のサーバ登録に失敗しました。ネットワークや認証(x-token)を確認してください。");
+    }
+  };
+
+  const stopWork = async () => {
+    if (!running) return;
+
+    // 先にUIを更新（楽観的）
+    const stoppedAt = Date.now();
+    const noteText = note.trim();
+    setStore(s => ({
+      ...s,
+      sessions: s.sessions.map(x => x.id === running.id ? { ...x, end: stoppedAt, note: noteText || x.note } : x)
+    }));
+    setNote("");
+
+    // ★ サーバに終了を通知
+    try {
+      await apiPost<{ ok: true }>(`/nudge/work-log/sessions/stop`, noteText ? { note: noteText } : undefined);
+    } catch (e) {
+      console.error("stop API failed", e);
+      // 失敗したらUIを元に戻す（計測中に戻す）
+      setStore(s => ({
+        ...s,
+        sessions: s.sessions.map(x => x.id === running.id ? (() => {
+          const { end, ...rest } = x as Required<Session>;
+          return { ...rest, end: undefined } as Session;
+        })() : x)
+      }));
+      setNote(noteText); // 入力を戻す
+      alert("終了のサーバ登録に失敗しました。ネットワークや認証(x-token)を確認してください。");
+    }
+  };
+
+  /** ========== 編集（手動調整） ========== */
+  const updateSessionTimes = (id: ID, startISO: string, endISO: string) => {
+    const startTs = Date.parse(startISO);
+    const endTs = Date.parse(endISO);
+    if (Number.isNaN(startTs) || Number.isNaN(endTs) || endTs <= startTs) return;
+    setStore(s => ({
+      ...s,
+      sessions: s.sessions.map(x => x.id === id ? { ...x, start: startTs, end: endTs } : x),
+    }));
+  };
+
+  /** ========== 当日セッション ========== */
+  const sessionsToday = useMemo(() => {
+    return store.sessions
+      .filter(s => {
+        const a = s.start;
+        const b = s.end ?? Date.now();
+        // 当日範囲と重なるセッションを拾う
+        return !(b < currentDayStart || a > currentDayEnd);
+      })
+      .sort((A, B) => (A.start - B.start));
+  }, [store.sessions, currentDayStart, currentDayEnd]);
+
+  /** ========== 集計 ========== */
+  const totalMinutesToday = useMemo(() => {
+    return sessionsToday.reduce((acc, s) => {
+      const a = clamp(s.start, currentDayStart, currentDayEnd);
+      const b = clamp((s.end ?? Date.now()), currentDayStart, currentDayEnd);
+      return acc + minutesBetween(a, b);
+    }, 0);
+  }, [sessionsToday, currentDayStart, currentDayEnd]);
+
+  /** ========== タイマーUIの経過表示 ========== */
+  const [, forceTick] = useState(0);
+  const tickRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!running) return;
+    tickRef.current = window.setInterval(() => forceTick(x => x + 1), 1000);
+    return () => { if (tickRef.current) window.clearInterval(tickRef.current); };
+  }, [running]);
+
+  const runningElapsed = running ? minutesBetween(running.start, Date.now()) : 0;
+
+  /** ========== レンダリング ========== */
+  return (
+    <div className="rounded-2xl border p-6 shadow-sm grid gap-6">
+      {/* 上段：グループ＆カード作成 */}
+      <section className="grid gap-4 sm:grid-cols-2">
+        <div className="rounded-xl border p-4">
+          <h2 className="font-semibold mb-3">カードグループ</h2>
+          <div className="flex gap-2">
+            <input
+              value={groupName}
+              onChange={(e) => setGroupName(e.target.value)}
+              placeholder="例: TOEIC"
+              className="w-full rounded-xl border px-3 py-2"
+              aria-label="グループ名"
+            />
+            <button onClick={addGroup} className="rounded-xl border px-4 py-2 hover:bg-gray-50">追加</button>
+          </div>
+
+          <div className="mt-3">
+            <select
+              value={selectedGroupId}
+              onChange={(e) => setSelectedGroupId(e.target.value as ID | "")}
+              className="w-full rounded-xl border px-3 py-2"
+            >
+              <option value="">すべて</option>
+              {store.groups
+                .sort((a,b)=>a.createdAt-b.createdAt)
+                .map(g => (
+                <option key={g.id} value={g.id}>{g.name}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div className="rounded-xl border p-4">
+          <h2 className="font-semibold mb-3">カード</h2>
+          <div className="flex gap-2">
+            <input
+              value={cardName}
+              onChange={(e) => setCardName(e.target.value)}
+              placeholder="例: 単語 / 文法"
+              className="w-full rounded-xl border px-3 py-2"
+              aria-label="カード名"
+            />
+            <button
+              onClick={addCard}
+              disabled={!selectedGroupId}
+              className="rounded-xl border px-4 py-2 hover:bg-gray-50 disabled:opacity-40"
+              title={!selectedGroupId ? "先にグループを選択してください" : ""}
+            >
+              追加
+            </button>
+          </div>
+
+          <div className="mt-3">
+            <select
+              value={selectedCardId}
+              onChange={(e) => setSelectedCardId(e.target.value as ID | "")}
+              className="w-full rounded-xl border px-3 py-2"
+            >
+              <option value="">カードを選択</option>
+              {cardsInSelectedGroup
+                .sort((a,b)=>a.createdAt-b.createdAt)
+                .map(c => (
+                <option key={c.id} value={c.id}>
+                  {c.name}（{groupMap[c.groupId]?.name ?? "—"}）
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </section>
+
+      {/* 計測コントロール */}
+      <section className="rounded-xl border p-4">
+        <h2 className="font-semibold mb-3">計測</h2>
+        <div className="flex flex-wrap items-center gap-3">
+          {!running ? (
+            <button
+              onClick={startWork}
+              disabled={!selectedCardId}
+              className="rounded-xl bg-black px-5 py-2 text-white disabled:bg-gray-300"
+            >
+              作業開始
+            </button>
+          ) : (
+            <>
+              <button
+                onClick={stopWork}
+                className="rounded-xl bg-gray-800 px-5 py-2 text-white"
+              >
+                作業終了
+              </button>
+              <div className="text-sm text-gray-700">
+                計測中: <b>{cardMap[running.cardId]?.name ?? "?"}</b>（{fmtHM(runningElapsed)}）
+              </div>
+              <input
+                value={note}
+                onChange={(e)=>setNote(e.target.value)}
+                placeholder="メモ（任意）"
+                className="rounded-xl border px-3 py-2"
+              />
+            </>
+          )}
+        </div>
+      </section>
+
+      {/* カレンダー（日ビュー：タイムボクシング） */}
+      <section className="rounded-xl border p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="font-semibold">カレンダー（日）</h2>
+          <input
+            type="date"
+            value={dateStr}
+            onChange={(e) => setDateStr(e.target.value)}
+            className="rounded-xl border px-3 py-2"
+          />
+        </div>
+
+        <TimeBoxingDay
+          sessions={sessionsToday}
+          cardMap={cardMap}
+          dayStart={currentDayStart}
+        />
+
+        <div className="mt-3 text-sm text-gray-700">
+          本日の合計：<b>{fmtHM(totalMinutesToday)}</b>
+        </div>
+      </section>
+
+      {/* セッション一覧（当日） */}
+      <section className="rounded-xl border p-4">
+        <h2 className="font-semibold mb-3">当日のセッション一覧</h2>
+        <ul className="space-y-2">
+          {sessionsToday.map(s => {
+            const st = new Date(clamp(s.start, currentDayStart, currentDayEnd));
+            const et = new Date(clamp(s.end ?? Date.now(), currentDayStart, currentDayEnd));
+            const startISO = new Date(s.start).toISOString().slice(0,16);
+            const endISO = new Date(s.end ?? Date.now()).toISOString().slice(0,16);
+            return (
+              <li key={s.id} className="rounded-xl border p-3 grid gap-2 sm:grid-cols-[1fr_auto] sm:items-center">
+                <div>
+                  <div className="font-medium">
+                    {cardMap[s.cardId]?.name ?? "?"}
+                    <span className="ml-2 text-xs text-gray-500">
+                      {fmtTime(st)} — {s.end ? fmtTime(et) : "（計測中）"}
+                    </span>
+                  </div>
+                  <div className="text-sm text-gray-600">
+                    {fmtHM(minutesBetween(s.start, s.end ?? Date.now()))}
+                    {s.note ? <span className="ml-2">📝 {s.note}</span> : null}
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="datetime-local"
+                      defaultValue={startISO}
+                      className="rounded-lg border px-2 py-1 text-sm"
+                      onChange={(e) => updateSessionTimes(s.id, e.target.value, endISO)}
+                    />
+                    <span className="text-sm text-gray-500">〜</span>
+                    <input
+                      type="datetime-local"
+                      defaultValue={endISO}
+                      className="rounded-lg border px-2 py-1 text-sm"
+                      onChange={(e) => updateSessionTimes(s.id, startISO, e.target.value)}
+                      disabled={!s.end}
+                      title={!s.end ? "計測中は終了時刻を編集できません" : ""}
+                    />
+                  </div>
+                  <button
+                    onClick={() => deleteSession(s.id)}
+                    className="rounded-lg border px-3 py-1 text-sm hover:bg-gray-50"
+                  >
+                    削除
+                  </button>
+                </div>
+              </li>
+            );
+          })}
+          {sessionsToday.length === 0 && (
+            <li className="text-sm text-gray-500">当日のセッションはありません。</li>
+          )}
+        </ul>
+      </section>
+    </div>
+  );
+}
+
+/** ========== タイムボクシング（日ビュー） ========== */
+function TimeBoxingDay({
+  sessions,
+  cardMap,
+  dayStart,
+}: {
+  sessions: Session[];
+  cardMap: Record<string, Card | undefined>;
+  dayStart: number; // UTC 00:00
+}) {
+  const minutesPerDay = 24 * 60;
+  const pxPerMin = 1; // 高さ 1px / 分（= 1440px 高）
+  const gridHeight = minutesPerDay * pxPerMin;
+
+  return (
+    <div className="grid gap-4 sm:grid-cols-[80px_1fr]">
+      {/* 時刻目盛り */}
+      <div className="relative">
+        <div className="absolute left-0 top-0 text-xs text-gray-500">{/* spacer */}</div>
+        <div className="relative" style={{ height: gridHeight }}>
+          {Array.from({ length: 25 }).map((_, i) => (
+            <div key={i} className="absolute left-0 w-full" style={{ top: i * 60 * pxPerMin }}>
+              <div className="text-xs text-gray-500 -translate-y-2">{String(i).padStart(2,"0")}:00</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* セッションレーン */}
+      <div className="relative rounded-xl border" style={{ height: gridHeight }}>
+        {/* hour lines */}
+        {Array.from({ length: 24 }).map((_, i) => (
+          <div
+            key={i}
+            className="absolute left-0 w-full border-t border-dashed border-gray-200"
+            style={{ top: (i * 60) * pxPerMin }}
+          />
+        ))}
+
+        {/* blocks */}
+        {sessions.map((s) => {
+          const startMin = (s.start - dayStart) / 60000;
+          const endMin = ((s.end ?? Date.now()) - dayStart) / 60000;
+          const top = clamp(startMin, 0, minutesPerDay) * pxPerMin;
+          const bottom = clamp(endMin, 0, minutesPerDay) * pxPerMin;
+          const height = Math.max(2, bottom - top);
+          const color = cardMap[s.cardId]?.color ?? "#000";
+          const label = cardMap[s.cardId]?.name ?? "未定義";
+          return (
+            <div
+              key={s.id}
+              className="absolute left-2 right-2 rounded-md shadow-sm text-xs"
+              style={{ top, height, background: withAlpha(color, 0.12), borderLeft: `4px solid ${color}`, padding: "6px" }}
+              title={`${label} (${fmtHM(Math.round(height/pxPerMin))})`}
+            >
+              <div className="font-medium">{label}</div>
+              <div className="text-[11px] text-gray-600">
+                {fmtHM(Math.round(height/pxPerMin))}
+                {s.note ? <span className="ml-1">/ {s.note}</span> : null}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/** ========== 見た目ユーティリティ ========== */
+function pickColor(seed: string) {
+  // 簡易ハッシュで安定色
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) | 0;
+  const hue = Math.abs(h) % 360;
+  return `hsl(${hue} 80% 45%)`;
+}
+function withAlpha(hsl: string, alpha: number) {
+  // hsl(a b c) → hsla(a b c / alpha) 風
+  if (hsl.startsWith("hsl(")) return hsl.replace("hsl(", "hsl(").replace(")", ` / ${alpha})`).replace("hsl(", "hsl(");
+  if (hsl.startsWith("hsl")) return `${hsl} / ${alpha}`;
+  return hsl;
+}
+function fmtHM(mins: number) {
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return h > 0 ? `${h}時間${String(m).padStart(2,"0")}分` : `${m}分`;
+}
+function fmtTime(d: Date) {
+  const hh = String(d.getUTCHours()).padStart(2,"0");
+  const mm = String(d.getUTCMinutes()).padStart(2,"0");
+  return `${hh}:${mm} (UTC)`;
+}
