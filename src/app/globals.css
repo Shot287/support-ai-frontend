@@ -1,26 +1,94 @@
+/* src/app/globals.css */
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+/* ---------- Reset / Base ---------- */
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+a { text-decoration: none; color: inherit; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  font-feature-settings: "kern";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: #fff;
+  color: #0a0a0a;
+  /* ✅ デフォルトは横スクロールなし */
+  overflow-x: hidden;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+/* ---------- Global width（デフォは横スクなし） ---------- */
+/* 旧：最小幅ガードは撤廃済み。画面幅に追従し、はみ出しは隠す */
+.app-width-guard {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+/* ✅ 必要なページだけ横スクロールを許可するためのヘルパー */
+.x-scroll {
+  overflow-x: auto;                  /* 横スク有効化 */
+  -webkit-overflow-scrolling: touch; /* iOS慣性スクロール */
+}
+
+/* ✅ 中身に最低幅を与えて“はみ出し領域”を作るためのヘルパー */
+.minw-680  { min-width: 680px; }
+.minw-720  { min-width: 720px; }   /* タイムライン等で使いやすい */
+.minw-1024 { min-width: 1024px; }  /* 広い表など */
+
+/* メディアのはみ出し防止（親幅を超えない） */
+img, video, canvas, svg { max-width: 100%; height: auto; }
+
+/* 旧来の逃げ道クラス（必要なら残す） */
+.no-x-guard { min-width: 0 !important; }
+
+/* ---------- Mobile friendly helpers ---------- */
+/* 端末下部のセーフエリアに自然に余白付与 */
+.pb-safe-bottom {
+  padding-bottom: max(16px, env(safe-area-inset-bottom));
+}
+/* ぼかし付きの下部バー用（アクションバーなど） */
+.safe-area-blur {
+  padding-bottom: env(safe-area-inset-bottom);
+  background: rgba(255,255,255,0.85);
+  backdrop-filter: blur(8px);
+}
+
+/* タップ時の青いハイライト無効（Android Chrome） */
+* { -webkit-tap-highlight-color: transparent; }
+
+/* アクセシビリティ：キーボード操作時のフォーカスを可視化 */
+:where(button, [role="button"], a, input, select, textarea):focus-visible {
+  outline: 2px solid #2563eb; /* Tailwind blue-600 */
+  outline-offset: 2px;
+  border-radius: 0.5rem;
+}
+
+/* スクロールの不意なバウンス／上スワイプでの戻るを抑制（必要箇所で上書き可） */
+html, body { overscroll-behavior-y: contain; }
+
+/* ---------- Touch target size (mobile) ---------- */
+/* 親指で押しやすい最小高さを確保（Tailwindのp-系で上書き可） */
+@media (pointer: coarse) {
+  button, .btn, input[type="button"], input[type="submit"], input[type="reset"] {
+    min-height: 44px;
+  }
+  select, input[type="text"], input[type="search"], input[type="datetime-local"],
+  input[type="date"], textarea {
+    min-height: 44px;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* ---------- Utility: subtle card look (任意で使用) ---------- */
+.card {
+  border-radius: 1rem;
+  border: 1px solid rgb(229 231 235); /* gray-200 */
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+}
+
+/* ---------- Dark mode (任意) ---------- */
+@media (prefers-color-scheme: dark) {
+  body { background: #0b0b0b; color: #f5f5f5; }
+  .safe-area-blur { background: rgba(16,16,16,0.75); }
+  .card { border-color: rgb(38 38 38); background: #101010; box-shadow: none; }
 }

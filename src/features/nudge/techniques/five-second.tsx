@@ -1,59 +1,89 @@
 // src/features/nudge/techniques/five-second.tsx
-import { useEffect, useState } from "react";
-import { NudgeTechnique } from "../types";
+"use client";
 
-function beep() {
-  try {
-    const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-    const o = ctx.createOscillator(); const g = ctx.createGain();
-    o.frequency.value = 880; o.connect(g); g.connect(ctx.destination);
-    o.start(); setTimeout(() => { o.stop(); ctx.close(); }, 100);
-  } catch {}
-}
-function vibrate(ms = 80) { if ("vibrate" in navigator) navigator.vibrate(ms); }
+import { useCallback, useEffect, useRef, useState } from "react";
 
-const FiveSecond: React.FC<{ onDone?: (note?: string) => void }> = ({ onDone }) => {
+export default function FiveSecond() {
+  const [count, setCount] = useState(5);
   const [running, setRunning] = useState(false);
-  const [remain, setRemain] = useState(5);
+  const timerRef = useRef<number | null>(null);
+
+  const clear = () => {
+    if (timerRef.current) {
+      window.clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+  };
+
+  const tick = useCallback(() => {
+    setCount((c) => {
+      if (c <= 1) {
+        // 0 に到達
+        clear();
+        setRunning(false);
+        return 0;
+      }
+      return c - 1;
+    });
+  }, []);
+
+  const start = () => {
+    clear();
+    setCount(5);
+    setRunning(true);
+    timerRef.current = window.setInterval(tick, 1000);
+  };
+
+  const stop = () => {
+    clear();
+    setRunning(false);
+  };
+
+  const reset = () => {
+    stop();
+    setCount(5);
+  };
 
   useEffect(() => {
-    if (!running) return;
-    const started = Date.now();
-    beep(); vibrate(60);
-    const id = setInterval(() => {
-      setRemain((r) => {
-        if (r <= 1) {
-          clearInterval(id);
-          beep(); vibrate(120);
-          setRunning(false);
-          onDone?.();
-          return 5;
-        }
-        beep(); vibrate(30);
-        return r - 1;
-      });
-    }, 1000);
-    return () => clearInterval(id);
-  }, [running, onDone]);
+    return () => clear(); // アンマウント時に後始末
+  }, []);
 
   return (
-    <div className="space-y-3">
-      <div className="text-5xl font-extrabold tabular-nums">{remain}</div>
-      <button
-        className="rounded bg-emerald-500 px-4 py-2 text-black disabled:opacity-60"
-        onClick={() => setRunning(true)}
-        disabled={running}
-      >
-        5秒カウント開始
-      </button>
+    <div className="rounded-2xl border p-6 shadow-sm">
+      <div className="text-center">
+        <div className="text-7xl font-bold tabular-nums">{count}</div>
+        <p className="mt-2 text-gray-600">5→1で迷いを断ち切って、今すぐ動く！</p>
+
+        <div className="mt-6 flex items-center justify-center gap-3">
+          {!running ? (
+            <button
+              onClick={start}
+              className="rounded-xl bg-black px-5 py-2 text-white hover:opacity-90"
+            >
+              スタート
+            </button>
+          ) : (
+            <button
+              onClick={stop}
+              className="rounded-xl bg-gray-800 px-5 py-2 text-white hover:opacity-90"
+            >
+              ストップ
+            </button>
+          )}
+          <button
+            onClick={reset}
+            className="rounded-xl border px-5 py-2 hover:bg-gray-50"
+          >
+            リセット
+          </button>
+        </div>
+
+        {count === 0 && (
+          <div className="mt-6 text-lg font-semibold text-green-700">
+            いま動く！— 最初の1アクションを実行しよう
+          </div>
+        )}
+      </div>
     </div>
   );
-};
-
-const meta: NudgeTechnique = {
-  id: "five-second",
-  name: "5秒ルール",
-  description: "決めたら5秒以内に動く。グズる前に身体を動かす！",
-  Component: FiveSecond,
-};
-export default meta;
+}
