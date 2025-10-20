@@ -1,40 +1,58 @@
 // src/middleware.ts
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse, type NextRequest } from 'next/server';
 
-const LOCK_PATH = '/lock';
-const BYPASS_PREFIXES = [
-  '/api/_b/',            // ← バックエンドへのプロキシは認証バイパス
-  '/_next/', '/favicon.ico', '/sw.js', '/manifest.webmanifest',
-  '/public/', '/assets/', '/icon', '/apple-icon', '/android-chrome'
+// 完全一致で許可するパス
+const PUBLIC_EXACT = new Set<string>([
+  '/lock',
+  '/api/auth/verify',
+  '/api/auth/logout',
+  '/favicon.ico',
+  '/manifest.webmanifest',
+  '/sw.js',
+]);
+
+// 接頭辞一致で許可するパス（配下をすべて許可）
+const PUBLIC_PREFIXES = [
+  '/api/_b/',          // ← バックエンドプロキシは必ず素通り
+  '/_next/',           // Next.js の静的配信
+  '/static/',
+  '/public/',
+  '/assets/',
+  '/icon',
+  '/apple-icon',
+  '/android-chrome',
 ];
 
-function isBypassPath(path: string): boolean {
-  return BYPASS_PREFIXES.some(p => path.startsWith(p));
+function shouldBypass(pathname: string): boolean {
+  if (PUBLIC_EXACT.has(pathname)) return true;
+  return PUBLIC_PREFIXES.some((p) => pathname.startsWith(p));
 }
 
 export function middleware(req: NextRequest) {
-  const { pathname } = req.nextUrl;
+  const { pathname, search } = req.nextUrl;
 
-  // バイパス対象はそのまま通す
-  if (isBypassPath(pathname)) return NextResponse.next();
+  // 公開パスはそのまま通す
+  if (shouldBypass(pathname)) {
+    return NextResponse.next();
+  }
 
-  // すでに /lock は通す
-  if (pathname.startsWith(LOCK_PATH)) return NextResponse.next();
+  // 認証クッキー（互換：x-lock-pass または app_auth）
+  const ticket =
+    req.cookies.get('x-lock-pass')?.value ??
+    req.cookies.get('app_auth')?.value;
 
-  // ここからパスワードゲートの本体
-  const pass = req.cookies.get('x-lock-pass')?.value || '';
-  const ok = pass && pass === process.env.NEXT_PUBLIC_LOCK_PASS; // 例：環境変数に設定
+  if (ticket === 'ok') {
+    return NextResponse.next();
+  }
 
-  if (ok) return NextResponse.next();
-
-  // 認証されていない場合は lock に 307 で遷移（元 URL を next に渡す）
+  // 未認証 → /lock へ（元URLを next に付与）
   const url = req.nextUrl.clone();
-  url.pathname = LOCK_PATH;
-  url.searchParams.set('next', req.nextUrl.pathname + req.nextUrl.search);
+  url.pathname = '/lock';
+  url.searchParams.set('next', pathname + (search || ''));
   return NextResponse.redirect(url, 307);
 }
 
-// “どこに効かせるか” の指定。/api/_b/ は除外できるように広めにかける
+// middleware の適用範囲（Next の内部静的ファイルなどは除外）
 export const config = {
   matcher: [
     '/((?!_next/static|_next/image|favicon.ico|sw.js|manifest.webmanifest).*)',
