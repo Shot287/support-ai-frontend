@@ -1,18 +1,20 @@
 // src/app/api/_b/[...path]/route.ts
 import { NextRequest, NextResponse } from "next/server";
 
+/** ここを Node.js 実行に固定（Edge だと body 取り回しでハマりやすい） */
 export const runtime = "nodejs";
+/** どんな状況でも常にサーバーで処理（静的化させない） */
 export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
-function getBackend(): string {
+function backendOrigin(): string {
   const raw =
     process.env.BACKEND_ORIGIN?.trim() ||
     process.env.NEXT_PUBLIC_BACKEND_ORIGIN?.trim() ||
     "https://support-ai-os6k.onrender.com";
   return raw.replace(/\/+$/, "");
 }
-
-function getApiToken(): string {
+function apiToken(): string {
   return (
     process.env.API_TOKEN?.trim() ||
     process.env.NEXT_PUBLIC_API_TOKEN?.trim() ||
@@ -20,73 +22,90 @@ function getApiToken(): string {
   );
 }
 
-const PASSTHROUGH_REQ_HEADERS = new Set([
+/** そのまま通すヘッダー */
+const PASSTHROUGH = new Set([
   "content-type",
   "accept",
   "accept-language",
   "cache-control",
   "pragma",
-  "x-token",
+  "x-token", // クライアント指定があれば維持
 ]);
 
+/** すべてのメソッドをこのハンドラで受ける */
 export const GET = handler;
 export const POST = handler;
 export const PUT = handler;
 export const PATCH = handler;
 export const DELETE = handler;
-export const OPTIONS = handler;
+export const HEAD = handler;
+/** CORS/プリフライトはここで即完結させる（バックエンドへ転送しない） */
+export async function OPTIONS(req: NextRequest) {
+  return new NextResponse(null, {
+    status: 200,
+    headers: corsHeaders(req),
+  });
+}
 
-async function handler(
-  req: NextRequest,
-  ctx: { params: { path?: string[] } }
-) {
+async function handler(req: NextRequest, ctx: { params: { path?: string[] } }) {
   try {
-    const backend = getBackend();
+    // 転送先 URL を生成
     const tail = (ctx.params.path ?? []).join("/");
-    const search = req.nextUrl.search || "";
-    const target = `${backend}/${tail}${search}`;
+    const url = new URL(req.url);
+    const target = `${backendOrigin()}/${tail}${url.search}`;
 
-    const forwardHeaders = new Headers();
+    // 転送するヘッダ
+    const fwd = new Headers();
     req.headers.forEach((v, k) => {
-      const lk = k.toLowerCase();
-      if (PASSTHROUGH_REQ_HEADERS.has(lk)) forwardHeaders.set(k, v);
+      if (PASSTHROUGH.has(k.toLowerCase())) fwd.set(k, v);
     });
+    // 共有トークンを必ず付与
+    const token = apiToken();
+    if (token && !fwd.has("x-token")) fwd.set("x-token", token);
 
-    const token = getApiToken();
-    if (token) forwardHeaders.set("x-token", token);
-
-    if (!forwardHeaders.has("content-type")) {
-      forwardHeaders.set("content-type", "application/json");
-    }
-
+    // ボディ（GET/HEAD はなし、それ以外はそのまま透過）
     const method = req.method.toUpperCase();
     const body =
       method === "GET" || method === "HEAD" ? undefined : await req.arrayBuffer();
 
+    // サーバー間フェッチ
     const res = await fetch(target, {
       method,
-      headers: forwardHeaders,
+      headers: fwd,
       body,
       cache: "no-store",
       redirect: "manual",
     });
 
-    const headers = new Headers();
+    // レスポンスヘッダを複製（圧縮系は除外）
+    const outHeaders = new Headers(corsHeaders(req));
     res.headers.forEach((v, k) => {
       if (k.toLowerCase() === "content-encoding") return;
-      headers.set(k, v);
+      outHeaders.set(k, v);
     });
 
     return new NextResponse(res.body, {
       status: res.status,
       statusText: res.statusText,
-      headers,
+      headers: outHeaders,
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     return NextResponse.json(
       { error: "proxy_failed", message: msg },
-      { status: 502 }
+      { status: 502, headers: corsHeaders(req) }
     );
   }
+}
+
+/** 同一オリジンだが、将来に向けて一応 CORS を無害化（OPTIONS 200など） */
+function corsHeaders(req: NextRequest): Record<string, string> {
+  const origin = req.headers.get("origin") || "*";
+  return {
+    "Access-Control-Allow-Origin": origin,
+    "Access-Control-Allow-Credentials": "true",
+    "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS,HEAD",
+    "Access-Control-Allow-Headers":
+      "Content-Type, Accept, Accept-Language, Cache-Control, Pragma, X-Token",
+  };
 }
