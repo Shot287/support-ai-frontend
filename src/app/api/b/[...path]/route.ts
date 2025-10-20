@@ -42,7 +42,7 @@ async function handler(
     const { path = [] } = await ctx.params;
     const url = new URL(req.url);
     const tail = (path ?? []).join("/");
-    const target = `${BACKEND}/${tail}${url.search}`;
+    const target = `${BACKEND.replace(/\/+$/, "")}/${tail.replace(/^\/+/, "")}${url.search}`;
 
     const fwd = new Headers();
     req.headers.forEach((v, k) => {
