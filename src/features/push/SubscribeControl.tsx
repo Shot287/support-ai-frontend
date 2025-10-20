@@ -56,7 +56,6 @@ export default function SubscribeControl() {
         // ✅ /api/_b 経由で VAPID を取得
         const envVapid = (process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY || "").trim();
         const vapid = envVapid || (await fetchVapidFromBackend());
-        // どちらのソースか簡易ログ（必要なら DevTools で確認）
         console.log("[Subscribe] using VAPID from", envVapid ? "env" : "backend");
         if (!vapid) throw new Error("VAPID公開鍵の取得に失敗しました");
 
@@ -67,12 +66,12 @@ export default function SubscribeControl() {
         });
       }
 
-      // ✅ /api/_b 経由で購読をバックエンドへ登録
+      // ✅ バックエンドへ登録
       await registerToServer(sub);
       setEndpoint(sub.endpoint);
       setPhase("done");
       alert("Push購読の登録が完了しました。以後、スマホにも通知が届きます。");
-    } catch (e) {
+    } catch (e: unknown) {
       console.error("[Subscribe] failed:", errorToString(e));
       setPhase("idle");
       alert(`Push購読に失敗しました：${errorToString(e)}`);
@@ -91,7 +90,7 @@ export default function SubscribeControl() {
       setEndpoint("");
       setPhase("idle");
       alert("Push購読を解除しました。");
-    } catch (e) {
+    } catch (e: unknown) {
       console.error("[Subscribe] unsubscribe error:", errorToString(e));
       setPhase("error");
       alert(`購読解除に失敗しました：${errorToString(e)}`);
@@ -144,13 +143,13 @@ export default function SubscribeControl() {
 // 文字列/JSON どちらのレスポンスでも安全に取り出す
 async function fetchVapidFromBackend(): Promise<string> {
   try {
-    const res: any = await getVapidPublicKey(); // { publicKey: string } or "rawstring"
+    const res: unknown = await getVapidPublicKey(); // { publicKey: string } or "rawstring"
     let raw = "";
     if (typeof res === "string") raw = res;
-    else if (res && typeof res.publicKey === "string") raw = res.publicKey;
-    else if (res && typeof res.key === "string") raw = res.key; // 旧互換
+    else if (res && typeof (res as any).publicKey === "string") raw = (res as any).publicKey;
+    else if (res && typeof (res as any).key === "string") raw = (res as any).key; // 旧互換
     return (raw || "").trim();
-  } catch (e) {
+  } catch (e: unknown) {
     console.error("[Subscribe] failed to fetch VAPID:", errorToString(e));
     return "";
   }
@@ -175,38 +174,28 @@ async function unregisterOnServerSafe(sub: PushSubscription): Promise<void> {
 
 /**
  * VAPID base64URL → BufferSource（強耐性版）
- *  - PEM（-----BEGIN PUBLIC KEY----- ... -----END PUBLIC KEY-----）も抽出対応
- *  - 余計な引用符/改行/ゼロ幅スペース/全角記号を除去
- *  - base64url(-,_) / base64(+,/) の両方を受け入れ
- *  - パディング不足は '=' を補完して解決を試みる
  */
 function urlBase64ToUint8ArrayStrict(input: string): BufferSource {
   if (!input) throw new Error("empty VAPID key");
 
-  // 0) PEM 形式なら中身だけ抽出
   const pemMatch = input.match(/-----BEGIN PUBLIC KEY-----([\s\S]*?)-----END PUBLIC KEY-----/);
   let s = pemMatch ? pemMatch[1] : input;
 
-  // 1) サニタイズ
   s = s
-    .replace(/[\u200B-\u200D\uFEFF]/g, "") // ゼロ幅
-    .replace(/[\r\n\t\f ]+/g, "")          // 空白/改行
-    .replace(/^"+|"+$/g, "")               // 先頭/末尾の引用符
-    .replace(/[^A-Za-z0-9\-_+/=]/g, "");   // 許可外の文字を削除
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .replace(/[\r\n\t\f ]+/g, "")
+    .replace(/^"+|"+$/g, "")
+    .replace(/[^A-Za-z0-9\-_+/=]/g, "");
 
-  // 2) base64url → base64
   s = s.replace(/-/g, "+").replace(/_/g, "/");
-
-  // 3) パディング補完（%=1 のケースも強制補完）
   while (s.length % 4 !== 0) s += "=";
 
-  // 4) デコード（失敗時は先頭/末尾を出して原因追いやすく）
   try {
     const raw = atob(s);
     const buf = new ArrayBuffer(raw.length);
     const out = new Uint8Array(buf);
     for (let i = 0; i < raw.length; ++i) out[i] = raw.charCodeAt(i);
-    return out; // Uint8Array は BufferSource
+    return out;
   } catch {
     const head = s.slice(0, 12);
     const tail = s.slice(-12);
