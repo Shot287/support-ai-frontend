@@ -2,7 +2,7 @@
 
 // ==== 環境変数 ====
 // API 基本パスは Next.js 側プロキシに固定
-const API_BASE = '/api/_b';
+const API_BASE = '/api/b';
 const API_TOKEN = process.env.NEXT_PUBLIC_API_TOKEN || "";
 
 if (!API_TOKEN) console.warn("NEXT_PUBLIC_API_TOKEN is not set (push/* & nudge/* calls will require it)");
