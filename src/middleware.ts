@@ -11,10 +11,10 @@ const PUBLIC_EXACT = new Set<string>([
   "/sw.js",
 ]);
 
-// 接頭辞一致で許可するパス（配下をすべて許可）
+// 接頭辞一致で許可するパス（配下すべて）
 const PUBLIC_PREFIXES = [
-  "/api/b/",   // ← 追加：バックエンドプロキシ(新)
-  "/api/_b/",  // ← 旧プレフィックスも互換で許可
+  "/api/b/",   // バックエンドプロキシ（新）
+  "/api/_b/",  // 旧プレフィックス（互換で許可）
   "/_next/",   // Next.js の静的配信
   "/static/",
   "/public/",
@@ -37,10 +37,8 @@ export function middleware(req: NextRequest) {
     return NextResponse.next();
   }
 
-  // 認証クッキー（互換：x-lock-pass または app_auth）
-  const ticket =
-    req.cookies.get("x-lock-pass")?.value ??
-    req.cookies.get("app_auth")?.value;
+  // ✅ セッションCookie：app_auth2 のみを有効化（旧Cookieは無視）
+  const ticket = req.cookies.get("app_auth2")?.value;
 
   if (ticket === "ok") {
     return NextResponse.next();
