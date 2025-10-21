@@ -16,6 +16,8 @@ const PUBLIC_EXACT = new Set<string>([
 const PUBLIC_PREFIXES = [
   "/api/b/",   // バックエンドプロキシ（新）
   "/api/_b/",  // 旧プレフィックス（互換で許可）
+  "/api/lock/",  
+  "/api/auth/",  
   "/_next/",   // Next.js の静的配信
   "/static/",
   "/public/",

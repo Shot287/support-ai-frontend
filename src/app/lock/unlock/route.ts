@@ -1,6 +1,20 @@
 import { NextResponse } from "next/server";
 import { msToMaxAge } from "@/lib/dailyLock";
 
+export const runtime = "nodejs";         // ← 明示的に Node.js ランタイム
+export const dynamic = "force-dynamic";  // ← 常に動的実行（キャッシュ無効）
+
+// 同一オリジンでも環境によりプリフライトが来ることがあるため許容しておく
+export async function OPTIONS() {
+  return new NextResponse(null, {
+    status: 204,
+    headers: {
+      "Access-Control-Allow-Methods": "POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type",
+    },
+  });
+}
+
 export async function POST(req: Request) {
   const body = await req.json().catch(() => null);
   const exp = Number((body as any)?.exp);
@@ -13,8 +27,10 @@ export async function POST(req: Request) {
   const maxAge = msToMaxAge(deltaMs);
   const expiresStr = new Date(exp).toUTCString();
 
-  // ✅ Secure属性を「https環境のときだけ」付与
-  const isHttps = req.headers.get("x-forwarded-proto") === "https" || req.url.startsWith("https://");
+  // dev/preview でも HTTPS なら Secure を付ける（Vercel など）
+  const isHttps =
+    req.headers.get("x-forwarded-proto") === "https" ||
+    req.url.startsWith("https://");
 
   const cookie = [
     `unlock_exp=${exp}`,

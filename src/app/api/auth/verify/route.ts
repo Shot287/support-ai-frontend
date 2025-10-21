@@ -1,12 +1,20 @@
-// src/app/api/auth/verify/route.ts
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+export async function OPTIONS() {
+  return new NextResponse(null, {
+    status: 204,
+    headers: {
+      "Access-Control-Allow-Methods": "POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type",
+    },
+  });
+}
+
 /**
- * パスワードの妥当性のみを検証するAPI。
- * Cookieは発行しません（ロック可否は /api/lock/unlock の unlock_exp で制御）。
+ * パスワード検証のみ（Cookie は発行しない）
  */
 export async function POST(req: Request) {
   try {
@@ -21,6 +29,3 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, message: "bad request" }, { status: 400 });
   }
 }
-
-// ※ 旧: GET でのログアウト（Cookie削除）は廃止しました。
-//   併用していた app_auth2 Cookie も発行しません。
