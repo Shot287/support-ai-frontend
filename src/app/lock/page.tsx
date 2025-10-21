@@ -1,7 +1,7 @@
 'use client';
 import { Suspense, useState } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { endOfTodayLocalTs } from '@/lib/dailyLock';
+import { endOfTodayLocalTs } from "../../lib/dailyLock";
 
 function LockForm() {
   const [password, setPassword] = useState('');

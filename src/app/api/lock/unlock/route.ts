@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { msToMaxAge } from "@/lib/dailyLock";
+import { msToMaxAge } from "../../../../lib/dailyLock";
 
 export const runtime = "nodejs";         // ← 明示的に Node.js ランタイム
 export const dynamic = "force-dynamic";  // ← 常に動的実行（キャッシュ無効）
