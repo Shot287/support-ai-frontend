@@ -6,6 +6,7 @@ const PUBLIC_EXACT = new Set<string>([
   "/lock",
   "/api/auth/verify",
   "/api/auth/logout",
+  "/api/lock/unlock", // ← 追加：解除クッキー発行用API
   "/favicon.ico",
   "/manifest.webmanifest",
   "/sw.js",
@@ -37,14 +38,18 @@ export function middleware(req: NextRequest) {
     return NextResponse.next();
   }
 
-  // ✅ セッションCookie：app_auth2 のみを有効化（旧Cookieは無視）
-  const ticket = req.cookies.get("app_auth2")?.value;
+  // === Daily Lock 判定 ===
+  // unlock_exp: epoch(ms) を値に持つ HttpOnly Cookie（当日末まで有効）
+  const expStr = req.cookies.get("unlock_exp")?.value;
+  const exp = expStr ? Number(expStr) : 0;
+  const isUnlockedToday = Number.isFinite(exp) && Date.now() < exp;
 
-  if (ticket === "ok") {
+  if (isUnlockedToday) {
+    // 本日中は通過（ロック再表示しない）
     return NextResponse.next();
   }
 
-  // 未認証 → /lock へ（元URLを next に付与）
+  // 未解除 or 期限切れ → /lock へ（元URLを next に付与）
   const url = req.nextUrl.clone();
   url.pathname = "/lock";
   url.searchParams.set("next", pathname + (search || ""));

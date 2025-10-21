@@ -1,6 +1,7 @@
 'use client';
 import { Suspense, useState } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
+import { endOfTodayLocalTs } from '@/lib/dailyLock';
 
 function LockForm() {
   const [password, setPassword] = useState('');
@@ -12,18 +13,37 @@ function LockForm() {
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setErr(null);
+
+    // 🔐 まずは通常のパスワード認証
     const res = await fetch('/api/auth/verify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ password }),
       credentials: 'include',
     });
-    if (res.ok) {
-      router.replace(nextPath);
-    } else {
+
+    if (!res.ok) {
       const j = await res.json().catch(() => ({}));
       setErr(j?.message ?? 'パスワードが違います。');
+      return;
     }
+
+    // ✅ 認証成功 → 今日の終わりまで有効な unlock クッキーを発行
+    const exp = endOfTodayLocalTs();
+    const unlockRes = await fetch('/api/lock/unlock', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ exp }),
+      credentials: 'include',
+    });
+
+    if (!unlockRes.ok) {
+      setErr('ロック解除クッキーの設定に失敗しました。');
+      return;
+    }
+
+    // 成功 → 指定ページへ
+    router.replace(nextPath);
   }
 
   return (
@@ -45,8 +65,11 @@ function LockForm() {
         type="submit"
         className="w-full rounded-xl px-4 py-2 bg-black text-white"
       >
-        入室
+        入室（今日の終わりまで有効）
       </button>
+      <p className="text-xs text-gray-500">
+        ※本日中はロックを再表示しません。日付をまたぐと再ロックされます。
+      </p>
     </form>
   );
 }

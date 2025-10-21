@@ -4,39 +4,23 @@ import { NextResponse } from "next/server";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+/**
+ * パスワードの妥当性のみを検証するAPI。
+ * Cookieは発行しません（ロック可否は /api/lock/unlock の unlock_exp で制御）。
+ */
 export async function POST(req: Request) {
   try {
     const { password } = (await req.json()) as { password?: string };
     const appPassword = (process.env.APP_PASSWORD ?? "").trim();
 
     if (!password || password !== appPassword) {
-      return NextResponse.json({ ok: false }, { status: 401 });
+      return NextResponse.json({ ok: false, message: "invalid password" }, { status: 401 });
     }
-
-    // ✅ 1分だけ有効な認証Cookie（短寿命）
-    const res = NextResponse.json({ ok: true });
-    res.cookies.set("app_auth2", "ok", {
-      httpOnly: true,
-      secure: true,
-      sameSite: "lax",
-      path: "/",
-      maxAge: 60, // ← 1分
-    });
-    return res;
+    return NextResponse.json({ ok: true });
   } catch {
-    return NextResponse.json({ ok: false }, { status: 400 });
+    return NextResponse.json({ ok: false, message: "bad request" }, { status: 400 });
   }
 }
 
-// 任意：ログアウト（Cookie即削除）
-export async function GET() {
-  const res = NextResponse.json({ ok: true });
-  res.cookies.set("app_auth2", "", {
-    httpOnly: true,
-    secure: true,
-    sameSite: "lax",
-    path: "/",
-    maxAge: 0,
-  });
-  return res;
-}
+// ※ 旧: GET でのログアウト（Cookie削除）は廃止しました。
+//   併用していた app_auth2 Cookie も発行しません。
