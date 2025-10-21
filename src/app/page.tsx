@@ -20,6 +20,12 @@ const categories = [
     description: "用語辞典などの学習サポート",
     href: "/study",
   },
+  {
+    id: "mental",
+    title: "Mental",
+    description: "メンタルケア・気分管理など（準備中）",
+    href: "/mental",
+  },
 ] as const;
 
 export default function HomePage() {
