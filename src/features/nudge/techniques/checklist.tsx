@@ -3,6 +3,15 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+// ↓ 追加：同期ユーティリティ
+import {
+  startChecklistPolling,
+  upsertChecklistSet,
+  type PullResponse,
+  type ChecklistSetRow,
+} from "@/lib/sync";
+import { getDeviceId } from "@/lib/device";
+
 /* ========= 型 ========= */
 type ID = string;
 
@@ -59,6 +68,17 @@ type Store = {
 /* ========= ユーティリティ ========= */
 const KEY = "checklist_v1";
 
+// ★ 同期関連（簡易版）：ユーザーと since をローカルに保存
+const USER_ID = "demo"; // ← 本実装ではログインID等に差し替え
+const SINCE_KEY = `support-ai:sync:since:${USER_ID}`;
+const getSince = () => {
+  const v = typeof window !== "undefined" ? localStorage.getItem(SINCE_KEY) : null;
+  return v ? Number(v) : 0;
+};
+const setSince = (ms: number) => {
+  if (typeof window !== "undefined") localStorage.setItem(SINCE_KEY, String(ms));
+};
+
 const uid = () =>
   (typeof crypto !== "undefined" && "randomUUID" in crypto)
     ? crypto.randomUUID()
@@ -112,6 +132,104 @@ export default function Checklist() {
   const [store, setStore] = useState<Store>(() => load());
   useEffect(() => save(store), [store]);
 
+  // ====== ここから同期の差し込み（Setのみ） ======
+  // 差分のマージ（ChecklistSetRow → 既存ローカル構造）
+  const applySetDiffs = (rows: ChecklistSetRow[]) => {
+    setStore((prev) => {
+      // 既存配列を Map に展開（id→index）
+      const idxMap = new Map(prev.sets.map((s, i) => [s.id, i]));
+      let sets = prev.sets.slice();
+      let current = prev.current;
+
+      for (const row of rows) {
+        const at = row.updated_at ?? 0;
+
+        if (row.deleted_at) {
+          // 削除：あれば消す
+          const i = idxMap.get(row.id);
+          if (i !== undefined) {
+            sets.splice(i, 1);
+            idxMap.delete(row.id);
+            // current の整合
+            if (current?.setId === row.id) {
+              const nextSet = sets[0];
+              if (nextSet) {
+                current = { setId: nextSet.id, index: 0, runId: uid() };
+              } else {
+                current = undefined;
+              }
+            }
+            // インデックス再構築
+            for (let k = i; k < sets.length; k++) idxMap.set(sets[k].id, k);
+          }
+          continue;
+        }
+
+        // upsert：存在チェック
+        const i = idxMap.get(row.id);
+        if (i === undefined) {
+          // 新規：空アクションで作る（Action 同期は次ステップ）
+          const created: ChecklistSet = {
+            id: row.id,
+            title: row.title,
+            actions: [],
+            createdAt: at || now(),
+          };
+          sets = [...sets, created];
+          idxMap.set(row.id, sets.length - 1);
+        } else {
+          // 既存：title をサーバ版で上書き（Set内の actions は保持）
+          const exists = sets[i];
+          // 簡易な新旧比較：createdAt を「最後に見たサーバ時刻」の代わりに使わない
+          // → サーバの updated_at が真なら信頼して更新
+          sets[i] = { ...exists, title: row.title };
+        }
+      }
+
+      return { ...prev, sets, current };
+    });
+  };
+
+  // 初回 pull ＆ ポーリング開始
+  useEffect(() => {
+    const abort = new AbortController();
+    const deviceId = getDeviceId();
+
+    // 初回即時 pull
+    (async () => {
+      try {
+        const res = await fetch(
+          `/api/b/api/sync/pull-batch?user_id=${USER_ID}&since=${getSince()}&tables=checklist_sets,checklist_actions`,
+          { cache: "no-store" }
+        );
+        if (res.ok) {
+          const json = (await res.json()) as PullResponse;
+          applySetDiffs(json.diffs.checklist_sets);
+          setSince(json.server_time_ms);
+        }
+      } catch (e) {
+        console.error("[sync] initial pull failed:", e);
+      }
+    })();
+
+    // ポーリング開始（15秒）
+    startChecklistPolling({
+      userId: USER_ID,
+      deviceId,
+      getSince,
+      setSince,
+      applyDiffs: (diffs) => {
+        applySetDiffs(diffs.checklist_sets);
+        // checklist_actions は次ステップで反映
+      },
+      intervalMs: 15000,
+      abortSignal: abort.signal,
+    });
+
+    return () => abort.abort();
+  }, []);
+  // ====== 同期差し込み ここまで ======
+
   const currentSet = useMemo(() => {
     const id = store.current?.setId;
     return store.sets.find((s) => s.id === id) ?? store.sets[0];
@@ -141,37 +259,86 @@ export default function Checklist() {
     const title = prompt("新しいチェックリストのタイトル", "新しいルーティン");
     if (!title) return;
     const newSet: ChecklistSet = { id: uid(), title, actions: [], createdAt: now() };
+    // ローカル更新即時
     setStore((s) => ({
       ...s,
       sets: [...s.sets, newSet],
       current: { setId: newSet.id, index: 0, runId: uid() },
     }));
+    // サーバへ upsert（非同期・失敗はコンソール警告）
+    (async () => {
+      try {
+        await upsertChecklistSet({
+          userId: USER_ID,
+          deviceId: getDeviceId(),
+          id: newSet.id,
+          title: newSet.title,
+          order: store.sets.length, // 末尾
+        });
+      } catch (e) {
+        console.warn("[sync] upsert new set failed:", e);
+      }
+    })();
   };
   const renameSet = () => {
     if (!currentSet) return;
     const title = prompt("タイトル変更", currentSet.title);
     if (!title) return;
+    // ローカル即時
     setStore((s) => ({
       ...s,
       sets: s.sets.map((x) => (x.id === currentSet.id ? { ...x, title } : x)),
     }));
+    // サーバ upsert
+    (async () => {
+      try {
+        const order = store.sets.findIndex((s) => s.id === currentSet.id);
+        await upsertChecklistSet({
+          userId: USER_ID,
+          deviceId: getDeviceId(),
+          id: currentSet.id,
+          title,
+          order: Math.max(0, order),
+        });
+      } catch (e) {
+        console.warn("[sync] rename set failed:", e);
+      }
+    })();
   };
   const deleteSet = () => {
     if (!currentSet) return;
     if (store.sets.length <= 1) return alert("少なくとも1つのセットが必要です。");
     if (!confirm(`「${currentSet.title}」を削除しますか？`)) return;
-    setStore((s) => {
-      const nextSets = s.sets.filter((x) => x.id !== currentSet.id);
-      const nextSet = nextSets[0];
-      return {
-        ...s,
-        sets: nextSets,
-        current: { setId: nextSet.id, index: 0, runId: uid() },
-      };
-    });
+
+    const deletingId = currentSet.id;
+    const nextSets = store.sets.filter((x) => x.id !== deletingId);
+    const nextSet = nextSets[0];
+
+    // ローカル即時
+    setStore((s) => ({
+      ...s,
+      sets: nextSets,
+      current: nextSet ? { setId: nextSet.id, index: 0, runId: uid() } : undefined,
+    }));
+
+    // サーバへソフトデリート
+    (async () => {
+      try {
+        await upsertChecklistSet({
+          userId: USER_ID,
+          deviceId: getDeviceId(),
+          id: deletingId,
+          title: currentSet.title,
+          order: Math.max(0, store.sets.findIndex((s) => s.id === deletingId)),
+          deleted_at: Date.now(),
+        });
+      } catch (e) {
+        console.warn("[sync] delete set failed:", e);
+      }
+    })();
   };
 
-  /* ====== 行動編集 ====== */
+  /* ====== 行動編集（ローカルのみ：次ステップで同期対応） ====== */
   const addAction = () => {
     if (!currentSet) return;
     const title = prompt("新しい行動名", "新しい行動");
