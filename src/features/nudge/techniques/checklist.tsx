@@ -3,12 +3,15 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-// ↓ 追加：同期ユーティリティ
+// ↓ 同期ユーティリティ（Set + Action を使う）
 import {
   startChecklistPolling,
   upsertChecklistSet,
+  upsertChecklistAction,
+  deleteChecklistAction,
   type PullResponse,
   type ChecklistSetRow,
+  type ChecklistActionRow,
 } from "@/lib/sync";
 import { getDeviceId } from "@/lib/device";
 
@@ -132,32 +135,25 @@ export default function Checklist() {
   const [store, setStore] = useState<Store>(() => load());
   useEffect(() => save(store), [store]);
 
-  // ====== ここから同期の差し込み（Setのみ） ======
-  // 差分のマージ（ChecklistSetRow → 既存ローカル構造）
+  // ====== ここから同期（Set + Action）差し込み ======
+  // Set の差分をローカルへマージ
   const applySetDiffs = (rows: ChecklistSetRow[]) => {
     setStore((prev) => {
-      // 既存配列を Map に展開（id→index）
       const idxMap = new Map(prev.sets.map((s, i) => [s.id, i]));
       let sets = prev.sets.slice();
       let current = prev.current;
 
       for (const row of rows) {
-        const at = row.updated_at ?? 0;
-
         if (row.deleted_at) {
-          // 削除：あれば消す
           const i = idxMap.get(row.id);
           if (i !== undefined) {
+            const removedId = sets[i].id;
             sets.splice(i, 1);
             idxMap.delete(row.id);
             // current の整合
-            if (current?.setId === row.id) {
+            if (current?.setId === removedId) {
               const nextSet = sets[0];
-              if (nextSet) {
-                current = { setId: nextSet.id, index: 0, runId: uid() };
-              } else {
-                current = undefined;
-              }
+              current = nextSet ? { setId: nextSet.id, index: 0, runId: uid() } : undefined;
             }
             // インデックス再構築
             for (let k = i; k < sets.length; k++) idxMap.set(sets[k].id, k);
@@ -165,23 +161,18 @@ export default function Checklist() {
           continue;
         }
 
-        // upsert：存在チェック
         const i = idxMap.get(row.id);
         if (i === undefined) {
-          // 新規：空アクションで作る（Action 同期は次ステップ）
           const created: ChecklistSet = {
             id: row.id,
             title: row.title,
             actions: [],
-            createdAt: at || now(),
+            createdAt: row.updated_at ?? now(),
           };
           sets = [...sets, created];
           idxMap.set(row.id, sets.length - 1);
         } else {
-          // 既存：title をサーバ版で上書き（Set内の actions は保持）
           const exists = sets[i];
-          // 簡易な新旧比較：createdAt を「最後に見たサーバ時刻」の代わりに使わない
-          // → サーバの updated_at が真なら信頼して更新
           sets[i] = { ...exists, title: row.title };
         }
       }
@@ -190,12 +181,71 @@ export default function Checklist() {
     });
   };
 
+  // Action の差分をローカルへマージ
+  const applyActionDiffs = (rows: ChecklistActionRow[]) => {
+    if (!rows || rows.length === 0) return;
+    setStore((prev) => {
+      // set_id ごとにまとめる
+      const bySet = new Map<string, ChecklistActionRow[]>();
+      for (const r of rows) {
+        if (!bySet.has(r.set_id)) bySet.set(r.set_id, []);
+        bySet.get(r.set_id)!.push(r);
+      }
+
+      const nextSets = prev.sets.map((set) => {
+        const patches = bySet.get(set.id);
+        if (!patches || patches.length === 0) return set;
+
+        // 既存 actions のインデックス
+        const idx = new Map(set.actions.map((a, i) => [a.id, i]));
+        let actions = set.actions.slice();
+
+        for (const r of patches) {
+          if (r.deleted_at) {
+            const i = idx.get(r.id);
+            if (i !== undefined) {
+              actions.splice(i, 1);
+              idx.clear();
+              actions.forEach((a, k) => idx.set(a.id, k));
+            }
+            continue;
+          }
+          const i = idx.get(r.id);
+          if (i === undefined) {
+            actions.push({
+              id: r.id,
+              title: r.title,
+              createdAt: r.updated_at ?? now(),
+              order: r.order ?? actions.length,
+            });
+            idx.set(r.id, actions.length - 1);
+          } else {
+            actions[i] = {
+              ...actions[i],
+              title: r.title,
+              order: r.order ?? actions[i].order,
+            };
+          }
+        }
+
+        // 並び順を正規化
+        actions = actions
+          .slice()
+          .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+          .map((a, i) => ({ ...a, order: i }));
+
+        return { ...set, actions };
+      });
+
+      return { ...prev, sets: nextSets };
+    });
+  };
+
   // 初回 pull ＆ ポーリング開始
   useEffect(() => {
     const abort = new AbortController();
     const deviceId = getDeviceId();
 
-    // 初回即時 pull
     (async () => {
       try {
         const res = await fetch(
@@ -205,6 +255,7 @@ export default function Checklist() {
         if (res.ok) {
           const json = (await res.json()) as PullResponse;
           applySetDiffs(json.diffs.checklist_sets);
+          applyActionDiffs(json.diffs.checklist_actions); // ★ Action も反映
           setSince(json.server_time_ms);
         }
       } catch (e) {
@@ -212,7 +263,6 @@ export default function Checklist() {
       }
     })();
 
-    // ポーリング開始（15秒）
     startChecklistPolling({
       userId: USER_ID,
       deviceId,
@@ -220,7 +270,7 @@ export default function Checklist() {
       setSince,
       applyDiffs: (diffs) => {
         applySetDiffs(diffs.checklist_sets);
-        // checklist_actions は次ステップで反映
+        applyActionDiffs(diffs.checklist_actions); // ★ ポーリング反映
       },
       intervalMs: 15000,
       abortSignal: abort.signal,
@@ -259,13 +309,13 @@ export default function Checklist() {
     const title = prompt("新しいチェックリストのタイトル", "新しいルーティン");
     if (!title) return;
     const newSet: ChecklistSet = { id: uid(), title, actions: [], createdAt: now() };
-    // ローカル更新即時
+    // ローカル即時
     setStore((s) => ({
       ...s,
       sets: [...s.sets, newSet],
       current: { setId: newSet.id, index: 0, runId: uid() },
     }));
-    // サーバへ upsert（非同期・失敗はコンソール警告）
+    // サーバ upsert
     (async () => {
       try {
         await upsertChecklistSet({
@@ -321,7 +371,7 @@ export default function Checklist() {
       current: nextSet ? { setId: nextSet.id, index: 0, runId: uid() } : undefined,
     }));
 
-    // サーバへソフトデリート
+    // サーバ（ソフトデリート）
     (async () => {
       try {
         await upsertChecklistSet({
@@ -338,11 +388,16 @@ export default function Checklist() {
     })();
   };
 
-  /* ====== 行動編集（ローカルのみ：次ステップで同期対応） ====== */
+  /* ====== 行動編集（同期対応） ====== */
   const addAction = () => {
     if (!currentSet) return;
     const title = prompt("新しい行動名", "新しい行動");
     if (!title) return;
+
+    const newId = uid();
+    const order = currentSet.actions.length;
+
+    // ローカル
     setStore((s) => ({
       ...s,
       sets: s.sets.map((set) =>
@@ -352,21 +407,40 @@ export default function Checklist() {
               ...set,
               actions: [
                 ...set.actions,
-                { id: uid(), title, createdAt: now(), order: set.actions.length },
+                { id: newId, title, createdAt: now(), order },
               ],
             }
       ),
     }));
+
+    // サーバ
+    (async () => {
+      try {
+        await upsertChecklistAction({
+          userId: USER_ID,
+          deviceId: getDeviceId(),
+          id: newId,
+          set_id: currentSet.id,
+          title,
+          order,
+        });
+      } catch (e) {
+        console.warn("[sync] addAction failed:", e);
+      }
+    })();
   };
+
   const renameAction = (id: ID) => {
     const a = currentSet?.actions.find((x) => x.id === id);
     if (!a) return;
     const title = prompt("名称変更", a.title);
     if (!title) return;
+
+    // ローカル
     setStore((s) => ({
       ...s,
       sets: s.sets.map((set) =>
-        set.id !== currentSet.id
+        set.id !== currentSet!.id
           ? set
           : {
               ...set,
@@ -374,10 +448,32 @@ export default function Checklist() {
             }
       ),
     }));
+
+    // サーバ
+    (async () => {
+      try {
+        await upsertChecklistAction({
+          userId: USER_ID,
+          deviceId: getDeviceId(),
+          id,
+          set_id: currentSet!.id,
+          title,
+          order: a.order,
+        });
+      } catch (e) {
+        console.warn("[sync] renameAction failed:", e);
+      }
+    })();
   };
+
   const removeAction = (id: ID) => {
     if (!currentSet) return;
     if (!confirm("この行動を削除しますか？")) return;
+
+    const target = currentSet.actions.find((x) => x.id === id);
+    if (!target) return;
+
+    // ローカル
     setStore((s) => ({
       ...s,
       sets: s.sets.map((set) =>
@@ -393,7 +489,24 @@ export default function Checklist() {
       current:
         s.current?.setId === currentSet.id ? { ...s.current!, index: 0 } : s.current,
     }));
+
+    // サーバ（ソフトデリート）
+    (async () => {
+      try {
+        await deleteChecklistAction({
+          userId: USER_ID,
+          deviceId: getDeviceId(),
+          id,
+          set_id: currentSet.id,
+          title: target.title,
+          order: target.order,
+        });
+      } catch (e) {
+        console.warn("[sync] deleteAction failed:", e);
+      }
+    })();
   };
+
   const moveAction = (id: ID, dir: -1 | 1) => {
     if (!currentSet) return;
     const list = actionsSorted;
@@ -401,10 +514,13 @@ export default function Checklist() {
       const idx = list.findIndex((x) => x.id === id);
       const j = idx + dir;
       if (idx < 0 || j < 0 || j >= list.length) break nextTick;
+
       const swapped = list.slice();
       const tmp = swapped[idx];
       swapped[idx] = swapped[j];
       swapped[j] = tmp;
+
+      // ローカル
       setStore((s) => ({
         ...s,
         sets: s.sets.map((set) =>
@@ -415,6 +531,26 @@ export default function Checklist() {
         current:
           s.current?.setId === currentSet.id ? { ...s.current!, index: j } : s.current,
       }));
+
+      // サーバ（新しい order を全件 upsert）
+      (async () => {
+        try {
+          const deviceId = getDeviceId();
+          for (let k = 0; k < swapped.length; k++) {
+            const a = swapped[k];
+            await upsertChecklistAction({
+              userId: USER_ID,
+              deviceId,
+              id: a.id,
+              set_id: currentSet.id,
+              title: a.title,
+              order: k,
+            });
+          }
+        } catch (e) {
+          console.warn("[sync] reorder actions failed:", e);
+        }
+      })();
     }
   };
 
@@ -554,7 +690,7 @@ export default function Checklist() {
     }));
   };
 
-  // 行動を「先延ばしへ」：走行中の行動ログを閉じ、同じ行動の直前先延ばしに戻す
+  // 行動を「先延ばしへ」
   const procrastinateNow = () => {
     const endedAt = now();
     setStore((prev) => {
@@ -580,7 +716,6 @@ export default function Checklist() {
         runs,
         current: {
           ...cur,
-          // ページはそのまま（同じ行動の直前先延ばしへ）
           running: undefined,
           procrastinating: { fromActionId: actionId, startAt: endedAt },
         },

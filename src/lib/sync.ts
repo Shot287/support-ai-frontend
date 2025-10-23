@@ -1,165 +1,214 @@
 // frontend/src/lib/sync.ts
-// 最小構成：checklist のリアルタイム同期（ポーリング）クライアント
-// - バックエンドの /api/sync/pull-batch / push-batch を叩く
-// - /api/b/[...path] 経由でバックエンドへプロキシ（x-app-key はプロキシ側で付与される想定）
-
-export type Ms = number;
-
+// --- 型 ---
 export type ChecklistSetRow = {
   id: string;
   user_id: string;
   title: string;
   order: number;
-  updated_at: Ms;
+  updated_at: number;
   updated_by: string;
-  deleted_at: Ms | null;
+  deleted_at: number | null;
 };
 
 export type ChecklistActionRow = {
   id: string;
   user_id: string;
   set_id: string;
-  label: string;
-  done: boolean;
+  title: string;
   order: number;
-  updated_at: Ms;
+  updated_at: number;
   updated_by: string;
-  deleted_at: Ms | null;
+  deleted_at: number | null;
 };
 
-// pull のレスポンス
 export type PullResponse = {
-  server_time_ms: Ms;
+  server_time_ms: number;
   diffs: {
     checklist_sets: ChecklistSetRow[];
     checklist_actions: ChecklistActionRow[];
   };
 };
 
-// push のペイロード
-export type ChangeSet = {
-  checklist_sets: Array<{
-    id: string;
-    updated_at: Ms;
-    updated_by: string;
-    deleted_at: Ms | null;
-    data: Partial<Pick<ChecklistSetRow, "title" | "order">>;
-  }>;
-  checklist_actions: Array<{
-    id: string;
-    updated_at: Ms;
-    updated_by: string;
-    deleted_at: Ms | null;
-    data: Partial<Pick<ChecklistActionRow, "set_id" | "label" | "done" | "order">>;
-  }>;
-};
+// --- 共通 ---
+const nowMs = () => Date.now();
 
-const B = "/api/b"; // Next のバックエンドプロキシ（既存: src/app/api/b/[...path]/route.ts）
-
-/** サーバから since 以降の差分を取得 */
-export async function pullSince(userId: string, since: Ms, tables?: string[]): Promise<PullResponse> {
-  const qs = new URLSearchParams({
-    user_id: userId,
-    since: String(since),
-  });
-  if (tables?.length) qs.set("tables", tables.join(","));
-  const res = await fetch(`${B}/api/sync/pull-batch?${qs.toString()}`, {
-    method: "GET",
-    cache: "no-store",
+async function jsonFetch<T = any>(url: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(url, {
+    ...init,
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      ...(init?.headers || {}),
+    },
   });
   if (!res.ok) {
-    throw new Error(`pull-batch failed: ${res.status}`);
+    const text = await res.text().catch(() => "");
+    throw new Error(`HTTP ${res.status}: ${text || res.statusText}`);
   }
   return res.json();
 }
 
-/** ローカル変更をまとめてサーバへ反映 */
-export async function pushBatch(userId: string, deviceId: string, changes: ChangeSet): Promise<void> {
-  const res = await fetch(`${B}/api/sync/push-batch`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json; charset=utf-8",
-    },
-    body: JSON.stringify({
-      user_id: userId,
-      device_id: deviceId,
-      changes,
-    }),
-  });
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`push-batch failed: ${res.status} ${body}`);
-  }
-}
-
-/**
- * ポーリング同期の最小ユーティリティ
- * - ローカルの applyDiffs を呼び出してUIに反映
- * - 失敗しても次回に再挑戦（指数バックオフ簡易版）
- */
-export async function startChecklistPolling(params: {
+function pushBatchPayload(params: {
   userId: string;
   deviceId: string;
-  getSince: () => Ms;                 // 直近 pull の server_time_ms を返す getter（未pull は 0）
-  setSince: (ms: Ms) => void;         // 最新 server_time_ms を保存する setter
-  applyDiffs: (diffs: PullResponse["diffs"]) => void; // 取得した差分をローカル状態へ反映
-  intervalMs?: number;                // 既定 15000ms
-  abortSignal?: AbortSignal;          // ページ離脱で止める用
-}): Promise<void> {
-  const {
-    userId,
-    getSince,
-    setSince,
-    applyDiffs,
-    intervalMs = 15000,
-    abortSignal,
-  } = params;
-
-  let delay = intervalMs;
-  while (!abortSignal?.aborted) {
-    try {
-      const since = getSince() ?? 0;
-      const res = await pullSince(userId, since, ["checklist_sets", "checklist_actions"]);
-      // 差分を適用
-      applyDiffs(res.diffs);
-      // since を前進
-      setSince(res.server_time_ms);
-      // 正常時は既定間隔
-      delay = intervalMs;
-    } catch (e) {
-      console.error("[sync] pull failed:", e);
-      // 失敗時は簡易バックオフ（最大60秒）
-      delay = Math.min(Math.round((delay || intervalMs) * 1.8), 60000);
-    }
-    // 待機（中断可能）
-    await new Promise<void>((ok) => {
-      const t = setTimeout(() => ok(), delay);
-      abortSignal?.addEventListener("abort", () => {
-        clearTimeout(t);
-        ok();
-      }, { once: true });
-    });
-  }
+  sets?: Array<{
+    id: string;
+    updated_at: number;
+    updated_by: string;
+    deleted_at: number | null;
+    data: { title?: string; order?: number };
+  }>;
+  actions?: Array<{
+    id: string;
+    set_id: string;
+    updated_at: number;
+    updated_by: string;
+    deleted_at: number | null;
+    data: { title?: string; order?: number };
+  }>;
+}) {
+  const { userId, deviceId, sets = [], actions = [] } = params;
+  return {
+    user_id: userId,
+    device_id: deviceId,
+    changes: {
+      checklist_sets: sets,
+      checklist_actions: actions,
+    },
+  };
 }
 
-/**
- * 変更1件を push するヘルパ（ChecklistSet の例）
- * - 楽に使えるよう最小引数だけ
- */
-export async function upsertChecklistSet(args: {
-  userId: string; deviceId: string;
-  id: string; title: string; order: number;
-  deleted_at?: Ms | null;
+// --- Pull（差分取得） ---
+export async function pullBatch(userId: string, since: number, tables: string[] = ["checklist_sets","checklist_actions"]) {
+  const qs = new URLSearchParams({
+    user_id: userId,
+    since: String(since || 0),
+    tables: tables.join(","),
+  });
+  return jsonFetch<PullResponse>(`/api/b/api/sync/pull-batch?${qs.toString()}`, { cache: "no-store" });
+}
+
+// --- ポーリング開始 ---
+export function startChecklistPolling(opts: {
+  userId: string;
+  deviceId: string;
+  getSince: () => number;
+  setSince: (ms: number) => void;
+  applyDiffs: (diffs: PullResponse["diffs"]) => void;
+  intervalMs?: number;
+  abortSignal?: AbortSignal;
 }) {
-  const now = Date.now();
-  await pushBatch(args.userId, args.deviceId, {
-    checklist_sets: [{
-      id: args.id,
-      updated_at: now,
-      updated_by: args.deviceId,
-      deleted_at: args.deleted_at ?? null,
-      data: { title: args.title, order: args.order },
-    }],
-    checklist_actions: [],
+  const {
+    userId, getSince, setSince, applyDiffs,
+    intervalMs = 15000, abortSignal,
+  } = opts;
+
+  let timer: any;
+
+  async function tick() {
+    try {
+      const resp = await pullBatch(userId, getSince());
+      applyDiffs(resp.diffs);
+      setSince(resp.server_time_ms);
+    } catch (e) {
+      console.warn("[sync] pull failed:", e);
+    }
+    schedule();
+  }
+
+  function schedule() {
+    if (abortSignal?.aborted) return;
+    timer = setTimeout(tick, intervalMs);
+  }
+
+  // 最初のスケジュール
+  schedule();
+
+  abortSignal?.addEventListener("abort", () => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+// --- Set の upsert/soft-delete ---
+export async function upsertChecklistSet(p: {
+  userId: string;
+  deviceId: string;
+  id: string;
+  title: string;
+  order: number;
+  deleted_at?: number | null;
+}) {
+  const payload = pushBatchPayload({
+    userId: p.userId,
+    deviceId: p.deviceId,
+    sets: [
+      {
+        id: p.id,
+        updated_at: nowMs(),
+        updated_by: p.deviceId,
+        deleted_at: p.deleted_at ?? null,
+        data: { title: p.title, order: p.order },
+      },
+    ],
+  });
+  await jsonFetch(`/api/b/api/sync/push-batch`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+// --- Action の upsert/delete ---
+export async function upsertChecklistAction(p: {
+  userId: string;
+  deviceId: string;
+  id: string;
+  set_id: string;
+  title: string;
+  order: number;
+}) {
+  const payload = pushBatchPayload({
+    userId: p.userId,
+    deviceId: p.deviceId,
+    actions: [
+      {
+        id: p.id,
+        set_id: p.set_id,
+        updated_at: nowMs(),
+        updated_by: p.deviceId,
+        deleted_at: null,
+        data: { title: p.title, order: p.order },
+      },
+    ],
+  });
+  await jsonFetch(`/api/b/api/sync/push-batch`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteChecklistAction(p: {
+  userId: string;
+  deviceId: string;
+  id: string;
+  set_id: string;
+  title?: string; // サーバ側の upsert 仕様上、残しても良い
+  order?: number;
+}) {
+  const payload = pushBatchPayload({
+    userId: p.userId,
+    deviceId: p.deviceId,
+    actions: [
+      {
+        id: p.id,
+        set_id: p.set_id,
+        updated_at: nowMs(),
+        updated_by: p.deviceId,
+        deleted_at: nowMs(),
+        data: { title: p.title, order: p.order },
+      },
+    ],
+  });
+  await jsonFetch(`/api/b/api/sync/push-batch`, {
+    method: "POST",
+    body: JSON.stringify(payload),
   });
 }
