@@ -249,7 +249,7 @@ export default function Checklist() {
     (async () => {
       try {
         const res = await fetch(
-          `/api/sync/pull-batch?user_id=${USER_ID}&since=${getSince()}&tables=checklist_sets,checklist_actions`,
+          `/api/b/api/sync/pull-batch?user_id=${USER_ID}&since=${getSince()}&tables=checklist_sets,checklist_actions`,
           { cache: "no-store" }
         );
         if (res.ok) {
