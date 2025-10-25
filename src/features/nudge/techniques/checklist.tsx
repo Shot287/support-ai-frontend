@@ -5,10 +5,12 @@ import { useEffect, useMemo, useState } from "react";
 
 // ↓ 同期ユーティリティ（Set + Action を使う）
 import {
-  startChecklistPolling,
+  startSmartSync,
+  pullBatch,
   upsertChecklistSet,
   upsertChecklistAction,
   deleteChecklistAction,
+  forceSyncAsMaster,
   type PullResponse,
   type ChecklistSetRow,
   type ChecklistActionRow,
@@ -133,11 +135,14 @@ function save(s: Store) {
 /* ========= 本体 ========= */
 export default function Checklist() {
   const [store, setStore] = useState<Store>(() => load());
+  const [syncing, setSyncing] = useState(false); // 画面内ミニ同期ボタン用メッセージ
+  const [msg, setMsg] = useState<string | null>(null);
   useEffect(() => save(store), [store]);
 
   // ====== ここから同期（Set + Action）差し込み ======
   // Set の差分をローカルへマージ
   const applySetDiffs = (rows: ChecklistSetRow[]) => {
+    if (!rows || rows.length === 0) return;
     setStore((prev) => {
       const idxMap = new Map(prev.sets.map((s, i) => [s.id, i]));
       let sets = prev.sets.slice();
@@ -241,42 +246,40 @@ export default function Checklist() {
     });
   };
 
-  // 初回 pull ＆ ポーリング開始
+  // 初回 pull（安全のため since=local）＆ スマート同期（SSE→ポーリング）
   useEffect(() => {
     const abort = new AbortController();
     const deviceId = getDeviceId();
 
     (async () => {
       try {
-        const res = await fetch(
-          `/api/b/api/sync/pull-batch?user_id=${USER_ID}&since=${getSince()}&tables=checklist_sets,checklist_actions`,
-          { cache: "no-store" }
-        );
-        if (res.ok) {
-          const json = (await res.json()) as PullResponse;
-          applySetDiffs(json.diffs.checklist_sets);
-          applyActionDiffs(json.diffs.checklist_actions); // ★ Action も反映
-          setSince(json.server_time_ms);
-        }
+        const json = await pullBatch(USER_ID, getSince(), ["checklist_sets", "checklist_actions"]);
+        applySetDiffs(json.diffs.checklist_sets);
+        applyActionDiffs(json.diffs.checklist_actions);
+        setSince(json.server_time_ms);
       } catch (e) {
         console.error("[sync] initial pull failed:", e);
       }
     })();
 
-    startChecklistPolling({
+    const ctl = startSmartSync({
       userId: USER_ID,
       deviceId,
       getSince,
       setSince,
-      applyDiffs: (diffs) => {
+      applyDiffs: (diffs: PullResponse["diffs"]) => {
         applySetDiffs(diffs.checklist_sets);
-        applyActionDiffs(diffs.checklist_actions); // ★ ポーリング反映
+        applyActionDiffs(diffs.checklist_actions);
       },
-      intervalMs: 15000,
+      fallbackPolling: true,
+      pollingIntervalMs: 30000,
       abortSignal: abort.signal,
     });
 
-    return () => abort.abort();
+    return () => {
+      abort.abort();
+      ctl.stop();
+    };
   }, []);
   // ====== 同期差し込み ここまで ======
 
@@ -581,7 +584,7 @@ export default function Checklist() {
     return run;
   };
 
-  // チェックリスト全体の開始（1番目の行動開始までを「先延ばし」として計測）
+  // チェックリスト全体の開始
   const startChecklist = () => {
     if (!currentSet || actionsSorted.length === 0) {
       alert("先に行動を追加してください。");
@@ -612,7 +615,7 @@ export default function Checklist() {
         if (r.id !== runId) return r;
         const next = { ...r };
 
-        // 実行中の行動があれば終了だけ確定（次の先延ばしは開始しない）
+        // 実行中の行動があれば終了だけ確定
         if (cur.running) {
           const i = next.actions.findIndex(
             (l) => l.actionId === cur.running!.actionId && !l.endAt
@@ -647,7 +650,7 @@ export default function Checklist() {
   };
 
   const startAction = (a: Action) => {
-    // 先延ばし中なら、ここで終了してログ確定
+    // 先延ばし中なら確定
     const p = store.current?.procrastinating;
     if (p) {
       const endedAt = now();
@@ -827,8 +830,40 @@ export default function Checklist() {
           <button onClick={deleteSet} className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50">
             セット削除
           </button>
+
+          {/* ミニ同期（この端末を正に）— チェックリストだけ即反映したい時のショートカット */}
+          <button
+            onClick={async () => {
+              try {
+                setMsg(null);
+                setSyncing(true);
+                await forceSyncAsMaster({
+                  userId: USER_ID,
+                  deviceId: getDeviceId(),
+                  getSince,
+                  setSince,
+                  applyDiffs: (diffs) => {
+                    applySetDiffs(diffs.checklist_sets);
+                    applyActionDiffs(diffs.checklist_actions);
+                  },
+                });
+                setMsg("この端末の内容でチェックリストを同期しました。");
+              } catch (e: any) {
+                setMsg(`同期に失敗：${e?.message ?? e}`);
+              } finally {
+                setSyncing(false);
+              }
+            }}
+            disabled={syncing}
+            className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50 disabled:opacity-50"
+            title="この端末の内容を正としてチェックリストを即時同期します（全機能の一括同期はホーム画面のボタンから）"
+          >
+            {syncing ? "同期中…" : "🔄 この端末で同期"}
+          </button>
         </div>
       </div>
+
+      {msg && <p className="text-xs text-gray-600">{msg}</p>}
 
       {/* チェックリスト全体開始/終了 */}
       <section className="rounded-2xl border p-4 shadow-sm">
