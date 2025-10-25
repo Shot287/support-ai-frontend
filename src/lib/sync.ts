@@ -35,6 +35,10 @@ const nowMs = () => Date.now();
 const DEFAULT_TABLES = ["checklist_sets", "checklist_actions"] as const;
 export type TableName = (typeof DEFAULT_TABLES)[number];
 
+// 🔐 固定キー（Render の APP_KEY と同じ値を使用）※必ず encodeURIComponent でエンコードしてURLに付与
+const APP_KEY = "Utl3xA429JRn+BdOdiTDPOxU30ppOkMi8NMOkcCzSvo=";
+const APP_KEY_Q = `app_key=${encodeURIComponent(APP_KEY)}`;
+
 async function jsonFetch<T = any>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
     ...init,
@@ -82,7 +86,6 @@ function pushBatchPayload(params: {
 
 function buildTablesParam(tables?: readonly string[] | readonly TableName[]) {
   const list = tables && tables.length ? tables : DEFAULT_TABLES;
-  // readonly配列でも join できるので string[] への代入を避ける
   return Array.from(list).join(",");
 }
 
@@ -97,9 +100,9 @@ export async function pullBatch(
     since: String(since || 0),
     tables: buildTablesParam(tables),
   });
-  return jsonFetch<PullResponse>(`/api/b/api/sync/pull-batch?${qs.toString()}`, {
-    cache: "no-store",
-  });
+  // 🔑 必ず app_key を付与
+  const url = `/api/b/api/sync/pull-batch?${qs.toString()}&${APP_KEY_Q}`;
+  return jsonFetch<PullResponse>(url, { cache: "no-store" });
 }
 
 // --- ポーリング開始 ---
@@ -141,7 +144,6 @@ export function startChecklistPolling(opts: {
     timer = setTimeout(tick, intervalMs);
   }
 
-  // 最初のスケジュール
   schedule();
 
   abortSignal?.addEventListener("abort", () => {
@@ -173,7 +175,7 @@ export function startRealtimeSync(opts: {
     abortSignal,
   } = opts;
 
-  // SSR を避ける（client component想定だが保険）
+  // SSR 保険
   if (typeof window === "undefined") {
     return { stop() {} };
   }
@@ -183,7 +185,8 @@ export function startRealtimeSync(opts: {
     since: String(getSince() || 0),
     tables: buildTablesParam(tables),
   });
-  const url = `/api/b/api/sync/stream-sse?${qs.toString()}`;
+  // 🔑 SSE の URL にも app_key を付与（ヘッダー不可のためクエリで渡す）
+  const url = `/api/b/api/sync/stream-sse?${qs.toString()}&${APP_KEY_Q}`;
 
   const es = new EventSource(url, { withCredentials: false });
 
@@ -298,7 +301,8 @@ export async function upsertChecklistSet(p: {
       },
     ],
   });
-  await jsonFetch(`/api/b/api/sync/push-batch`, {
+  // 🔑 push もクエリで鍵を付与
+  await jsonFetch(`/api/b/api/sync/push-batch?${APP_KEY_Q}`, {
     method: "POST",
     body: JSON.stringify(payload),
   });
@@ -327,7 +331,7 @@ export async function upsertChecklistAction(p: {
       },
     ],
   });
-  await jsonFetch(`/api/b/api/sync/push-batch`, {
+  await jsonFetch(`/api/b/api/sync/push-batch?${APP_KEY_Q}`, {
     method: "POST",
     body: JSON.stringify(payload),
   });
@@ -355,7 +359,7 @@ export async function deleteChecklistAction(p: {
       },
     ],
   });
-  await jsonFetch(`/api/b/api/sync/push-batch`, {
+  await jsonFetch(`/api/b/api/sync/push-batch?${APP_KEY_Q}`, {
     method: "POST",
     body: JSON.stringify(payload),
   });
