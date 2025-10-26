@@ -3,7 +3,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-// ↓ 同期ユーティリティ（Set + Action を使う）
+// 同期ユーティリティ（Set + Action を使う）
 import {
   startSmartSync,
   pullBatch,
@@ -24,7 +24,8 @@ type Action = {
   id: ID;
   title: string;
   createdAt: number;
-  order: number; // 並び順
+  order: number;      // 並び順
+  isDone?: boolean;   // ローカル表示用（同期はまだしない）
 };
 
 type ChecklistSet = {
@@ -38,11 +39,11 @@ type ActionLog = {
   actionId: ID;
   startAt: number;
   endAt?: number;
-  durationMs?: number; // end時に確定
+  durationMs?: number; // end時に確定（ローカル保持）
 };
 
 type ProcrastinationLog = {
-  fromActionId: ID | null; // 直前に終了した行動ID（最初の待機は null）
+  fromActionId: ID | null;
   startAt: number;
   endAt?: number;
   durationMs?: number;
@@ -113,7 +114,7 @@ function load(): Store {
         "風呂","歯磨き","服を着る","シェイカーに水を入れる","2階に行く",
       ];
       const actions: Action[] = titles.map((t, i) => ({
-        id: uid(), title: t, createdAt: now(), order: i,
+        id: uid(), title: t, createdAt: now(), order: i, isDone: false,
       }));
       return {
         sets: [{ id: setId, title: "ナイトルーティン", actions, createdAt: now() }],
@@ -123,7 +124,16 @@ function load(): Store {
       };
     }
     const parsed = JSON.parse(raw) as Store;
-    return parsed?.version ? parsed : { sets: [], runs: [], version: 1 };
+    // 後方互換（isDoneが未定義の過去データに false を補う）
+    const normalized: Store = {
+      ...parsed,
+      sets: (parsed.sets ?? []).map(s => ({
+        ...s,
+        actions: (s.actions ?? []).map(a => ({ ...a, isDone: a.isDone ?? false })),
+      })),
+      version: 1,
+    };
+    return normalized?.version ? normalized : { sets: [], runs: [], version: 1 };
   } catch {
     return { sets: [], runs: [], version: 1 };
   }
@@ -155,12 +165,10 @@ export default function Checklist() {
             const removedId = sets[i].id;
             sets.splice(i, 1);
             idxMap.delete(row.id);
-            // current の整合
             if (current?.setId === removedId) {
               const nextSet = sets[0];
               current = nextSet ? { setId: nextSet.id, index: 0, runId: uid() } : undefined;
             }
-            // インデックス再構築
             for (let k = i; k < sets.length; k++) idxMap.set(sets[k].id, k);
           }
           continue;
@@ -186,11 +194,10 @@ export default function Checklist() {
     });
   };
 
-  // Action の差分をローカルへマージ
+  // Action の差分をローカルへマージ（サーバからは is_done を扱わない）
   const applyActionDiffs = (rows: ChecklistActionRow[]) => {
     if (!rows || rows.length === 0) return;
     setStore((prev) => {
-      // set_id ごとにまとめる
       const bySet = new Map<string, ChecklistActionRow[]>();
       for (const r of rows) {
         if (!bySet.has(r.set_id)) bySet.set(r.set_id, []);
@@ -201,7 +208,6 @@ export default function Checklist() {
         const patches = bySet.get(set.id);
         if (!patches || patches.length === 0) return set;
 
-        // 既存 actions のインデックス
         const idx = new Map(set.actions.map((a, i) => [a.id, i]));
         let actions = set.actions.slice();
 
@@ -221,19 +227,20 @@ export default function Checklist() {
               id: r.id,
               title: r.title,
               createdAt: r.updated_at ?? now(),
-              order: r.order ?? actions.length,
+              order: (r as any).order ?? actions.length, // order は型にいる想定
+              isDone: false, // 新規は未完了（ローカル表示用）
             });
             idx.set(r.id, actions.length - 1);
           } else {
             actions[i] = {
               ...actions[i],
               title: r.title,
-              order: r.order ?? actions[i].order,
+              order: (r as any).order ?? actions[i].order,
+              // isDone はローカル保持（サーバ非同期）
             };
           }
         }
 
-        // 並び順を正規化
         actions = actions
           .slice()
           .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
@@ -246,7 +253,7 @@ export default function Checklist() {
     });
   };
 
-  // 初回 pull（安全のため since=local）＆ スマート同期（SSE→ポーリング）
+  // 初回 pull ＋ スマート同期（SSE→ポーリング）
   useEffect(() => {
     const abort = new AbortController();
     const deviceId = getDeviceId();
@@ -312,13 +319,11 @@ export default function Checklist() {
     const title = prompt("新しいチェックリストのタイトル", "新しいルーティン");
     if (!title) return;
     const newSet: ChecklistSet = { id: uid(), title, actions: [], createdAt: now() };
-    // ローカル即時
     setStore((s) => ({
       ...s,
       sets: [...s.sets, newSet],
       current: { setId: newSet.id, index: 0, runId: uid() },
     }));
-    // サーバ upsert
     (async () => {
       try {
         await upsertChecklistSet({
@@ -326,23 +331,22 @@ export default function Checklist() {
           deviceId: getDeviceId(),
           id: newSet.id,
           title: newSet.title,
-          order: store.sets.length, // 末尾
+          order: store.sets.length,
         });
       } catch (e) {
         console.warn("[sync] upsert new set failed:", e);
       }
     })();
   };
+
   const renameSet = () => {
     if (!currentSet) return;
     const title = prompt("タイトル変更", currentSet.title);
     if (!title) return;
-    // ローカル即時
     setStore((s) => ({
       ...s,
       sets: s.sets.map((x) => (x.id === currentSet.id ? { ...x, title } : x)),
     }));
-    // サーバ upsert
     (async () => {
       try {
         const order = store.sets.findIndex((s) => s.id === currentSet.id);
@@ -358,6 +362,7 @@ export default function Checklist() {
       }
     })();
   };
+
   const deleteSet = () => {
     if (!currentSet) return;
     if (store.sets.length <= 1) return alert("少なくとも1つのセットが必要です。");
@@ -367,14 +372,12 @@ export default function Checklist() {
     const nextSets = store.sets.filter((x) => x.id !== deletingId);
     const nextSet = nextSets[0];
 
-    // ローカル即時
     setStore((s) => ({
       ...s,
       sets: nextSets,
       current: nextSet ? { setId: nextSet.id, index: 0, runId: uid() } : undefined,
     }));
 
-    // サーバ（ソフトデリート）
     (async () => {
       try {
         await upsertChecklistSet({
@@ -400,7 +403,6 @@ export default function Checklist() {
     const newId = uid();
     const order = currentSet.actions.length;
 
-    // ローカル
     setStore((s) => ({
       ...s,
       sets: s.sets.map((set) =>
@@ -410,13 +412,12 @@ export default function Checklist() {
               ...set,
               actions: [
                 ...set.actions,
-                { id: newId, title, createdAt: now(), order },
+                { id: newId, title, createdAt: now(), order, isDone: false },
               ],
             }
       ),
     }));
 
-    // サーバ
     (async () => {
       try {
         await upsertChecklistAction({
@@ -426,6 +427,7 @@ export default function Checklist() {
           set_id: currentSet.id,
           title,
           order,
+          // is_done は型未定義のため送らない（ローカル表示で管理）
         });
       } catch (e) {
         console.warn("[sync] addAction failed:", e);
@@ -439,7 +441,6 @@ export default function Checklist() {
     const title = prompt("名称変更", a.title);
     if (!title) return;
 
-    // ローカル
     setStore((s) => ({
       ...s,
       sets: s.sets.map((set) =>
@@ -452,7 +453,6 @@ export default function Checklist() {
       ),
     }));
 
-    // サーバ
     (async () => {
       try {
         await upsertChecklistAction({
@@ -476,7 +476,6 @@ export default function Checklist() {
     const target = currentSet.actions.find((x) => x.id === id);
     if (!target) return;
 
-    // ローカル
     setStore((s) => ({
       ...s,
       sets: s.sets.map((set) =>
@@ -493,7 +492,6 @@ export default function Checklist() {
         s.current?.setId === currentSet.id ? { ...s.current!, index: 0 } : s.current,
     }));
 
-    // サーバ（ソフトデリート）
     (async () => {
       try {
         await deleteChecklistAction({
@@ -523,7 +521,6 @@ export default function Checklist() {
       swapped[idx] = swapped[j];
       swapped[j] = tmp;
 
-      // ローカル
       setStore((s) => ({
         ...s,
         sets: s.sets.map((set) =>
@@ -535,7 +532,6 @@ export default function Checklist() {
           s.current?.setId === currentSet.id ? { ...s.current!, index: j } : s.current,
       }));
 
-      // サーバ（新しい order を全件 upsert）
       (async () => {
         try {
           const deviceId = getDeviceId();
@@ -615,7 +611,6 @@ export default function Checklist() {
         if (r.id !== runId) return r;
         const next = { ...r };
 
-        // 実行中の行動があれば終了だけ確定
         if (cur.running) {
           const i = next.actions.findIndex(
             (l) => l.actionId === cur.running!.actionId && !l.endAt
@@ -625,7 +620,6 @@ export default function Checklist() {
             next.actions[i] = { ...log, endAt: endedAt, durationMs: endedAt - log.startAt };
           }
         }
-        // 先延ばしが開いていれば確定
         if (cur.procrastinating) {
           next.procrastinations = [
             ...next.procrastinations,
@@ -649,8 +643,8 @@ export default function Checklist() {
     });
   };
 
+  // 行動を開始（ローカル isDone を false に）
   const startAction = (a: Action) => {
-    // 先延ばし中なら確定
     const p = store.current?.procrastinating;
     if (p) {
       const endedAt = now();
@@ -677,13 +671,16 @@ export default function Checklist() {
       }));
     }
 
-    // 他の行動が走っていれば終了
     if (running && running.actionId !== a.id) endActionInternal(running.actionId);
 
     ensureRun();
     const t = now();
     setStore((s) => ({
       ...s,
+      sets: s.sets.map(set =>
+        set.id !== currentSet!.id ? set :
+        { ...set, actions: set.actions.map(x => x.id === a.id ? { ...x, isDone: false } : x) }
+      ),
       current: { ...s.current!, running: { actionId: a.id, startAt: t } },
       runs: s.runs.map((r) =>
         r.id !== s.current!.runId
@@ -691,6 +688,22 @@ export default function Checklist() {
           : { ...r, actions: [...r.actions, { actionId: a.id, startAt: t }] }
       ),
     }));
+
+    // サーバへは現状 is_done を送らず、title/order のみ（型互換）
+    (async () => {
+      try {
+        await upsertChecklistAction({
+          userId: USER_ID,
+          deviceId: getDeviceId(),
+          id: a.id,
+          set_id: currentSet!.id,
+          title: a.title,
+          order: a.order,
+        });
+      } catch (e) {
+        console.warn("[sync] startAction upsert failed:", e);
+      }
+    })();
   };
 
   // 行動を「先延ばしへ」
@@ -735,7 +748,6 @@ export default function Checklist() {
       const cur = prev.current;
       const runId = cur.runId;
 
-      // セット内の最後の行動かどうか
       const setForCalc = prev.sets.find((s) => s.id === cur.setId);
       const total = setForCalc ? setForCalc.actions.length : 0;
       const isLast = (cur.index ?? 0) >= Math.max(0, total - 1);
@@ -744,7 +756,6 @@ export default function Checklist() {
         if (run.id !== runId) return run;
         const next = { ...run };
 
-        // 実行中の行動ログを終了
         const logs = next.actions.slice();
         const i = logs.findIndex((l) => l.actionId === actionId && !l.endAt);
         if (i >= 0) {
@@ -753,7 +764,6 @@ export default function Checklist() {
         }
         next.actions = logs;
 
-        // 最後の行動ならこのランを終了
         if (isLast) {
           next.endedAt = endedAt;
         }
@@ -761,19 +771,30 @@ export default function Checklist() {
         return next;
       });
 
+      // 終了したアクションを isDone=true に（ローカル表示）
+      const nextSets = prev.sets.map(set =>
+        set.id !== cur.setId ? set :
+        {
+          ...set,
+          actions: set.actions.map(a =>
+            a.id === actionId ? { ...a, isDone: true } : a
+          ),
+        }
+      );
+
       if (isLast) {
-        // ラン終了：先延ばし開始せず、状態をクリア
         return {
           ...prev,
+          sets: nextSets,
           runs,
           current: { ...cur, running: undefined, procrastinating: undefined },
         };
       }
 
-      // まだ続きがある：ページ送り＋次の行動まで先延ばし開始
       const nextIndex = Math.min((cur.index ?? 0) + 1, Math.max(0, (total ?? 1) - 1));
       return {
         ...prev,
+        sets: nextSets,
         runs,
         current: {
           ...cur,
@@ -783,6 +804,26 @@ export default function Checklist() {
         },
       };
     });
+
+    // サーバへは現状 is_done を送らず、title/order のみ更新（型互換）
+    (async () => {
+      try {
+        const set = store.sets.find(s => s.id === store.current?.setId);
+        const a = set?.actions.find(x => x.id === actionId);
+        if (set && a) {
+          await upsertChecklistAction({
+            userId: USER_ID,
+            deviceId: getDeviceId(),
+            id: a.id,
+            set_id: set.id,
+            title: a.title,
+            order: a.order,
+          });
+        }
+      } catch (e) {
+        console.warn("[sync] endAction upsert failed:", e);
+      }
+    })();
   };
 
   const endAction = () => {
@@ -831,7 +872,7 @@ export default function Checklist() {
             セット削除
           </button>
 
-          {/* ミニ同期（この端末を正に）— チェックリストだけ即反映したい時のショートカット */}
+          {/* ミニ同期（この端末を正に） */}
           <button
             onClick={async () => {
               try {
@@ -925,20 +966,15 @@ export default function Checklist() {
         {action ? (
           <>
             <div className="flex items-start justify-between gap-3">
-              <h2 className="text-xl font-semibold break-words">{action.title}</h2>
+              <h2 className="text-xl font-semibold break-words">
+                {action.title}
+                {action.isDone ? <span className="ml-2 text-xs text-green-600 align-middle">（完了）</span> : null}
+              </h2>
               <div className="flex gap-2">
-                <button onClick={() => moveAction(action.id, -1)} className="rounded-lg border px-2 py-1 text-sm">
-                  ↑
-                </button>
-                <button onClick={() => moveAction(action.id, +1)} className="rounded-lg border px-2 py-1 text-sm">
-                  ↓
-                </button>
-                <button onClick={() => renameAction(action.id)} className="rounded-lg border px-2 py-1 text-sm">
-                  名称変更
-                </button>
-                <button onClick={() => removeAction(action.id)} className="rounded-lg border px-2 py-1 text-sm">
-                  削除
-                </button>
+                <button onClick={() => moveAction(action.id, -1)} className="rounded-lg border px-2 py-1 text-sm">↑</button>
+                <button onClick={() => moveAction(action.id, +1)} className="rounded-lg border px-2 py-1 text-sm">↓</button>
+                <button onClick={() => renameAction(action.id)} className="rounded-lg border px-2 py-1 text-sm">名称変更</button>
+                <button onClick={() => removeAction(action.id)} className="rounded-lg border px-2 py-1 text-sm">削除</button>
               </div>
             </div>
 
@@ -955,7 +991,6 @@ export default function Checklist() {
                   <button onClick={endAction} className="rounded-xl border px-5 py-3 hover:bg-gray-50">
                     終了
                   </button>
-                  {/* 行動中だけ出現：先延ばしへ戻る */}
                   <button
                     onClick={procrastinateNow}
                     className="rounded-xl border px-5 py-3 hover:bg-gray-50"
@@ -1002,21 +1037,13 @@ export default function Checklist() {
                   onClick={() => go(i)}
                   className="text-left underline-offset-2 hover:underline min-w-0 break-words"
                 >
-                  {a.title}
+                  {a.title}{a.isDone ? "（完了）" : ""}
                 </button>
                 <div className="flex gap-1">
-                  <button onClick={() => moveAction(a.id, -1)} className="rounded-lg border px-2 py-1 text-xs">
-                    ↑
-                  </button>
-                  <button onClick={() => moveAction(a.id, +1)} className="rounded-lg border px-2 py-1 text-xs">
-                    ↓
-                  </button>
-                  <button onClick={() => renameAction(a.id)} className="rounded-lg border px-2 py-1 text-xs">
-                    名
-                  </button>
-                  <button onClick={() => removeAction(a.id)} className="rounded-lg border px-2 py-1 text-xs">
-                    削
-                  </button>
+                  <button onClick={() => moveAction(a.id, -1)} className="rounded-lg border px-2 py-1 text-xs">↑</button>
+                  <button onClick={() => moveAction(a.id, +1)} className="rounded-lg border px-2 py-1 text-xs">↓</button>
+                  <button onClick={() => renameAction(a.id)} className="rounded-lg border px-2 py-1 text-xs">名</button>
+                  <button onClick={() => removeAction(a.id)} className="rounded-lg border px-2 py-1 text-xs">削</button>
                 </div>
               </li>
             ))}
