@@ -25,7 +25,7 @@ type Action = {
   title: string;
   createdAt: number;
   order: number;      // 並び順
-  isDone?: boolean;   // ローカル表示用（同期はまだしない）
+  isDone?: boolean;   // ローカル表示用（サーバ未同期）
 };
 
 type ChecklistSet = {
@@ -427,7 +427,6 @@ export default function Checklist() {
           set_id: currentSet.id,
           title,
           order,
-          // is_done は型未定義のため送らない（ローカル表示で管理）
         });
       } catch (e) {
         console.warn("[sync] addAction failed:", e);
@@ -839,7 +838,7 @@ export default function Checklist() {
     <div className="space-y-4">
       {/* セット切替/操作 */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
+        <div className="flex items中心 gap-2">
           <label className="text-sm text-gray-600">チェックリスト：</label>
           <select
             value={currentSet?.id ?? ""}
@@ -982,7 +981,7 @@ export default function Checklist() {
               {!running || running.actionId !== action.id ? (
                 <button
                   onClick={() => startAction(action)}
-                  className="rounded-xl bg-black text-white px-5 py-3"
+                  className="rounded-xl bg黒 text-white px-5 py-3"
                 >
                   開始
                 </button>
