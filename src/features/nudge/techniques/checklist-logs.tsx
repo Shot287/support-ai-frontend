@@ -3,19 +3,38 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+// 同期ユーティリティ（pull/SSE を使う）
+import {
+  startSmartSync,
+  pullBatch,
+  type PullResponse,
+  type ChecklistSetRow,
+  type ChecklistActionRow,
+  type ChecklistActionLogRow, // /lib/sync から型を取得
+} from "@/lib/sync";
+import { getDeviceId } from "@/lib/device";
+
 type ID = string;
 
+/* ===== ローカル表示用の型 ===== */
 type Action = { id: ID; title: string; order: number };
 type ChecklistSet = { id: ID; title: string; actions: Action[]; createdAt: number };
-type ActionLog = { actionId: ID; startAt: number; endAt?: number; durationMs?: number };
-type ProcrastinationLog = { fromActionId: ID | null; startAt: number; endAt?: number; durationMs?: number };
-type Run = {
-  id: ID; setId: ID; startedAt: number; endedAt?: number;
-  actions: ActionLog[]; procrastinations: ProcrastinationLog[];
-};
-type Store = { sets: ChecklistSet[]; runs: Run[]; current?: unknown; version: 1 };
 
-const KEY = "checklist_v1";
+/* ===== 同期ユーティリティ ===== */
+const USER_ID = "demo"; // 本実装ではログインID等に差し替え
+const SINCE_KEY = `support-ai:sync:since:${USER_ID}`;
+const getSince = () => {
+  const v = typeof window !== "undefined" ? localStorage.getItem(SINCE_KEY) : null;
+  return v ? Number(v) : 0;
+};
+const setSince = (ms: number) => {
+  if (typeof window !== "undefined") localStorage.setItem(SINCE_KEY, String(ms));
+};
+
+const uid = () =>
+  typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
 /* ===== JST 日付ユーティリティ ===== */
 function dateToYmdJst(d: Date): string {
@@ -35,128 +54,247 @@ function dayRangeJst(yyyyMmDd: string) {
   const end = Date.parse(`${yyyyMmDd}T23:59:59.999+09:00`);
   return { start, end };
 }
+const fmtTime = (t?: number | null) =>
+  t == null ? "…" : new Date(t).toLocaleTimeString("ja-JP", { hour12: false });
+const fmtDur = (ms?: number | null) =>
+  ms == null ? "—" : `${Math.floor(ms / 60000)}分${Math.floor((ms % 60000) / 1000)}秒`;
 
-/* ====== ストアのロード/セーブ ====== */
-function load(): Store {
-  try {
-    const raw = typeof window !== "undefined" ? localStorage.getItem(KEY) : null;
-    if (!raw) return { sets: [], runs: [], version: 1 };
-    const parsed = JSON.parse(raw) as Store;
-    return parsed?.version ? parsed : { sets: [], runs: [], version: 1 };
-  } catch {
-    return { sets: [], runs: [], version: 1 };
-  }
-}
-function save(s: Store) {
-  if (typeof window !== "undefined") localStorage.setItem(KEY, JSON.stringify(s));
-}
-
-/* ===== 表示用：行動＋直前先延ばし ===== */
+/* ===== 表示行：直前先延ばし + 行動 ===== */
 type Row = {
   actionTitle: string;
   procrast: { startAt?: number; endAt?: number; durationMs?: number } | null;
   action: { startAt: number; endAt?: number; durationMs?: number };
 };
 
+/* ===== state ===== */
+type SetsState = ChecklistSet[];
+type LogsState = ChecklistActionLogRow[];
+
 export default function ChecklistLogs() {
-  const [store, setStore] = useState<Store>(() => load());
-  useEffect(() => {
-    const on = () => setStore(load());
-    window.addEventListener("storage", on);
-    return () => window.removeEventListener("storage", on);
-  }, []);
+  const [sets, setSets] = useState<SetsState>([]);
+  const [logs, setLogs] = useState<LogsState>([]);
+  const [msg, setMsg] = useState<string | null>(null);
 
   const [date, setDate] = useState<string>(() => dateToYmdJst(new Date()));
 
-  const setMap = useMemo(
-    () => new Map(store.sets.map((s) => [s.id, s] as const)),
-    [store.sets]
-  );
-
-  const range = useMemo(() => dayRangeJst(date), [date]);
-
-  // 選択日に重なるラン
-  const runs = useMemo(() => {
-    const { start, end } = range;
-    const overlap = (t?: number) => t != null && t >= start && t <= end;
-    return store.runs.filter((r) => {
-      const hitAction = r.actions.some((a) => overlap(a.startAt) || overlap(a.endAt));
-      const hitP = r.procrastinations.some((p) => overlap(p.startAt) || overlap(p.endAt));
-      return hitAction || hitP;
-    });
-  }, [store.runs, range]);
-
-  const view = useMemo(() => {
-    return runs.map((run) => {
-      const set = setMap.get(run.setId);
-      const actionsSorted = run.actions
-        .slice()
-        .sort((a, b) => (a.startAt ?? 0) - (b.startAt ?? 0));
-      const procrastSorted = run.procrastinations
-        .slice()
-        .sort((a, b) => (a.endAt ?? a.startAt) - (b.endAt ?? b.startAt));
-
-      const rows: Row[] = [];
-      let pIdx = 0;
-
-      for (const a of actionsSorted) {
-        // 直前先延ばしを拾う
-        let picked: ProcrastinationLog | null = null;
-        while (pIdx < procrastSorted.length) {
-          const candidate = procrastSorted[pIdx];
-          if (candidate.endAt && candidate.endAt <= a.startAt) {
-            picked = candidate;
-            pIdx++;
-          } else break;
+  // ---- diffs 反映（Set/Action） ----
+  const applySetDiffs = (rows: ChecklistSetRow[]) => {
+    if (!rows || rows.length === 0) return;
+    setSets((prev) => {
+      const idx = new Map(prev.map((s, i) => [s.id, i] as const));
+      let next = prev.slice();
+      for (const r of rows) {
+        if (r.deleted_at) {
+          const i = idx.get(r.id);
+          if (i != null) {
+            next.splice(i, 1);
+            idx.clear();
+            next.forEach((s, k) => idx.set(s.id, k));
+          }
+          continue;
         }
+        const i = idx.get(r.id);
+        if (i == null) {
+          next.push({
+            id: r.id,
+            title: r.title,
+            actions: [],
+            createdAt: r.updated_at ?? Date.now(),
+          });
+          idx.set(r.id, next.length - 1);
+        } else {
+          next[i] = { ...next[i], title: r.title };
+        }
+      }
+      return next;
+    });
+  };
+
+  const applyActionDiffs = (rows: ChecklistActionRow[]) => {
+    if (!rows || rows.length === 0) return;
+    setSets((prev) => {
+      const bySet = new Map<string, ChecklistActionRow[]>();
+      for (const r of rows) {
+        if (!bySet.has(r.set_id)) bySet.set(r.set_id, []);
+        bySet.get(r.set_id)!.push(r);
+      }
+      return prev.map((set) => {
+        const patches = bySet.get(set.id);
+        if (!patches || patches.length === 0) return set;
+
+        const idx = new Map(set.actions.map((a, i) => [a.id, i] as const));
+        let actions = set.actions.slice();
+
+        for (const r of patches) {
+          if (r.deleted_at) {
+            const i = idx.get(r.id);
+            if (i != null) {
+              actions.splice(i, 1);
+              idx.clear();
+              actions.forEach((a, k) => idx.set(a.id, k));
+            }
+            continue;
+          }
+          const i = idx.get(r.id);
+          if (i == null) {
+            actions.push({
+              id: r.id,
+              title: r.title,
+              order: (r as any).order ?? actions.length,
+            });
+            idx.set(r.id, actions.length - 1);
+          } else {
+            actions[i] = {
+              ...actions[i],
+              title: r.title,
+              order: (r as any).order ?? actions[i].order,
+            };
+          }
+        }
+        actions = actions
+          .slice()
+          .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+          .map((a, i) => ({ ...a, order: i }));
+        return { ...set, actions };
+      });
+    });
+  };
+
+  // ---- diffs 反映（Action Logs） ----
+  const applyLogDiffs = (rows: ChecklistActionLogRow[]) => {
+    if (!rows || rows.length === 0) return;
+    setLogs((prev) => {
+      const map = new Map<string, ChecklistActionLogRow>();
+      for (const x of prev) map.set(x.id, x);
+      for (const r of rows) {
+        if (r.deleted_at) {
+          map.delete(r.id);
+        } else {
+          map.set(r.id, r);
+        }
+      }
+      // 安定化のため updated_at でソート
+      return Array.from(map.values()).sort(
+        (a, b) => (a.updated_at ?? 0) - (b.updated_at ?? 0)
+      );
+    });
+  };
+
+  // ---- 初期 pull + スマート同期 ----
+  useEffect(() => {
+    const abort = new AbortController();
+    (async () => {
+      try {
+        const json = await pullBatch(USER_ID, getSince(), [
+          "checklist_sets",
+          "checklist_actions",
+          "checklist_action_logs",
+        ]);
+        applySetDiffs(json.diffs.checklist_sets);
+        applyActionDiffs(json.diffs.checklist_actions);
+        applyLogDiffs(json.diffs.checklist_action_logs as ChecklistActionLogRow[]);
+        setSince(json.server_time_ms);
+      } catch (e) {
+        console.error("[logs] initial pull failed:", e);
+        setMsg("同期に失敗しました。しばらくしてから再度お試しください。");
+      }
+    })();
+
+    const ctl = startSmartSync({
+      userId: USER_ID,
+      deviceId: getDeviceId(),
+      getSince,
+      setSince,
+      applyDiffs: (diffs: PullResponse["diffs"]) => {
+        applySetDiffs(diffs.checklist_sets);
+        applyActionDiffs(diffs.checklist_actions);
+        applyLogDiffs(diffs.checklist_action_logs as ChecklistActionLogRow[]);
+      },
+      fallbackPolling: true,
+      pollingIntervalMs: 30000,
+      abortSignal: abort.signal,
+    });
+
+    return () => {
+      abort.abort();
+      ctl.stop();
+    };
+  }, []);
+
+  /* ===== 画面用の組み立て ===== */
+
+  // セット/行動を素早く引くための辞書
+  const setMap = useMemo(() => new Map(sets.map((s) => [s.id, s] as const)), [sets]);
+
+  // 表示する日のログのみ抽出
+  const day = useMemo(() => dayRangeJst(date), [date]);
+  const dayLogs = useMemo(() => {
+    const { start, end } = day;
+    return logs.filter(
+      (l) =>
+        (l.start_at_ms != null && l.start_at_ms >= start && l.start_at_ms <= end) ||
+        (l.end_at_ms != null && l.end_at_ms >= start && l.end_at_ms <= end)
+    );
+  }, [logs, day]);
+
+  // set_id ごとに、開始時刻で並べて「直前先延ばし→行動」を構成
+  const view = useMemo(() => {
+    const bySet = new Map<string, ChecklistActionLogRow[]>();
+    for (const r of dayLogs) {
+      if (!bySet.has(r.set_id)) bySet.set(r.set_id, []);
+      bySet.get(r.set_id)!.push(r);
+    }
+
+    const list = Array.from(bySet.entries()).map(([setId, items]) => {
+      const set = setMap.get(setId);
+      // 開始基準でソート（同値は updated_at）
+      items.sort(
+        (a, b) =>
+          (a.start_at_ms ?? 0) - (b.start_at_ms ?? 0) ||
+          (a.updated_at ?? 0) - (b.updated_at ?? 0)
+      );
+      const rows: Row[] = [];
+      let prevEnd: number | null = null;
+
+      for (const it of items) {
         const title =
-          set?.actions.find((x) => x.id === a.actionId)?.title ?? "(不明な行動)";
+          set?.actions.find((x) => x.id === it.action_id)?.title ?? "(不明な行動)";
+        const actStart = it.start_at_ms ?? undefined;
+        const actEnd = it.end_at_ms ?? undefined;
+        const actDur =
+          it.duration_ms ??
+          (actStart != null && actEnd != null ? actEnd - actStart : undefined);
+
+        // 直前先延ばし（前の行動の終了〜今回の開始）
+        let procrast: Row["procrast"] = null;
+        if (prevEnd != null && actStart != null && actStart > prevEnd) {
+          procrast = { startAt: prevEnd, endAt: actStart, durationMs: actStart - prevEnd };
+        }
 
         rows.push({
           actionTitle: title,
-          procrast: picked
-            ? {
-                startAt: picked.startAt,
-                endAt: picked.endAt,
-                durationMs: picked.durationMs,
-              }
-            : null,
-          action: {
-            startAt: a.startAt,
-            endAt: a.endAt,
-            durationMs: a.durationMs,
-          },
+          procrast,
+          action: { startAt: actStart ?? 0, endAt: actEnd, durationMs: actDur },
         });
+
+        prevEnd = actEnd ?? prevEnd; // 終了があるときだけ更新
       }
 
       const sumAction = rows.reduce((s, r) => s + (r.action.durationMs ?? 0), 0);
       const sumPro = rows.reduce((s, r) => s + (r.procrast?.durationMs ?? 0), 0);
 
       return {
-        runId: run.id,
+        runId: uid(), // 同期ログには run の概念が無いので、表示用IDを都度生成
         setTitle: set?.title ?? "(不明なセット)",
         rows,
         sumAction,
         sumPro,
       };
     });
-  }, [runs, setMap]);
 
-  const fmtTime = (t?: number) =>
-    t == null ? "…" : new Date(t).toLocaleTimeString("ja-JP", { hour12: false });
-
-  const fmtDur = (ms?: number) =>
-    ms == null ? "—" : `${Math.floor(ms / 60000)}分${Math.floor((ms % 60000) / 1000)}秒`;
-
-  /* ==== 記録（Run）削除 ==== */
-  const deleteRun = (runId: ID) => {
-    if (!confirm("この記録（Run）を削除しますか？この操作は元に戻せません。")) return;
-    setStore((prev) => {
-      const next = { ...prev, runs: prev.runs.filter((r) => r.id !== runId) };
-      save(next);
-      return next;
-    });
-  };
+    // セット名でソート
+    return list.sort((a, b) => a.setTitle.localeCompare(b.setTitle, "ja"));
+  }, [dayLogs, setMap]);
 
   return (
     <div className="space-y-4">
@@ -170,9 +308,10 @@ export default function ChecklistLogs() {
             onChange={(e) => setDate(e.target.value)}
             className="rounded-xl border px-3 py-2"
           />
+          {msg && <span className="text-xs text-gray-500">{msg}</span>}
         </div>
         <p className="text-xs text-gray-500 mt-2">
-          指定日のJSTに含まれる記録を表示します（各行は「直前の先延ばし → 行動」のセット）。
+          指定日のJSTに含まれる同期ログを表示します（各行は「直前の先延ばし → 行動」のセット）。
         </p>
       </section>
 
@@ -184,12 +323,12 @@ export default function ChecklistLogs() {
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-3">
                 <h3 className="font-semibold">{v.setTitle}</h3>
-                <div className="text-xs text-gray-500">Run: {v.runId.slice(0, 8)}…</div>
               </div>
+              {/* 同期データなので UI は参照専用 */}
               <button
-                onClick={() => deleteRun(v.runId)}
-                className="rounded-xl border border-red-300 px-3 py-1.5 text-sm text-red-700 hover:bg-red-50"
-                title="この記録（Run）を削除します"
+                disabled
+                className="rounded-xl border px-3 py-1.5 text-sm text-gray-400"
+                title="同期ログはこの画面からは削除できません"
               >
                 記録を削除
               </button>
@@ -223,7 +362,9 @@ export default function ChecklistLogs() {
                     </tr>
                   ))}
                   <tr className="border-t font-medium">
-                    <td className="py-2 pr-3" colSpan={4}>合計</td>
+                    <td className="py-2 pr-3" colSpan={4}>
+                      合計
+                    </td>
                     <td className="py-2 pr-3 tabular-nums">{fmtDur(v.sumPro)}</td>
                     <td className="py-2 pr-3" colSpan={2}></td>
                     <td className="py-2 pr-3 tabular-nums">{fmtDur(v.sumAction)}</td>

@@ -22,17 +22,34 @@ export type ChecklistActionRow = {
   deleted_at: number | null;
 };
 
+// ★ 行動ログ（開始/終了/所要）の同期用
+export type ChecklistActionLogRow = {
+  id: string;
+  user_id: string;
+  set_id: string;
+  action_id: string;
+  start_at_ms: number | null;
+  end_at_ms: number | null;
+  duration_ms: number | null;
+  updated_at: number;
+  updated_by: string;
+  deleted_at: number | null;
+};
+
 export type PullResponse = {
   server_time_ms: number;
   diffs: {
     checklist_sets: ChecklistSetRow[];
     checklist_actions: ChecklistActionRow[];
+    // ★ ログも返す
+    checklist_action_logs: ChecklistActionLogRow[];
   };
 };
 
 // --- 共通 ---
 const nowMs = () => Date.now();
-const DEFAULT_TABLES = ["checklist_sets", "checklist_actions"] as const;
+// ★ 既定テーブルに logs を追加
+const DEFAULT_TABLES = ["checklist_sets", "checklist_actions", "checklist_action_logs"] as const;
 export type TableName = (typeof DEFAULT_TABLES)[number];
 
 // 🔐 固定キー（Render の APP_KEY と同じ値を使用）
@@ -86,14 +103,25 @@ function pushBatchPayload(params: {
     deleted_at: number | null;
     data: { title?: string; order?: number };
   }>;
+  // ★ 行動ログも受け付ける
+  action_logs?: Array<{
+    id: string;
+    set_id: string;
+    action_id: string;
+    updated_at: number;
+    updated_by: string;
+    deleted_at: number | null;
+    data: { start_at_ms?: number | null; end_at_ms?: number | null; duration_ms?: number | null };
+  }>;
 }) {
-  const { userId, deviceId, sets = [], actions = [] } = params;
+  const { userId, deviceId, sets = [], actions = [], action_logs = [] } = params;
   return {
     user_id: userId,
     device_id: deviceId,
     changes: {
       checklist_sets: sets,
       checklist_actions: actions,
+      checklist_action_logs: action_logs,
     },
   };
 }
@@ -285,7 +313,7 @@ export function startSmartSync(opts: {
   };
 }
 
-// --- upsert/delete ---
+// --- upsert/delete（セット・行動） ---
 export async function upsertChecklistSet(p: {
   userId: string;
   deviceId: string;
@@ -369,6 +397,76 @@ export async function deleteChecklistAction(p: {
   });
 }
 
+// --- upsert（行動ログ：開始/終了） ---
+// 1. 行動開始：ログ1件を作成 or 更新（start_at_ms を保持、終了は未定義）
+export async function upsertChecklistActionLogStart(p: {
+  userId: string;
+  deviceId: string;
+  id: string;          // 行動ログID（フロントで生成して同じIDを end にも使う）
+  set_id: string;
+  action_id: string;
+  start_at_ms: number; // 開始UNIX ms
+}) {
+  const payload = pushBatchPayload({
+    userId: p.userId,
+    deviceId: p.deviceId,
+    action_logs: [
+      {
+        id: p.id,
+        set_id: p.set_id,
+        action_id: p.action_id,
+        updated_at: makeUpdatedAt(),
+        updated_by: makeUpdatedBy(p.deviceId),
+        deleted_at: null,
+        data: {
+          start_at_ms: p.start_at_ms,
+          end_at_ms: null,
+          duration_ms: null,
+        },
+      },
+    ],
+  });
+  await jsonFetch(`/api/b/api/sync/push-batch?${APP_KEY_Q}`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+// 2. 行動終了：同じログIDに end_at_ms / duration_ms を書き込む
+export async function upsertChecklistActionLogEnd(p: {
+  userId: string;
+  deviceId: string;
+  id: string;           // start と同じログID
+  set_id: string;
+  action_id: string;
+  end_at_ms: number;    // 終了UNIX ms
+  duration_ms: number;  // 所要ミリ秒
+}) {
+  const payload = pushBatchPayload({
+    userId: p.userId,
+    deviceId: p.deviceId,
+    action_logs: [
+      {
+        id: p.id,
+        set_id: p.set_id,
+        action_id: p.action_id,
+        updated_at: makeUpdatedAt(),
+        updated_by: makeUpdatedBy(p.deviceId),
+        deleted_at: null,
+        data: {
+          // start_at_ms は既存値が勝つので送らなくてもOKだが、明示したい場合は undefined にしない
+          end_at_ms: p.end_at_ms,
+          duration_ms: p.duration_ms,
+        },
+      },
+    ],
+  });
+  await jsonFetch(`/api/b/api/sync/push-batch?${APP_KEY_Q}`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 // ===============================
 // 手動「この端末を正にする」同期
 // ===============================
@@ -392,10 +490,10 @@ type LocalAction = {
   is_done?: boolean;
 };
 
-// --- チェックリスト専用（既存） ---
+// --- チェックリスト専用（既存修正：actions は sets 配下から展開） ---
 function buildChecklistChangesFromLocal(userId: string, deviceId: string) {
   if (typeof window === "undefined") {
-    return { checklist_sets: [] as any[], checklist_actions: [] as any[] };
+    return { checklist_sets: [] as any[], checklist_actions: [] as any[] /*, checklist_action_logs: [] as any[]*/ };
   }
 
   let snap: any = null;
@@ -405,38 +503,46 @@ function buildChecklistChangesFromLocal(userId: string, deviceId: string) {
     snap = null;
   }
 
-  const sets: LocalSet[] = Array.isArray(snap?.sets) ? (snap.sets as LocalSet[]) : [];
-  const actions: LocalAction[] = Array.isArray(snap?.actions) ? (snap.actions as LocalAction[]) : [];
+  const setsArr: any[] = Array.isArray(snap?.sets) ? snap.sets : [];
 
+  // sets
   const upBy = makeMasterUpdatedBy(deviceId);
   const upAt = makeMasterUpdatedAt();
 
-  const checklist_sets = sets.map((s: LocalSet) => ({
+  const checklist_sets = setsArr.map((s: any, i: number) => ({
     id: String(s.id),
     updated_at: upAt,
     updated_by: upBy,
     deleted_at: s?.deleted_at ?? null,
     data: {
-      title: s?.title ?? "",
-      order: Number(s?.order ?? 0),
+      title: String(s?.title ?? ""),
+      order: Number(s?.order ?? i ?? 0),
     },
   }));
 
-  const checklist_actions = actions.map((a: LocalAction) => ({
-    id: String(a.id),
-    set_id: String(a.set_id), // ★ NOT NULL 必須
-    updated_at: upAt,
-    updated_by: upBy,
-    deleted_at: a?.deleted_at ?? null,
-    data: {
-      title: a?.title ?? "",
-      order: Number(a?.order ?? 0),
-      // is_done を反映したい場合は以下を解放:
-      // is_done: !!a?.is_done,
-    },
-  }));
+  // actions（各set配下から平坦化）
+  const checklist_actions: any[] = [];
+  for (const s of setsArr) {
+    const acts: any[] = Array.isArray(s?.actions) ? s.actions : [];
+    acts.forEach((a, idx) => {
+      checklist_actions.push({
+        id: String(a.id),
+        set_id: String(s.id),
+        updated_at: upAt,
+        updated_by: upBy,
+        deleted_at: a?.deleted_at ?? null,
+        data: {
+          title: String(a?.title ?? ""),
+          order: Number(a?.order ?? idx ?? 0),
+          // is_done を同期したくなったら以下を有効化
+          // is_done: !!a?.isDone,
+        },
+      });
+    });
+  }
 
-  return { checklist_sets, checklist_actions };
+  // ★ ログはローカルにIDを持っていないため、マスター同期では送らない
+  return { checklist_sets, checklist_actions /*, checklist_action_logs: []*/ };
 }
 
 export async function forceSyncAsMaster(opts: {
@@ -479,7 +585,7 @@ export async function forceSyncAllMaster(opts: {
 }) {
   const { userId, deviceId } = opts;
   const checklist = buildChecklistChangesFromLocal(userId, deviceId);
-  const changes = mergeChanges(checklist); // 今はチェックリストのみ。将来は他機能をここに追加。
+  const changes = mergeChanges(checklist); // 現状はチェックリストのみ
 
   const payload = { user_id: userId, device_id: deviceId, changes };
   await jsonFetch(`/api/b/api/sync/push-batch?${APP_KEY_Q}`, {

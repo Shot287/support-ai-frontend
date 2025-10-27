@@ -25,7 +25,7 @@ type Action = {
   title: string;
   createdAt: number;
   order: number;      // 並び順
-  isDone?: boolean;   // ローカル表示用（サーバ未同期）
+  isDone?: boolean;   // ★ サーバ is_done と同期
 };
 
 type ChecklistSet = {
@@ -194,7 +194,7 @@ export default function Checklist() {
     });
   };
 
-  // Action の差分をローカルへマージ（サーバからは is_done を扱わない）
+  // Action の差分をローカルへマージ（★ is_done を反映）
   const applyActionDiffs = (rows: ChecklistActionRow[]) => {
     if (!rows || rows.length === 0) return;
     setStore((prev) => {
@@ -227,8 +227,8 @@ export default function Checklist() {
               id: r.id,
               title: r.title,
               createdAt: r.updated_at ?? now(),
-              order: (r as any).order ?? actions.length, // order は型にいる想定
-              isDone: false, // 新規は未完了（ローカル表示用）
+              order: (r as any).order ?? actions.length,
+              isDone: (r as any).is_done ?? false,
             });
             idx.set(r.id, actions.length - 1);
           } else {
@@ -236,7 +236,7 @@ export default function Checklist() {
               ...actions[i],
               title: r.title,
               order: (r as any).order ?? actions[i].order,
-              // isDone はローカル保持（サーバ非同期）
+              isDone: (r as any).is_done ?? actions[i].isDone ?? false,
             };
           }
         }
@@ -427,7 +427,8 @@ export default function Checklist() {
           set_id: currentSet.id,
           title,
           order,
-        });
+          is_done: false, // ★ 新規は未完了
+        } as any);
       } catch (e) {
         console.warn("[sync] addAction failed:", e);
       }
@@ -461,7 +462,8 @@ export default function Checklist() {
           set_id: currentSet!.id,
           title,
           order: a.order,
-        });
+          is_done: a.isDone ?? false,
+        } as any);
       } catch (e) {
         console.warn("[sync] renameAction failed:", e);
       }
@@ -500,7 +502,8 @@ export default function Checklist() {
           set_id: currentSet.id,
           title: target.title,
           order: target.order,
-        });
+          is_done: target.isDone ?? false,
+        } as any);
       } catch (e) {
         console.warn("[sync] deleteAction failed:", e);
       }
@@ -543,7 +546,8 @@ export default function Checklist() {
               set_id: currentSet.id,
               title: a.title,
               order: k,
-            });
+              is_done: a.isDone ?? false,
+            } as any);
           }
         } catch (e) {
           console.warn("[sync] reorder actions failed:", e);
@@ -642,7 +646,7 @@ export default function Checklist() {
     });
   };
 
-  // 行動を開始（ローカル isDone を false に）
+  // 行動を開始（★ is_done=false を同期）
   const startAction = (a: Action) => {
     const p = store.current?.procrastinating;
     if (p) {
@@ -676,6 +680,7 @@ export default function Checklist() {
     const t = now();
     setStore((s) => ({
       ...s,
+      // 画面上の isDone を false に（開始＝未了）
       sets: s.sets.map(set =>
         set.id !== currentSet!.id ? set :
         { ...set, actions: set.actions.map(x => x.id === a.id ? { ...x, isDone: false } : x) }
@@ -688,7 +693,7 @@ export default function Checklist() {
       ),
     }));
 
-    // サーバへは現状 is_done を送らず、title/order のみ（型互換）
+    // サーバに is_done=false を同期
     (async () => {
       try {
         await upsertChecklistAction({
@@ -698,9 +703,10 @@ export default function Checklist() {
           set_id: currentSet!.id,
           title: a.title,
           order: a.order,
-        });
+          is_done: false,
+        } as any);
       } catch (e) {
-        console.warn("[sync] startAction upsert failed:", e);
+        console.warn("[sync] startAction is_done=false failed:", e);
       }
     })();
   };
@@ -770,7 +776,7 @@ export default function Checklist() {
         return next;
       });
 
-      // 終了したアクションを isDone=true に（ローカル表示）
+      // 終了したアクションを isDone=true に
       const nextSets = prev.sets.map(set =>
         set.id !== cur.setId ? set :
         {
@@ -804,9 +810,10 @@ export default function Checklist() {
       };
     });
 
-    // サーバへは現状 is_done を送らず、title/order のみ更新（型互換）
+    // サーバに is_done=true を同期
     (async () => {
       try {
+        // タイトルやorderは現行値を送る
         const set = store.sets.find(s => s.id === store.current?.setId);
         const a = set?.actions.find(x => x.id === actionId);
         if (set && a) {
@@ -817,10 +824,11 @@ export default function Checklist() {
             set_id: set.id,
             title: a.title,
             order: a.order,
-          });
+            is_done: true,
+          } as any);
         }
       } catch (e) {
-        console.warn("[sync] endAction upsert failed:", e);
+        console.warn("[sync] endAction is_done=true failed:", e);
       }
     })();
   };
@@ -838,7 +846,7 @@ export default function Checklist() {
     <div className="space-y-4">
       {/* セット切替/操作 */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div className="flex items中心 gap-2">
+        <div className="flex items-center gap-2">
           <label className="text-sm text-gray-600">チェックリスト：</label>
           <select
             value={currentSet?.id ?? ""}
@@ -981,7 +989,7 @@ export default function Checklist() {
               {!running || running.actionId !== action.id ? (
                 <button
                   onClick={() => startAction(action)}
-                  className="rounded-xl bg黒 text-white px-5 py-3"
+                  className="rounded-xl bg-black text-white px-5 py-3"
                 >
                   開始
                 </button>
