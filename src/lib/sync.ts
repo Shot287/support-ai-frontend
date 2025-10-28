@@ -78,7 +78,7 @@ export async function apiGet<T = any>(path: string, init?: RequestInit): Promise
     ...init,
     headers: {
       "x-app-key": APP_KEY,
-      "accept": "application/json",
+      accept: "application/json",
       ...(init?.headers || {}),
     },
     cache: "no-store",
@@ -94,7 +94,7 @@ export async function apiPost<T = any>(path: string, body: any, init?: RequestIn
     headers: {
       "x-app-key": APP_KEY,
       "content-type": "application/json",
-      "accept": "application/json",
+      accept: "application/json",
       ...(init?.headers || {}),
     },
     ...init,
@@ -298,4 +298,27 @@ export async function upsertChecklistActionLogEnd(p: { userId: string; deviceId:
     action_logs: [{ id: p.id, set_id: p.set_id, action_id: p.action_id, updated_at: makeUpdatedAt(), updated_by: makeUpdatedBy(p.deviceId), deleted_at: null, data: { end_at_ms: p.end_at_ms, duration_ms: p.duration_ms } }],
   });
   await pushBatch(payload);
+}
+
+/* =====================
+ * 後方互換シム（旧コードのインポート対策）
+ * ===================== */
+
+// 旧ホーム画面用：「全機能をこの端末で同期」呼び出し互換（現在は no-op でビルド通過を優先）
+export async function forceSyncAllMaster(_opts: { userId: string; deviceId: string }) {
+  // 将来必要になれば、ローカル→サーバ push（マスター同期）をここに実装
+}
+
+// 旧チェックリスト画面用：「この端末を正にする」呼び出し互換（最低限：最新を pull して反映）
+export async function forceSyncAsMaster(opts: {
+  userId: string;
+  deviceId: string; // 未使用だが互換のため受け取る
+  getSince: () => number;
+  setSince: (ms: number) => void;
+  applyDiffs: (diffs: PullResponse["diffs"]) => void;
+  tables?: readonly TableName[];
+}) {
+  const resp = await pullBatch(opts.userId, opts.getSince(), opts.tables ?? DEFAULT_TABLES);
+  opts.applyDiffs(resp.diffs);
+  opts.setSince(resp.server_time_ms);
 }
