@@ -82,7 +82,7 @@ export default function ChecklistLogs() {
     if (!rows || rows.length === 0) return;
     setSets((prev) => {
       const idx = new Map(prev.map((s, i) => [s.id, i] as const));
-      let next = prev.slice();
+      const next = prev.slice(); // ← 再代入しないので const に変更
       for (const r of rows) {
         if (r.deleted_at) {
           const i = idx.get(r.id);
@@ -194,8 +194,7 @@ export default function ChecklistLogs() {
         applyActionDiffs(json.diffs.checklist_actions);
         applyLogDiffs(json.diffs.checklist_action_logs as ChecklistActionLogRow[]);
         setSince(json.server_time_ms);
-      } catch (e) {
-        console.error("[logs] initial pull failed:", e);
+      } catch {
         setMsg("同期に失敗しました。しばらくしてから再度お試しください。");
       }
     })();
