@@ -10,7 +10,6 @@ import {
   upsertChecklistAction,
   deleteChecklistAction,
   pushBatch,
-  type PullResponse,
   type ChecklistSetRow,
   type ChecklistActionRow,
 } from "@/lib/sync";
@@ -83,6 +82,9 @@ const getSince = () => {
 };
 const setSince = (ms: number) => {
   if (typeof window !== "undefined") localStorage.setItem(SINCE_KEY, String(ms));
+};
+const resetSince = () => {
+  if (typeof window !== "undefined") localStorage.setItem(SINCE_KEY, "0");
 };
 
 const uid = () =>
@@ -259,7 +261,7 @@ export default function Checklist() {
     });
   };
 
-  // ★ 受信（PULL）処理：ホームのグローバルボタンから届く合図に反応して実行
+  // ★ 受信（PULL）処理
   const doPullAll = async () => {
     if (pullingRef.current) return;
     pullingRef.current = true;
@@ -271,6 +273,18 @@ export default function Checklist() {
       applySetDiffs(json.diffs.checklist_sets);
       applyActionDiffs(json.diffs.checklist_actions);
       setSince(json.server_time_ms);
+
+      // current.setId が消えていた/未選択の場合の保険
+      setStore((prev) => {
+        if (!prev.current?.setId || !prev.sets.find(s => s.id === prev.current!.setId)) {
+          const first = prev.sets[0];
+          if (first) {
+            return { ...prev, current: { setId: first.id, index: 0, runId: uid() } };
+          }
+        }
+        return prev;
+      });
+
       setMsg("チェックリストを最新化しました。");
     } catch (e) {
       console.error("[sync] pull-batch failed:", e);
@@ -280,7 +294,7 @@ export default function Checklist() {
     }
   };
 
-  // ★ 手動アップロード（PUSH）：ホームの“手動アップロード”合図を受けたら、ローカル全量をサーバに保存
+  // ★ 手動アップロード（PUSH）：ローカル全量をサーバに保存
   const manualPushAll = async () => {
     try {
       const snapshot = storeRef.current;
@@ -332,11 +346,19 @@ export default function Checklist() {
     }
   };
 
-  // ★ グローバル“受信（PULL）合図”の購読（BroadcastChannel / postMessage / storage）
+  // ★ グローバル合図購読（PULL / RESET）
   useEffect(() => {
     const handler = (payload: any) => {
-      if (!payload || payload.type !== "GLOBAL_SYNC_PULL") return;
-      doPullAll();
+      if (!payload) return;
+      if (payload.type === "GLOBAL_SYNC_PULL") {
+        void doPullAll();
+      } else if (payload.type === "GLOBAL_SYNC_RESET") {
+        // 1) since をゼロ化
+        resetSince();
+        // 2) 直後に PULL 実行（ゼロから取り直し）
+        void doPullAll();
+        setMsg("同期をリセットし、サーバから再取得しました。");
+      }
     };
 
     // 1) BroadcastChannel
@@ -348,13 +370,16 @@ export default function Checklist() {
       }
     } catch {}
 
-    // 2) 同タブ向け
+    // 2) 同タブ向け postMessage
     const onPostMessage = (e: MessageEvent) => handler(e.data);
     window.addEventListener("message", onPostMessage);
 
-    // 3) 他タブ向け（storage）
+    // 3) 他タブ向け（storage 経由 pull 要求）
     const onStorage = (e: StorageEvent) => {
       if (e.key === "support-ai:sync:pull:req" && e.newValue) {
+        try { handler(JSON.parse(e.newValue)); } catch {}
+      }
+      if (e.key === "support-ai:sync:reset:req" && e.newValue) {
         try { handler(JSON.parse(e.newValue)); } catch {}
       }
     };
@@ -376,6 +401,12 @@ export default function Checklist() {
     });
     return () => { try { unSub(); } catch {} };
     // manualPushAll は storeRef を使うため依存なしでOK
+  }, []);
+
+  // ★ 初回マウント時に一度だけ Pull（画面入り直し直後にDBの追加が即時反映されるように）
+  useEffect(() => {
+    void doPullAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   // ====== 同期差し込み ここまで ======
 
