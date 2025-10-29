@@ -3,16 +3,18 @@
 
 import { useEffect, useMemo, useState, useRef } from "react";
 
-// 手動同期（受信専用）で使うユーティリティ
+// 手動同期ユーティリティ
 import {
   pullBatch,
   upsertChecklistSet,
   upsertChecklistAction,
   deleteChecklistAction,
+  pushBatch,
   type PullResponse,
   type ChecklistSetRow,
   type ChecklistActionRow,
 } from "@/lib/sync";
+import { subscribeGlobalPush } from "@/lib/sync-bus";
 import { getDeviceId } from "@/lib/device";
 
 /* ========= 型 ========= */
@@ -140,12 +142,18 @@ function save(s: Store) {
   if (typeof window !== "undefined") localStorage.setItem(KEY, JSON.stringify(s));
 }
 
+const isMobileDevice = () =>
+  typeof navigator !== "undefined" && /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
+const makeUpdatedBy = (deviceId: string) => `${isMobileDevice() ? "9" : "5"}|${deviceId}`;
+
 /* ========= 本体 ========= */
 export default function Checklist() {
   const [store, setStore] = useState<Store>(() => load());
   const [msg, setMsg] = useState<string | null>(null);
   const pullingRef = useRef(false); // 多重PULL防止
+  const storeRef = useRef(store);   // 手動Pushで最新storeを参照
   useEffect(() => save(store), [store]);
+  useEffect(() => { storeRef.current = store; }, [store]);
 
   // ====== ここから同期（Set + Action）差し込み ======
   // Set の差分をローカルへマージ
@@ -272,11 +280,62 @@ export default function Checklist() {
     }
   };
 
-  // ★ グローバル同期リクエストの受信（BroadcastChannel / postMessage / storage）
+  // ★ 手動アップロード（PUSH）：ホームの“手動アップロード”合図を受けたら、ローカル全量をサーバに保存
+  const manualPushAll = async () => {
+    try {
+      const snapshot = storeRef.current;
+      const deviceId = getDeviceId();
+      const updated_at = Date.now();
+      const updated_by = makeUpdatedBy(deviceId);
+
+      const setsSorted = snapshot.sets.slice().sort((a, b) => a.createdAt - b.createdAt);
+      const setChanges = setsSorted.map((s, idx) => ({
+        id: s.id,
+        updated_at,
+        updated_by,
+        deleted_at: null,
+        data: { title: s.title, order: idx },
+      }));
+
+      const actionChanges: any[] = [];
+      for (const s of setsSorted) {
+        const acts = s.actions.slice().sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+        acts.forEach((a, i) => {
+          actionChanges.push({
+            id: a.id,
+            set_id: s.id,
+            updated_at,
+            updated_by,
+            deleted_at: null,
+            data: { title: a.title, order: i, is_done: a.isDone ?? false },
+          });
+        });
+      }
+
+      const payload = {
+        user_id: USER_ID,
+        device_id: deviceId,
+        changes: {
+          checklist_sets: setChanges,
+          checklist_actions: actionChanges,
+          checklist_action_logs: [],
+        },
+      };
+
+      console.log("[manualPushAll] start", payload);
+      await pushBatch(payload);
+      console.log("[manualPushAll] done");
+      setMsg("この端末のチェックリストをクラウドに保存しました。");
+    } catch (e) {
+      console.warn("[manualPushAll] failed:", e);
+      setMsg("手動アップロードに失敗しました。");
+    }
+  };
+
+  // ★ グローバル“受信（PULL）合図”の購読（BroadcastChannel / postMessage / storage）
   useEffect(() => {
     const handler = (payload: any) => {
       if (!payload || payload.type !== "GLOBAL_SYNC_PULL") return;
-      // 必要なら userId/deviceId をチェック（現状は単一ユーザ想定）
       doPullAll();
     };
 
@@ -296,10 +355,7 @@ export default function Checklist() {
     // 3) 他タブ向け（storage）
     const onStorage = (e: StorageEvent) => {
       if (e.key === "support-ai:sync:pull:req" && e.newValue) {
-        try {
-          const data = JSON.parse(e.newValue);
-          handler(data);
-        } catch {}
+        try { handler(JSON.parse(e.newValue)); } catch {}
       }
     };
     window.addEventListener("storage", onStorage);
@@ -309,6 +365,17 @@ export default function Checklist() {
       window.removeEventListener("message", onPostMessage);
       window.removeEventListener("storage", onStorage);
     };
+  }, []);
+
+  // ★ グローバル“手動アップロード（PUSH）合図”の購読
+  useEffect(() => {
+    const unSub = subscribeGlobalPush((p) => {
+      if (!p || p.userId !== USER_ID) return;
+      console.log("[bus] push recv", p);
+      void manualPushAll();
+    });
+    return () => { try { unSub(); } catch {} };
+    // manualPushAll は storeRef を使うため依存なしでOK
   }, []);
   // ====== 同期差し込み ここまで ======
 
