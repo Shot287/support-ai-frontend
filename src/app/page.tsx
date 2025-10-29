@@ -37,7 +37,7 @@ export default function HomePage() {
   const userId = "demo";
   const deviceId = getDeviceId();
 
-  const [busy, setBusy] = useState<"pull" | "push" | null>(null);
+  const [busy, setBusy] = useState<"pull" | "push" | "reset" | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
   // 🔄 受信（クラウド → ローカル）
@@ -46,8 +46,6 @@ export default function HomePage() {
     setBusy("pull");
     try {
       emitGlobalPull(userId, deviceId);
-
-      // --- アラートで即時フィードバック（成功）
       alert(
         [
           "🔄 同期（受信）リクエストを送信しました。",
@@ -56,7 +54,6 @@ export default function HomePage() {
           `at: ${new Date().toLocaleString()}`,
         ].join("\n")
       );
-
       setMessage("全機能に“受信（同期）”要求を送りました。各画面が最新化されます。");
     } catch (e) {
       const detail = formatErrorDetail(e);
@@ -73,8 +70,6 @@ export default function HomePage() {
     setBusy("push");
     try {
       emitGlobalPush(userId, deviceId);
-
-      // --- アラートで即時フィードバック（成功）
       alert(
         [
           "☁ 手動アップロード要求を送信しました。",
@@ -83,12 +78,43 @@ export default function HomePage() {
           `at: ${new Date().toLocaleString()}`,
         ].join("\n")
       );
-
       setMessage("全機能に“手動アップロード”要求を送りました。ローカルの変更をクラウドに保存します。");
     } catch (e) {
       const detail = formatErrorDetail(e);
       alert(["☁ 手動アップロードでエラーが発生しました。", detail].join("\n\n"));
       setMessage(`アップロード要求に失敗しました：${detail}`);
+    } finally {
+      setBusy(null);
+    }
+  }, [userId, deviceId]);
+
+  // ⚠ 同期リセット（since=0 でフル再受信）
+  const onClickResetSync = useCallback(() => {
+    setMessage(null);
+    setBusy("reset");
+    try {
+      // since カーソルを 0 に戻す（ユーザー単位）
+      const SINCE_KEY = `support-ai:sync:since:${userId}`;
+      localStorage.setItem(SINCE_KEY, "0");
+
+      // すぐに全機能へ PULL 合図を送る
+      emitGlobalPull(userId, deviceId);
+
+      alert(
+        [
+          "⚠ 同期リセットを実行しました（since=0）。",
+          "続けて“全受信”を要求しました。",
+          `SINCE_KEY: ${SINCE_KEY}`,
+          `userId: ${userId}`,
+          `deviceId: ${deviceId}`,
+          `at: ${new Date().toLocaleString()}`,
+        ].join("\n")
+      );
+      setMessage("同期をリセットして全受信を要求しました。データがフルリフレッシュされます。");
+    } catch (e) {
+      const detail = formatErrorDetail(e);
+      alert(["⚠ 同期リセットでエラーが発生しました。", detail].join("\n\n"));
+      setMessage(`同期リセットに失敗しました：${detail}`);
     } finally {
       setBusy(null);
     }
@@ -120,11 +146,21 @@ export default function HomePage() {
           >
             {busy === "push" ? "アップロード中…" : "☁ 手動アップロード"}
           </button>
+
+          {/* ⚠ 同期リセット（開発用） */}
+          <button
+            onClick={onClickResetSync}
+            disabled={busy !== null}
+            className="px-3 py-2 rounded-xl border shadow-sm hover:shadow transition disabled:opacity-50 text-red-600"
+            title="同期トラブル時の回復。sinceを0に戻して全件を再受信します（開発用）"
+          >
+            {busy === "reset" ? "リセット中…" : "⚠ 同期リセット"}
+          </button>
         </div>
       </div>
 
       {/* メッセージ表示 */}
-      {message && <p className="text-sm text-gray-600">{message}</p>}
+      {message && <p className="text-sm text-gray-600 whitespace-pre-wrap">{message}</p>}
 
       {/* 機能カテゴリ一覧 */}
       <div className="grid gap-4 sm:grid-cols-2">
