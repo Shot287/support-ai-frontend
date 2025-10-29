@@ -1,6 +1,9 @@
 // frontend/src/lib/sync.ts
 // ===================================================
-// ✅ Support-AI 同期ライブラリ（最新版 / Render対応）
+// ✅ Support-AI 同期ライブラリ（手動同期（Anki型）対応版）
+//    - API I/F は後方互換を維持
+//    - is_done を Action upsert/delete に対応
+//    - SSE/ポーリングは非推奨（残置）
 // ===================================================
 
 /* =====================
@@ -25,6 +28,8 @@ export type ChecklistActionRow = {
   updated_at: number;
   updated_by: string;
   deleted_at: number | null;
+  // ※ 現状のサーバ返却は未同梱だが、将来的な双方向同期のため型だけ許容
+  is_done?: boolean;
 };
 
 export type ChecklistActionLogRow = {
@@ -125,9 +130,30 @@ export async function pullBatch(
 function pushBatchPayload(params: {
   userId: string;
   deviceId: string;
-  sets?: any[];
-  actions?: any[];
-  action_logs?: any[];
+  sets?: Array<{
+    id: string;
+    updated_at?: number;
+    updated_by?: string;
+    deleted_at?: number | null;
+    data?: { title?: string; order?: number };
+  }>;
+  actions?: Array<{
+    id: string;
+    set_id: string;
+    updated_at?: number;
+    updated_by?: string;
+    deleted_at?: number | null;
+    data?: { title?: string; order?: number; is_done?: boolean };
+  }>;
+  action_logs?: Array<{
+    id: string;
+    set_id: string;
+    action_id: string;
+    updated_at?: number;
+    updated_by?: string;
+    deleted_at?: number | null;
+    data?: { start_at_ms?: number | null; end_at_ms?: number | null; duration_ms?: number | null };
+  }>;
 }) {
   const { userId, deviceId, sets = [], actions = [], action_logs = [] } = params;
   return {
@@ -146,7 +172,7 @@ export async function pushBatch(body: any) {
 }
 
 /* =====================
- * ポーリング
+ * ポーリング（非推奨・互換のため残置）
  * ===================== */
 export function startChecklistPolling(opts: {
   userId: string;
@@ -184,7 +210,7 @@ export function startChecklistPolling(opts: {
 }
 
 /* =====================
- * SSE（リアルタイム同期）
+ * SSE（リアルタイム同期｜非推奨・互換のため残置）
  * ===================== */
 export function startRealtimeSync(opts: {
   userId: string;
@@ -222,7 +248,7 @@ export function startRealtimeSync(opts: {
 }
 
 /* =====================
- * スマート同期（SSE+Fallback）
+ * スマート同期（SSE+Fallback｜非推奨・互換のため残置）
  * ===================== */
 export function startSmartSync(opts: {
   userId: string;
@@ -252,29 +278,72 @@ export function startSmartSync(opts: {
 /* =====================
  * Upsert/Delete API
  * ===================== */
-export async function upsertChecklistSet(p: { userId: string; deviceId: string; id: string; title: string; order: number; deleted_at?: number | null; }) {
+export async function upsertChecklistSet(p: {
+  userId: string;
+  deviceId: string;
+  id: string;
+  title: string;
+  order: number;
+  deleted_at?: number | null;
+}) {
   const payload = pushBatchPayload({
     userId: p.userId,
     deviceId: p.deviceId,
-    sets: [{ id: p.id, updated_at: makeUpdatedAt(), updated_by: makeUpdatedBy(p.deviceId), deleted_at: p.deleted_at ?? null, data: { title: p.title, order: p.order } }],
+    sets: [{
+      id: p.id,
+      updated_at: makeUpdatedAt(),
+      updated_by: makeUpdatedBy(p.deviceId),
+      deleted_at: p.deleted_at ?? null,
+      data: { title: p.title, order: p.order },
+    }],
   });
   await pushBatch(payload);
 }
 
-export async function upsertChecklistAction(p: { userId: string; deviceId: string; id: string; set_id: string; title: string; order: number; }) {
+export async function upsertChecklistAction(p: {
+  userId: string;
+  deviceId: string;
+  id: string;
+  set_id: string;
+  title: string;
+  order: number;
+  is_done?: boolean; // ★ 追加：完了状態の同期（任意）
+}) {
   const payload = pushBatchPayload({
     userId: p.userId,
     deviceId: p.deviceId,
-    actions: [{ id: p.id, set_id: p.set_id, updated_at: makeUpdatedAt(), updated_by: makeUpdatedBy(p.deviceId), deleted_at: null, data: { title: p.title, order: p.order } }],
+    actions: [{
+      id: p.id,
+      set_id: p.set_id,
+      updated_at: makeUpdatedAt(),
+      updated_by: makeUpdatedBy(p.deviceId),
+      deleted_at: null,
+      data: { title: p.title, order: p.order, ...(typeof p.is_done === "boolean" ? { is_done: p.is_done } : {}) },
+    }],
   });
   await pushBatch(payload);
 }
 
-export async function deleteChecklistAction(p: { userId: string; deviceId: string; id: string; set_id: string; title?: string; order?: number; }) {
+export async function deleteChecklistAction(p: {
+  userId: string;
+  deviceId: string;
+  id: string;
+  set_id: string;
+  title?: string;
+  order?: number;
+  is_done?: boolean; // ★ 追加：サーバ側で使う/使わないは任意
+}) {
   const payload = pushBatchPayload({
     userId: p.userId,
     deviceId: p.deviceId,
-    actions: [{ id: p.id, set_id: p.set_id, updated_at: makeUpdatedAt(), updated_by: makeUpdatedBy(p.deviceId), deleted_at: nowMs(), data: { title: p.title, order: p.order } }],
+    actions: [{
+      id: p.id,
+      set_id: p.set_id,
+      updated_at: makeUpdatedAt(),
+      updated_by: makeUpdatedBy(p.deviceId),
+      deleted_at: nowMs(),
+      data: { title: p.title, order: p.order, ...(typeof p.is_done === "boolean" ? { is_done: p.is_done } : {}) },
+    }],
   });
   await pushBatch(payload);
 }
@@ -282,34 +351,67 @@ export async function deleteChecklistAction(p: { userId: string; deviceId: strin
 /* =====================
  * 行動ログ同期（開始/終了）
  * ===================== */
-export async function upsertChecklistActionLogStart(p: { userId: string; deviceId: string; id: string; set_id: string; action_id: string; start_at_ms: number; }) {
+export async function upsertChecklistActionLogStart(p: {
+  userId: string;
+  deviceId: string;
+  id: string;
+  set_id: string;
+  action_id: string;
+  start_at_ms: number;
+}) {
   const payload = pushBatchPayload({
     userId: p.userId,
     deviceId: p.deviceId,
-    action_logs: [{ id: p.id, set_id: p.set_id, action_id: p.action_id, updated_at: makeUpdatedAt(), updated_by: makeUpdatedBy(p.deviceId), deleted_at: null, data: { start_at_ms: p.start_at_ms, end_at_ms: null, duration_ms: null } }],
+    action_logs: [{
+      id: p.id,
+      set_id: p.set_id,
+      action_id: p.action_id,
+      updated_at: makeUpdatedAt(),
+      updated_by: makeUpdatedBy(p.deviceId),
+      deleted_at: null,
+      data: { start_at_ms: p.start_at_ms, end_at_ms: null, duration_ms: null },
+    }],
   });
   await pushBatch(payload);
 }
 
-export async function upsertChecklistActionLogEnd(p: { userId: string; deviceId: string; id: string; set_id: string; action_id: string; end_at_ms: number; duration_ms: number; }) {
+export async function upsertChecklistActionLogEnd(p: {
+  userId: string;
+  deviceId: string;
+  id: string;
+  set_id: string;
+  action_id: string;
+  end_at_ms: number;
+  duration_ms: number;
+}) {
   const payload = pushBatchPayload({
     userId: p.userId,
     deviceId: p.deviceId,
-    action_logs: [{ id: p.id, set_id: p.set_id, action_id: p.action_id, updated_at: makeUpdatedAt(), updated_by: makeUpdatedBy(p.deviceId), deleted_at: null, data: { end_at_ms: p.end_at_ms, duration_ms: p.duration_ms } }],
+    action_logs: [{
+      id: p.id,
+      set_id: p.set_id,
+      action_id: p.action_id,
+      updated_at: makeUpdatedAt(),
+      updated_by: makeUpdatedBy(p.deviceId),
+      deleted_at: null,
+      data: { end_at_ms: p.end_at_ms, duration_ms: p.duration_ms },
+    }],
   });
   await pushBatch(payload);
 }
 
 /* =====================
- * 後方互換シム（旧コードのインポート対策）
+ * 後方互換シム
  * ===================== */
 
-// 旧ホーム画面用：「全機能をこの端末で同期」呼び出し互換（現在は no-op でビルド通過を優先）
+// 旧ホーム画面用：「全機能をこの端末で同期」互換（現仕様ではホーム側の“受信ボタン”がグローバル合図を出す）
+// → ここでは no-op（将来：ローカル→サーバ push の“この端末を正”が必要になったら実装）
 export async function forceSyncAllMaster(_opts: { userId: string; deviceId: string }) {
-  // 将来必要になれば、ローカル→サーバ push（マスター同期）をここに実装
+  return;
 }
 
-// 旧チェックリスト画面用：「この端末を正にする」呼び出し互換（最低限：最新を pull して反映）
+// 旧チェックリスト画面用：「この端末を正にする」互換
+// 互換のため：少なくとも最新を pull して適用しておく
 export async function forceSyncAsMaster(opts: {
   userId: string;
   deviceId: string; // 未使用だが互換のため受け取る

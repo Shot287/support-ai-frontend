@@ -1,16 +1,14 @@
 // src/features/nudge/techniques/checklist.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 
-// 同期ユーティリティ（Set + Action を使う）
+// 手動同期（受信専用）で使うユーティリティ
 import {
-  startSmartSync,
   pullBatch,
   upsertChecklistSet,
   upsertChecklistAction,
   deleteChecklistAction,
-  forceSyncAsMaster,
   type PullResponse,
   type ChecklistSetRow,
   type ChecklistActionRow,
@@ -145,8 +143,8 @@ function save(s: Store) {
 /* ========= 本体 ========= */
 export default function Checklist() {
   const [store, setStore] = useState<Store>(() => load());
-  const [syncing, setSyncing] = useState(false); // 画面内ミニ同期ボタン用メッセージ
   const [msg, setMsg] = useState<string | null>(null);
+  const pullingRef = useRef(false); // 多重PULL防止
   useEffect(() => save(store), [store]);
 
   // ====== ここから同期（Set + Action）差し込み ======
@@ -253,39 +251,63 @@ export default function Checklist() {
     });
   };
 
-  // 初回 pull ＋ スマート同期（SSE→ポーリング）
+  // ★ 受信（PULL）処理：ホームのグローバルボタンから届く合図に反応して実行
+  const doPullAll = async () => {
+    if (pullingRef.current) return;
+    pullingRef.current = true;
+    try {
+      const json = await pullBatch(USER_ID, getSince(), [
+        "checklist_sets",
+        "checklist_actions",
+      ]);
+      applySetDiffs(json.diffs.checklist_sets);
+      applyActionDiffs(json.diffs.checklist_actions);
+      setSince(json.server_time_ms);
+      setMsg("チェックリストを最新化しました。");
+    } catch (e) {
+      console.error("[sync] pull-batch failed:", e);
+      setMsg("チェックリストの受信に失敗しました。");
+    } finally {
+      pullingRef.current = false;
+    }
+  };
+
+  // ★ グローバル同期リクエストの受信（BroadcastChannel / postMessage / storage）
   useEffect(() => {
-    const abort = new AbortController();
-    const deviceId = getDeviceId();
+    const handler = (payload: any) => {
+      if (!payload || payload.type !== "GLOBAL_SYNC_PULL") return;
+      // 必要なら userId/deviceId をチェック（現状は単一ユーザ想定）
+      doPullAll();
+    };
 
-    (async () => {
-      try {
-        const json = await pullBatch(USER_ID, getSince(), ["checklist_sets", "checklist_actions"]);
-        applySetDiffs(json.diffs.checklist_sets);
-        applyActionDiffs(json.diffs.checklist_actions);
-        setSince(json.server_time_ms);
-      } catch (e) {
-        console.error("[sync] initial pull failed:", e);
+    // 1) BroadcastChannel
+    let bc: BroadcastChannel | undefined;
+    try {
+      if ("BroadcastChannel" in window) {
+        bc = new BroadcastChannel("support-ai-sync");
+        bc.onmessage = (e) => handler(e.data);
       }
-    })();
+    } catch {}
 
-    const ctl = startSmartSync({
-      userId: USER_ID,
-      deviceId,
-      getSince,
-      setSince,
-      applyDiffs: (diffs: PullResponse["diffs"]) => {
-        applySetDiffs(diffs.checklist_sets);
-        applyActionDiffs(diffs.checklist_actions);
-      },
-      fallbackPolling: true,
-      pollingIntervalMs: 30000,
-      abortSignal: abort.signal,
-    });
+    // 2) 同タブ向け
+    const onPostMessage = (e: MessageEvent) => handler(e.data);
+    window.addEventListener("message", onPostMessage);
+
+    // 3) 他タブ向け（storage）
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === "support-ai:sync:pull:req" && e.newValue) {
+        try {
+          const data = JSON.parse(e.newValue);
+          handler(data);
+        } catch {}
+      }
+    };
+    window.addEventListener("storage", onStorage);
 
     return () => {
-      abort.abort();
-      ctl.stop();
+      try { bc?.close(); } catch {}
+      window.removeEventListener("message", onPostMessage);
+      window.removeEventListener("storage", onStorage);
     };
   }, []);
   // ====== 同期差し込み ここまで ======
@@ -813,7 +835,6 @@ export default function Checklist() {
     // サーバに is_done=true を同期
     (async () => {
       try {
-        // タイトルやorderは現行値を送る
         const set = store.sets.find(s => s.id === store.current?.setId);
         const a = set?.actions.find(x => x.id === actionId);
         if (set && a) {
@@ -844,7 +865,7 @@ export default function Checklist() {
   /* ====== UI ====== */
   return (
     <div className="space-y-4">
-      {/* セット切替/操作 */}
+      {/* セット切替/操作（画面内の“同期ボタン”は廃止：ホームに1つだけ） */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <label className="text-sm text-gray-600">チェックリスト：</label>
@@ -877,36 +898,6 @@ export default function Checklist() {
           </button>
           <button onClick={deleteSet} className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50">
             セット削除
-          </button>
-
-          {/* ミニ同期（この端末を正に） */}
-          <button
-            onClick={async () => {
-              try {
-                setMsg(null);
-                setSyncing(true);
-                await forceSyncAsMaster({
-                  userId: USER_ID,
-                  deviceId: getDeviceId(),
-                  getSince,
-                  setSince,
-                  applyDiffs: (diffs) => {
-                    applySetDiffs(diffs.checklist_sets);
-                    applyActionDiffs(diffs.checklist_actions);
-                  },
-                });
-                setMsg("この端末の内容でチェックリストを同期しました。");
-              } catch (e: any) {
-                setMsg(`同期に失敗：${e?.message ?? e}`);
-              } finally {
-                setSyncing(false);
-              }
-            }}
-            disabled={syncing}
-            className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50 disabled:opacity-50"
-            title="この端末の内容を正としてチェックリストを即時同期します（全機能の一括同期はホーム画面のボタンから）"
-          >
-            {syncing ? "同期中…" : "🔄 この端末で同期"}
           </button>
         </div>
       </div>

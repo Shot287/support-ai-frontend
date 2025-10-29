@@ -3,8 +3,8 @@
 
 import Link from "next/link";
 import { useCallback, useState } from "react";
-import { forceSyncAllMaster } from "@/lib/sync";
 import { getDeviceId } from "@/lib/device";
+import { emitGlobalPull, emitGlobalPush } from "@/lib/sync-bus";
 
 const categories = [
   {
@@ -34,45 +34,74 @@ const categories = [
 ] as const;
 
 export default function HomePage() {
-  // 認証導入までの暫定ユーザー
+  // 暫定ユーザー
   const userId = "demo";
   const deviceId = getDeviceId();
 
-  const [syncing, setSyncing] = useState(false);
+  const [busy, setBusy] = useState<"pull" | "push" | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
-  const onClickSync = useCallback(async () => {
+  // 🔄 受信（クラウド → ローカル）
+  const onClickPullAll = useCallback(() => {
+    setMessage(null);
+    setBusy("pull");
     try {
-      setMessage(null);
-      setSyncing(true);
-      await forceSyncAllMaster({ userId, deviceId });
-      setMessage("この端末の内容で全機能を同期しました。");
+      emitGlobalPull(userId, deviceId);
+      setMessage("全機能に“受信（同期）”要求を送りました。各画面が最新化されます。");
     } catch (e: any) {
-      setMessage(`同期に失敗しました：${e?.message ?? e}`);
+      setMessage(`受信要求に失敗しました：${e?.message ?? String(e)}`);
     } finally {
-      setSyncing(false);
+      setBusy(null);
+    }
+  }, [userId, deviceId]);
+
+  // ☁ 手動アップロード（ローカル → クラウド）
+  const onClickPushAll = useCallback(() => {
+    setMessage(null);
+    setBusy("push");
+    try {
+      emitGlobalPush(userId, deviceId);
+      setMessage("全機能に“手動アップロード”要求を送りました。ローカルの変更をクラウドに保存します。");
+    } catch (e: any) {
+      setMessage(`アップロード要求に失敗しました：${e?.message ?? String(e)}`);
+    } finally {
+      setBusy(null);
     }
   }, [userId, deviceId]);
 
   return (
     <main className="p-4 space-y-4">
+      {/* タイトルとボタン群 */}
       <div className="flex items-center justify-between gap-3">
         <h1 className="text-2xl font-bold">機能を選んでください</h1>
 
-        <button
-          onClick={onClickSync}
-          disabled={syncing}
-          className="px-3 py-2 rounded-xl border shadow-sm hover:shadow transition disabled:opacity-50"
-          title="この端末の内容を正として全機能を同期します"
-        >
-          {syncing ? "同期中…" : "🔄 この端末で全機能を同期"}
-        </button>
+        <div className="flex gap-2">
+          {/* 🔄 受信ボタン */}
+          <button
+            onClick={onClickPullAll}
+            disabled={busy !== null}
+            className="px-3 py-2 rounded-xl border shadow-sm hover:shadow transition disabled:opacity-50"
+            title="サーバ上の最新データを受信し、全機能を更新します"
+          >
+            {busy === "pull" ? "受信中…" : "🔄 同期（受信）"}
+          </button>
+
+          {/* ☁ 手動アップロードボタン */}
+          <button
+            onClick={onClickPushAll}
+            disabled={busy !== null}
+            className="px-3 py-2 rounded-xl border shadow-sm hover:shadow transition disabled:opacity-50"
+            title="ローカルの変更をクラウドにアップロードします"
+          >
+            {busy === "push" ? "アップロード中…" : "☁ 手動アップロード"}
+          </button>
+        </div>
       </div>
 
-      {message && (
-        <p className="text-sm text-gray-600">{message}</p>
-      )}
+      {/* メッセージ表示 */}
+      {message && <p className="text-sm text-gray-600">{message}</p>}
 
+      {/* 機能カテゴリ一覧 */}
       <div className="grid gap-4 sm:grid-cols-2">
         {categories.map((c) => (
           <Link
