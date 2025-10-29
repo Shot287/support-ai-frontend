@@ -7,34 +7,33 @@ import { getDeviceId } from "@/lib/device";
 import { emitGlobalPull, emitGlobalPush } from "@/lib/sync-bus";
 
 const categories = [
-  {
-    id: "nudge",
-    title: "先延ばし対策",
-    description: "5秒ルールやポモドーロで初動をつくる",
-    href: "/nudge",
-  },
-  {
-    id: "sleep",
-    title: "睡眠管理",
-    description: "就寝・起床のリズムや振り返り（準備中）",
-    href: "/sleep",
-  },
-  {
-    id: "study",
-    title: "勉強",
-    description: "用語辞典などの学習サポート",
-    href: "/study",
-  },
-  {
-    id: "mental",
-    title: "Mental",
-    description: "メンタルケア・気分管理など（準備中）",
-    href: "/mental",
-  },
+  { id: "nudge",  title: "先延ばし対策", description: "5秒ルールやポモドーロで初動をつくる", href: "/nudge" },
+  { id: "sleep",  title: "睡眠管理",     description: "就寝・起床のリズムや振り返り（準備中）", href: "/sleep" },
+  { id: "study",  title: "勉強",         description: "用語辞典などの学習サポート", href: "/study" },
+  { id: "mental", title: "Mental",       description: "メンタルケア・気分管理など（準備中）", href: "/mental" },
 ] as const;
 
+// エラー表示用：できるだけ詳細に
+function formatErrorDetail(err: unknown) {
+  try {
+    if (err instanceof Error) {
+      return [
+        `name: ${err.name}`,
+        `message: ${err.message}`,
+        err.stack ? `stack:\n${err.stack}` : "",
+      ].filter(Boolean).join("\n");
+    }
+    if (typeof err === "object" && err !== null) {
+      return JSON.stringify(err, null, 2);
+    }
+    return String(err);
+  } catch {
+    return "不明なエラー（formatErrorDetail失敗）";
+  }
+}
+
 export default function HomePage() {
-  // 暫定ユーザー
+  // 暫定ユーザー（認証導入まで）
   const userId = "demo";
   const deviceId = getDeviceId();
 
@@ -47,9 +46,22 @@ export default function HomePage() {
     setBusy("pull");
     try {
       emitGlobalPull(userId, deviceId);
+
+      // --- アラートで即時フィードバック（成功）
+      alert(
+        [
+          "🔄 同期（受信）リクエストを送信しました。",
+          `userId: ${userId}`,
+          `deviceId: ${deviceId}`,
+          `at: ${new Date().toLocaleString()}`,
+        ].join("\n")
+      );
+
       setMessage("全機能に“受信（同期）”要求を送りました。各画面が最新化されます。");
-    } catch (e: any) {
-      setMessage(`受信要求に失敗しました：${e?.message ?? String(e)}`);
+    } catch (e) {
+      const detail = formatErrorDetail(e);
+      alert(["🔄 同期（受信）でエラーが発生しました。", detail].join("\n\n"));
+      setMessage(`受信要求に失敗しました：${detail}`);
     } finally {
       setBusy(null);
     }
@@ -61,9 +73,22 @@ export default function HomePage() {
     setBusy("push");
     try {
       emitGlobalPush(userId, deviceId);
+
+      // --- アラートで即時フィードバック（成功）
+      alert(
+        [
+          "☁ 手動アップロード要求を送信しました。",
+          `userId: ${userId}`,
+          `deviceId: ${deviceId}`,
+          `at: ${new Date().toLocaleString()}`,
+        ].join("\n")
+      );
+
       setMessage("全機能に“手動アップロード”要求を送りました。ローカルの変更をクラウドに保存します。");
-    } catch (e: any) {
-      setMessage(`アップロード要求に失敗しました：${e?.message ?? String(e)}`);
+    } catch (e) {
+      const detail = formatErrorDetail(e);
+      alert(["☁ 手動アップロードでエラーが発生しました。", detail].join("\n\n"));
+      setMessage(`アップロード要求に失敗しました：${detail}`);
     } finally {
       setBusy(null);
     }
