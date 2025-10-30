@@ -4,7 +4,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toSearchKey } from "@/features/study/kana";
 
-// ▼▼ 追加：同期ユーティリティ
+// ▼ 同期ユーティリティ
 import { pullBatch, pushBatch } from "@/lib/sync";
 import { subscribeGlobalPush } from "@/lib/sync-bus";
 import { getDeviceId } from "@/lib/device";
@@ -22,7 +22,7 @@ type Entry = {
 
 type StoreV2 = { entries: Entry[]; version: 2 };
 
-// v1 既存データ用の厳密型（yomi なし）
+// v1 既存データ用（yomi なし）
 type EntryV1 = {
   id: ID;
   term: string;
@@ -32,7 +32,6 @@ type EntryV1 = {
 };
 type StoreV1 = { entries: EntryV1[]; version: 1 };
 
-// any を排除
 type StoreAny = StoreV2 | StoreV1;
 
 /* ========= 定数 / ユーティリティ ========= */
@@ -142,24 +141,30 @@ export default function Dictionary() {
 
   /* ========= 同期：受信（PULL） ========= */
 
-  // サーバ差分をローカルへ反映
+  // サーバ差分をローカルへ反映（data(jsonb) / 直列カラム の両対応）
   const applyEntryDiffs = (rows: Array<{
     id: string;
     user_id: string;
-    term: string | null;
+    term?: string | null;
     yomi?: string | null;
-    meaning: string | null;
+    meaning?: string | null;
     updated_at: number;
     updated_by?: string | null;
     deleted_at?: number | null;
+    // data フォールバック
+    data?: { term?: string | null; yomi?: string | null; meaning?: string | null };
   }>) => {
     if (!rows || rows.length === 0) return;
 
     setStore((prev) => {
-      const idx = new Map(prev.entries.map((e, i) => [e.id, i]));
-      const entries = prev.entries.slice(); // ← const に修正（再代入しない）
+      const idx = new Map(prev.entries.map((e, i) => [e.id, i] as const));
+      const entries = prev.entries.slice();
 
       for (const r of rows) {
+        const term = r.term ?? r.data?.term ?? null;
+        const yomi = r.yomi ?? r.data?.yomi ?? null;
+        const meaning = r.meaning ?? r.data?.meaning ?? null;
+
         if (r.deleted_at) {
           const i = idx.get(r.id);
           if (i !== undefined) {
@@ -169,15 +174,15 @@ export default function Dictionary() {
           }
           continue;
         }
+
         const i = idx.get(r.id);
         if (i === undefined) {
           entries.unshift({
             id: r.id,
-            term: r.term ?? "",
-            yomi: r.yomi ?? "",
-            meaning: r.meaning ?? "",
-            // createdAt は保持していないので updated_at を代用
-            createdAt: r.updated_at ?? Date.now(),
+            term: String(term ?? ""),
+            yomi: yomi ?? "",
+            meaning: String(meaning ?? ""),
+            createdAt: r.updated_at ?? Date.now(), // createdAt不明の場合はupdated_atで代用
             updatedAt: r.updated_at ?? Date.now(),
           });
           idx.set(r.id, 0);
@@ -185,9 +190,9 @@ export default function Dictionary() {
           const cur = entries[i];
           entries[i] = {
             ...cur,
-            term: r.term ?? cur.term,
-            yomi: (r.yomi ?? cur.yomi) || "",
-            meaning: r.meaning ?? cur.meaning,
+            term: term != null ? String(term) : cur.term,
+            yomi: yomi != null ? String(yomi) : (cur.yomi ?? ""),
+            meaning: meaning != null ? String(meaning) : cur.meaning,
             updatedAt: r.updated_at ?? cur.updatedAt,
           };
         }
@@ -201,19 +206,32 @@ export default function Dictionary() {
   const doPullAll = async () => {
     try {
       const json = await pullBatch(USER_ID, getSince(), ["dictionary_entries"]);
-      applyEntryDiffs(json.diffs.dictionary_entries as any);
+      const rows = (json.diffs?.dictionary_entries ?? []) as any[];
+      applyEntryDiffs(rows);
       setSince(json.server_time_ms);
     } catch (e) {
+      // 静かに失敗（ネットワーク環境などを考慮）
       console.warn("[dictionary] pull-batch failed:", e);
-      // UIは静かに失敗
     }
   };
 
-  // ホームの「🔄 同期（受信）」合図を購読
+  // 初回マウントで一度だけPULL
+  useEffect(() => {
+    void doPullAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ホームの「🔄 同期（受信）」/「RESET」の合図を購読
   useEffect(() => {
     const handler = (payload: any) => {
-      if (!payload || payload.type !== "GLOBAL_SYNC_PULL") return;
-      void doPullAll();
+      if (!payload) return;
+      if (payload.type === "GLOBAL_SYNC_PULL") {
+        void doPullAll();
+      } else if (payload.type === "GLOBAL_SYNC_RESET") {
+        try { localStorage.setItem(SINCE_KEY, "0"); } catch {}
+        setStore((s) => ({ ...s, entries: [] })); // 画面側も一旦クリア
+        void doPullAll();
+      }
     };
 
     // BroadcastChannel
@@ -229,20 +247,19 @@ export default function Dictionary() {
     const onPostMessage = (e: MessageEvent) => handler(e.data);
     window.addEventListener("message", onPostMessage);
 
-    // storage
+    // storage（他タブ由来）
     const onStorage = (e: StorageEvent) => {
       if (e.key === "support-ai:sync:pull:req" && e.newValue) {
-        try {
-          handler(JSON.parse(e.newValue));
-        } catch {}
+        try { handler(JSON.parse(e.newValue)); } catch {}
+      }
+      if (e.key === "support-ai:sync:reset:req" && e.newValue) {
+        try { handler(JSON.parse(e.newValue)); } catch {}
       }
     };
     window.addEventListener("storage", onStorage);
 
     return () => {
-      try {
-        bc?.close();
-      } catch {}
+      try { bc?.close(); } catch {}
       window.removeEventListener("message", onPostMessage);
       window.removeEventListener("storage", onStorage);
     };
@@ -255,7 +272,8 @@ export default function Dictionary() {
     try {
       const updated_at = Date.now();
       const deviceId = getDeviceId();
-      const updated_by = `${/Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) ? "9" : "5"}|${deviceId}`;
+      const isMobile = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
+      const updated_by = `${isMobile ? "9" : "5"}|${deviceId}`;
 
       const change = {
         id: e.id,
@@ -277,7 +295,7 @@ export default function Dictionary() {
         changes: { dictionary_entries: [change] },
       });
 
-      // サーバー時刻を since に進めるため軽くpull
+      // サーバ時刻を進めておく
       await doPullAll();
     } catch (err) {
       console.warn("[dictionary] pushOne failed:", err);
@@ -290,7 +308,8 @@ export default function Dictionary() {
       const snapshot = storeRef.current;
       const updated_at = Date.now();
       const deviceId = getDeviceId();
-      const updated_by = `${/Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) ? "9" : "5"}|${deviceId}`;
+      const isMobile = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
+      const updated_by = `${isMobile ? "9" : "5"}|${deviceId}`;
 
       const changes = snapshot.entries.map((e) => ({
         id: e.id,
@@ -319,9 +338,7 @@ export default function Dictionary() {
       void manualPushAll();
     });
     return () => {
-      try {
-        unSub();
-      } catch {}
+      try { unSub(); } catch {}
     };
   }, []);
 
@@ -345,7 +362,6 @@ export default function Dictionary() {
     setYomi("");
     termRef.current?.focus();
 
-    // 即時PUSH
     void pushOne(e, false);
   };
 
@@ -390,7 +406,7 @@ export default function Dictionary() {
     if (target) void pushOne(target, true);
   };
 
-  // 全削除（※同期テーブルごと一掃はしない＝PUSHは各行個別でOK）
+  // 全削除（※同期テーブルごと一掃はしない）
   const clearAll = () => {
     if (!confirm("全件削除します。よろしいですか？")) return;
     const entries = storeRef.current.entries.slice();
