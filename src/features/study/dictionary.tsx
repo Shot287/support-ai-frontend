@@ -157,7 +157,7 @@ export default function Dictionary() {
 
     setStore((prev) => {
       const idx = new Map(prev.entries.map((e, i) => [e.id, i]));
-      let entries = prev.entries.slice();
+      const entries = prev.entries.slice(); // ← const に修正（再代入しない）
 
       for (const r of rows) {
         if (r.deleted_at) {
@@ -176,7 +176,7 @@ export default function Dictionary() {
             term: r.term ?? "",
             yomi: r.yomi ?? "",
             meaning: r.meaning ?? "",
-            // createdAt は保持していないので updated_at を代用（問題なし）
+            // createdAt は保持していないので updated_at を代用
             createdAt: r.updated_at ?? Date.now(),
             updatedAt: r.updated_at ?? Date.now(),
           });
@@ -277,8 +277,7 @@ export default function Dictionary() {
         changes: { dictionary_entries: [change] },
       });
 
-      // サーバー時刻を since に進めるために軽くpull（安全）
-      // ※大量更新時は不要だが単発では安全側に
+      // サーバー時刻を since に進めるため軽くpull
       await doPullAll();
     } catch (err) {
       console.warn("[dictionary] pushOne failed:", err);
@@ -324,7 +323,6 @@ export default function Dictionary() {
         unSub();
       } catch {}
     };
-    // storeはstoreRef参照なので依存なしOK
   }, []);
 
   /* ========= CRUD（ローカル更新＋即時PUSH） ========= */
@@ -395,7 +393,6 @@ export default function Dictionary() {
   // 全削除（※同期テーブルごと一掃はしない＝PUSHは各行個別でOK）
   const clearAll = () => {
     if (!confirm("全件削除します。よろしいですか？")) return;
-    // 先にPUSH（削除フラグ）→ ローカル削除
     const entries = storeRef.current.entries.slice();
     (async () => {
       for (const e of entries) {
