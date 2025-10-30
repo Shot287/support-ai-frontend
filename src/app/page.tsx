@@ -6,6 +6,41 @@ import { useCallback, useState } from "react";
 import { getDeviceId } from "@/lib/device";
 import { emitGlobalPull, emitGlobalPush } from "@/lib/sync-bus";
 
+// ★ このページ内で RESET 合図を発火（sync-bus に未実装でも動く）
+const SYNC_CHANNEL = "support-ai-sync";
+const STORAGE_KEY_RESET_REQ = "support-ai:sync:reset:req";
+
+function emitGlobalReset(userId: string, deviceId: string) {
+  const payload = {
+    type: "GLOBAL_SYNC_RESET",
+    userId,
+    deviceId,
+    at: Date.now(),
+    nonce: Math.random().toString(36).slice(2),
+  } as const;
+
+  // 1) BroadcastChannel
+  try {
+    if (typeof window !== "undefined" && "BroadcastChannel" in window) {
+      const bc = new BroadcastChannel(SYNC_CHANNEL);
+      bc.postMessage(payload);
+      bc.close();
+    }
+  } catch {}
+
+  // 2) 同タブ（postMessage）
+  try {
+    if (typeof window !== "undefined") window.postMessage(payload, "*");
+  } catch {}
+
+  // 3) 他タブ（storage）
+  try {
+    if (typeof window !== "undefined") {
+      localStorage.setItem(STORAGE_KEY_RESET_REQ, JSON.stringify(payload));
+    }
+  } catch {}
+}
+
 const categories = [
   { id: "nudge",  title: "先延ばし対策", description: "5秒ルールやポモドーロで初動をつくる", href: "/nudge" },
   { id: "sleep",  title: "睡眠管理",     description: "就寝・起床のリズムや振り返り（準備中）", href: "/sleep" },
@@ -23,9 +58,7 @@ function formatErrorDetail(err: unknown) {
         err.stack ? `stack:\n${err.stack}` : "",
       ].filter(Boolean).join("\n");
     }
-    if (typeof err === "object" && err !== null) {
-      return JSON.stringify(err, null, 2);
-    }
+    if (typeof err === "object" && err !== null) return JSON.stringify(err, null, 2);
     return String(err);
   } catch {
     return "不明なエラー（formatErrorDetail失敗）";
@@ -93,18 +126,24 @@ export default function HomePage() {
     setMessage(null);
     setBusy("reset");
     try {
-      // since カーソルを 0 に戻す（ユーザー単位）
-      const SINCE_KEY = `support-ai:sync:since:${userId}`;
-      localStorage.setItem(SINCE_KEY, "0");
+      // 1) since カーソルを 0 に戻す（ユーザー単位 + 辞書専用）
+      const SINCE_KEY_COMMON = `support-ai:sync:since:${userId}`;
+      const SINCE_KEY_DICT   = `support-ai:sync:since:${userId}:dictionary`;
+      localStorage.setItem(SINCE_KEY_COMMON, "0");
+      localStorage.setItem(SINCE_KEY_DICT, "0");
 
-      // すぐに全機能へ PULL 合図を送る
+      // 2) 全機能へ「RESET」合図をブロードキャスト
+      emitGlobalReset(userId, deviceId);
+
+      // 3) 念のため直後に「PULL」も投げて即時再取得
       emitGlobalPull(userId, deviceId);
 
       alert(
         [
           "⚠ 同期リセットを実行しました（since=0）。",
           "続けて“全受信”を要求しました。",
-          `SINCE_KEY: ${SINCE_KEY}`,
+          `SINCE_KEY(common): ${SINCE_KEY_COMMON}`,
+          `SINCE_KEY(dictionary): ${SINCE_KEY_DICT}`,
           `userId: ${userId}`,
           `deviceId: ${deviceId}`,
           `at: ${new Date().toLocaleString()}`,
