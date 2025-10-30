@@ -23,8 +23,8 @@ type Action = {
   id: ID;
   title: string;
   createdAt: number;
-  order: number;      // 並び順
-  isDone?: boolean;   // ★ サーバ is_done と同期
+  order: number; // 並び順
+  isDone?: boolean; // ★ サーバ is_done と同期
 };
 
 type ChecklistSet = {
@@ -88,7 +88,7 @@ const resetSince = () => {
 };
 
 const uid = () =>
-  (typeof crypto !== "undefined" && "randomUUID" in crypto)
+  typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
@@ -100,7 +100,7 @@ function fmtDuration(ms: number) {
   const m = Math.floor((s % 3600) / 60);
   const sec = s % 60;
   const hh = h > 0 ? `${h}時間` : "";
-  const mm = m > 0 ? `${m}分` : (h > 0 && sec > 0 ? "0分" : "");
+  const mm = m > 0 ? `${m}分` : h > 0 && sec > 0 ? "0分" : "";
   const ss = `${sec}秒`;
   return `${hh}${mm}${ss}`;
 }
@@ -112,11 +112,23 @@ function load(): Store {
       // 初期セット（ナイトルーティン例）
       const setId = uid();
       const titles = [
-        "夜ご飯待機","夜ご飯","食器を下げる","洗面所に行く","服を脱ぐ",
-        "風呂","歯磨き","服を着る","シェイカーに水を入れる","2階に行く",
+        "夜ご飯待機",
+        "夜ご飯",
+        "食器を下げる",
+        "洗面所に行く",
+        "服を脱ぐ",
+        "風呂",
+        "歯磨き",
+        "服を着る",
+        "シェイカーに水を入れる",
+        "2階に行く",
       ];
       const actions: Action[] = titles.map((t, i) => ({
-        id: uid(), title: t, createdAt: now(), order: i, isDone: false,
+        id: uid(),
+        title: t,
+        createdAt: now(),
+        order: i,
+        isDone: false,
       }));
       return {
         sets: [{ id: setId, title: "ナイトルーティン", actions, createdAt: now() }],
@@ -129,9 +141,9 @@ function load(): Store {
     // 後方互換（isDoneが未定義の過去データに false を補う）
     const normalized: Store = {
       ...parsed,
-      sets: (parsed.sets ?? []).map(s => ({
+      sets: (parsed.sets ?? []).map((s) => ({
         ...s,
-        actions: (s.actions ?? []).map(a => ({ ...a, isDone: a.isDone ?? false })),
+        actions: (s.actions ?? []).map((a) => ({ ...a, isDone: a.isDone ?? false })),
       })),
       version: 1,
     };
@@ -153,23 +165,25 @@ export default function Checklist() {
   const [store, setStore] = useState<Store>(() => load());
   const [msg, setMsg] = useState<string | null>(null);
   const pullingRef = useRef(false); // 多重PULL防止
-  const storeRef = useRef(store);   // 手動Pushで最新storeを参照
+  const storeRef = useRef(store); // 手動Pushで最新storeを参照
   useEffect(() => save(store), [store]);
-  useEffect(() => { storeRef.current = store; }, [store]);
+  useEffect(() => {
+    storeRef.current = store;
+  }, [store]);
 
   // ====== ここから同期（Set + Action）差し込み ======
   // Set の差分をローカルへマージ
-  const applySetDiffs = (rows: ChecklistSetRow[]) => {
-    if (!rows || rows.length === 0) return;
+  const applySetDiffs = (rows: readonly ChecklistSetRow[] = []) => {
+    if (rows.length === 0) return;
     setStore((prev) => {
-      const idxMap = new Map(prev.sets.map((s, i) => [s.id, i]));
+      const idxMap = new Map(prev.sets.map((s, i) => [s.id, i] as const));
       let sets = prev.sets.slice();
       let current = prev.current;
 
       for (const row of rows) {
         if (row.deleted_at) {
           const i = idxMap.get(row.id);
-          if (i !== undefined) {
+          if (i != null) {
             const removedId = sets[i].id;
             sets.splice(i, 1);
             idxMap.delete(row.id);
@@ -177,13 +191,14 @@ export default function Checklist() {
               const nextSet = sets[0];
               current = nextSet ? { setId: nextSet.id, index: 0, runId: uid() } : undefined;
             }
+            // インデックス再構築
             for (let k = i; k < sets.length; k++) idxMap.set(sets[k].id, k);
           }
           continue;
         }
 
         const i = idxMap.get(row.id);
-        if (i === undefined) {
+        if (i == null) {
           const created: ChecklistSet = {
             id: row.id,
             title: row.title,
@@ -203,8 +218,8 @@ export default function Checklist() {
   };
 
   // Action の差分をローカルへマージ（★ is_done を反映）
-  const applyActionDiffs = (rows: ChecklistActionRow[]) => {
-    if (!rows || rows.length === 0) return;
+  const applyActionDiffs = (rows: readonly ChecklistActionRow[] = []) => {
+    if (rows.length === 0) return;
     setStore((prev) => {
       const bySet = new Map<string, ChecklistActionRow[]>();
       for (const r of rows) {
@@ -216,13 +231,13 @@ export default function Checklist() {
         const patches = bySet.get(set.id);
         if (!patches || patches.length === 0) return set;
 
-        const idx = new Map(set.actions.map((a, i) => [a.id, i]));
+        const idx = new Map(set.actions.map((a, i) => [a.id, i] as const));
         let actions = set.actions.slice();
 
         for (const r of patches) {
           if (r.deleted_at) {
             const i = idx.get(r.id);
-            if (i !== undefined) {
+            if (i != null) {
               actions.splice(i, 1);
               idx.clear();
               actions.forEach((a, k) => idx.set(a.id, k));
@@ -230,7 +245,7 @@ export default function Checklist() {
             continue;
           }
           const i = idx.get(r.id);
-          if (i === undefined) {
+          if (i == null) {
             actions.push({
               id: r.id,
               title: r.title,
@@ -270,13 +285,14 @@ export default function Checklist() {
         "checklist_sets",
         "checklist_actions",
       ]);
-      applySetDiffs(json.diffs.checklist_sets);
-      applyActionDiffs(json.diffs.checklist_actions);
+      // ここで必ず空配列フォールバック
+      applySetDiffs(json.diffs.checklist_sets ?? []);
+      applyActionDiffs(json.diffs.checklist_actions ?? []);
       setSince(json.server_time_ms);
 
       // current.setId が消えていた/未選択の場合の保険
       setStore((prev) => {
-        if (!prev.current?.setId || !prev.sets.find(s => s.id === prev.current!.setId)) {
+        if (!prev.current?.setId || !prev.sets.find((s) => s.id === prev.current!.setId)) {
           const first = prev.sets[0];
           if (first) {
             return { ...prev, current: { setId: first.id, index: 0, runId: uid() } };
@@ -353,9 +369,7 @@ export default function Checklist() {
       if (payload.type === "GLOBAL_SYNC_PULL") {
         void doPullAll();
       } else if (payload.type === "GLOBAL_SYNC_RESET") {
-        // 1) since をゼロ化
         resetSince();
-        // 2) 直後に PULL 実行（ゼロから取り直し）
         void doPullAll();
         setMsg("同期をリセットし、サーバから再取得しました。");
       }
@@ -377,16 +391,22 @@ export default function Checklist() {
     // 3) 他タブ向け（storage 経由 pull 要求）
     const onStorage = (e: StorageEvent) => {
       if (e.key === "support-ai:sync:pull:req" && e.newValue) {
-        try { handler(JSON.parse(e.newValue)); } catch {}
+        try {
+          handler(JSON.parse(e.newValue));
+        } catch {}
       }
       if (e.key === "support-ai:sync:reset:req" && e.newValue) {
-        try { handler(JSON.parse(e.newValue)); } catch {}
+        try {
+          handler(JSON.parse(e.newValue));
+        } catch {}
       }
     };
     window.addEventListener("storage", onStorage);
 
     return () => {
-      try { bc?.close(); } catch {}
+      try {
+        bc?.close();
+      } catch {}
       window.removeEventListener("message", onPostMessage);
       window.removeEventListener("storage", onStorage);
     };
@@ -399,11 +419,15 @@ export default function Checklist() {
       console.log("[bus] push recv", p);
       void manualPushAll();
     });
-    return () => { try { unSub(); } catch {} };
+    return () => {
+      try {
+        unSub();
+      } catch {}
+    };
     // manualPushAll は storeRef を使うため依存なしでOK
   }, []);
 
-  // ★ 初回マウント時に一度だけ Pull（画面入り直し直後にDBの追加が即時反映されるように）
+  // ★ 初回マウント時に一度だけ Pull
   useEffect(() => {
     void doPullAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -681,7 +705,13 @@ export default function Checklist() {
     setStore((s) => ({
       ...s,
       current: s.current
-        ? { ...s.current, index: Math.max(0, Math.min(i, Math.max(0, (currentSet?.actions.length ?? 1) - 1))) }
+        ? {
+            ...s.current,
+            index: Math.max(
+              0,
+              Math.min(i, Math.max(0, (currentSet?.actions.length ?? 1) - 1))
+            ),
+          }
         : s.current,
     }));
   const prev = () => go(index - 1);
@@ -801,9 +831,10 @@ export default function Checklist() {
     setStore((s) => ({
       ...s,
       // 画面上の isDone を false に（開始＝未了）
-      sets: s.sets.map(set =>
-        set.id !== currentSet!.id ? set :
-        { ...set, actions: set.actions.map(x => x.id === a.id ? { ...x, isDone: false } : x) }
+      sets: s.sets.map((set) =>
+        set.id !== currentSet!.id
+          ? set
+          : { ...set, actions: set.actions.map((x) => (x.id === a.id ? { ...x, isDone: false } : x)) }
       ),
       current: { ...s.current!, running: { actionId: a.id, startAt: t } },
       runs: s.runs.map((r) =>
@@ -897,14 +928,13 @@ export default function Checklist() {
       });
 
       // 終了したアクションを isDone=true に
-      const nextSets = prev.sets.map(set =>
-        set.id !== cur.setId ? set :
-        {
-          ...set,
-          actions: set.actions.map(a =>
-            a.id === actionId ? { ...a, isDone: true } : a
-          ),
-        }
+      const nextSets = prev.sets.map((set) =>
+        set.id !== cur.setId
+          ? set
+          : {
+              ...set,
+              actions: set.actions.map((a) => (a.id === actionId ? { ...a, isDone: true } : a)),
+            }
       );
 
       if (isLast) {
@@ -933,8 +963,8 @@ export default function Checklist() {
     // サーバに is_done=true を同期
     (async () => {
       try {
-        const set = store.sets.find(s => s.id === store.current?.setId);
-        const a = set?.actions.find(x => x.id === actionId);
+        const set = store.sets.find((s) => s.id === store.current?.setId);
+        const a = set?.actions.find((x) => x.id === actionId);
         if (set && a) {
           await upsertChecklistAction({
             userId: USER_ID,
@@ -1029,7 +1059,7 @@ export default function Checklist() {
           </div>
         </div>
 
-        {(!running && procrastinating && procrastinating.fromActionId === null) && (
+        {!running && procrastinating && procrastinating.fromActionId === null && (
           <div className="mt-2 text-sm text-red-600">
             先延ばし中：{fmtDuration(procrastElapsedMs)}（1番目の行動を開始すると確定）
           </div>
@@ -1064,22 +1094,29 @@ export default function Checklist() {
             <div className="flex items-start justify-between gap-3">
               <h2 className="text-xl font-semibold break-words">
                 {action.title}
-                {action.isDone ? <span className="ml-2 text-xs text-green-600 align-middle">（完了）</span> : null}
+                {action.isDone ? (
+                  <span className="ml-2 text-xs text-green-600 align-middle">（完了）</span>
+                ) : null}
               </h2>
               <div className="flex gap-2">
-                <button onClick={() => moveAction(action.id, -1)} className="rounded-lg border px-2 py-1 text-sm">↑</button>
-                <button onClick={() => moveAction(action.id, +1)} className="rounded-lg border px-2 py-1 text-sm">↓</button>
-                <button onClick={() => renameAction(action.id)} className="rounded-lg border px-2 py-1 text-sm">名称変更</button>
-                <button onClick={() => removeAction(action.id)} className="rounded-lg border px-2 py-1 text-sm">削除</button>
+                <button onClick={() => moveAction(action.id, -1)} className="rounded-lg border px-2 py-1 text-sm">
+                  ↑
+                </button>
+                <button onClick={() => moveAction(action.id, +1)} className="rounded-lg border px-2 py-1 text-sm">
+                  ↓
+                </button>
+                <button onClick={() => renameAction(action.id)} className="rounded-lg border px-2 py-1 text-sm">
+                  名称変更
+                </button>
+                <button onClick={() => removeAction(action.id)} className="rounded-lg border px-2 py-1 text-sm">
+                  削除
+                </button>
               </div>
             </div>
 
             <div className="mt-4 flex flex-wrap items-center gap-3">
               {!running || running.actionId !== action.id ? (
-                <button
-                  onClick={() => startAction(action)}
-                  className="rounded-xl bg-black text-white px-5 py-3"
-                >
+                <button onClick={() => startAction(action)} className="rounded-xl bg-black text-white px-5 py-3">
                   開始
                 </button>
               ) : (
@@ -1099,14 +1136,10 @@ export default function Checklist() {
 
               {/* 状態表示 */}
               {running && running.actionId === action.id && (
-                <span className="text-sm text-gray-700">
-                  進行中：{fmtDuration(runningElapsedMs)}
-                </span>
+                <span className="text-sm text-gray-700">進行中：{fmtDuration(runningElapsedMs)}</span>
               )}
               {!running && procrastinating && procrastinating.fromActionId !== null && (
-                <span className="text-sm text-red-600">
-                  先延ばし中：{fmtDuration(procrastElapsedMs)}
-                </span>
+                <span className="text-sm text-red-600">先延ばし中：{fmtDuration(procrastElapsedMs)}</span>
               )}
             </div>
           </>
@@ -1133,13 +1166,22 @@ export default function Checklist() {
                   onClick={() => go(i)}
                   className="text-left underline-offset-2 hover:underline min-w-0 break-words"
                 >
-                  {a.title}{a.isDone ? "（完了）" : ""}
+                  {a.title}
+                  {a.isDone ? "（完了）" : ""}
                 </button>
                 <div className="flex gap-1">
-                  <button onClick={() => moveAction(a.id, -1)} className="rounded-lg border px-2 py-1 text-xs">↑</button>
-                  <button onClick={() => moveAction(a.id, +1)} className="rounded-lg border px-2 py-1 text-xs">↓</button>
-                  <button onClick={() => renameAction(a.id)} className="rounded-lg border px-2 py-1 text-xs">名</button>
-                  <button onClick={() => removeAction(a.id)} className="rounded-lg border px-2 py-1 text-xs">削</button>
+                  <button onClick={() => moveAction(a.id, -1)} className="rounded-lg border px-2 py-1 text-xs">
+                    ↑
+                  </button>
+                  <button onClick={() => moveAction(a.id, +1)} className="rounded-lg border px-2 py-1 text-xs">
+                    ↓
+                  </button>
+                  <button onClick={() => renameAction(a.id)} className="rounded-lg border px-2 py-1 text-xs">
+                    名
+                  </button>
+                  <button onClick={() => removeAction(a.id)} className="rounded-lg border px-2 py-1 text-xs">
+                    削
+                  </button>
                 </div>
               </li>
             ))}
