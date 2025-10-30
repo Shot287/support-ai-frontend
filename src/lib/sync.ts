@@ -29,7 +29,7 @@ export type ChecklistActionRow = {
   updated_at: number;
   updated_by: string;
   deleted_at: number | null;
-  is_done?: boolean; // サーバ返却がなくても安全に受け取れるよう optional
+  is_done?: boolean; // optional で受け取り安全化
 };
 
 export type ChecklistActionLogRow = {
@@ -45,7 +45,7 @@ export type ChecklistActionLogRow = {
   deleted_at: number | null;
 };
 
-/** ★ 追加：用語辞典の行 */
+/** ★ 追加：用語辞典の行（data JSONB をサーバ側で展開する想定。null 許容で安全化） */
 export type DictionaryEntryRow = {
   id: string;
   user_id: string;
@@ -89,8 +89,7 @@ export type TableName = (typeof DEFAULT_TABLES)[number];
 const isMobileDevice = () =>
   typeof navigator !== "undefined" && /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
 
-const makeUpdatedBy = (deviceId: string) =>
-  `${isMobileDevice() ? "9" : "5"}|${deviceId}`;
+const makeUpdatedBy = (deviceId: string) => `${isMobileDevice() ? "9" : "5"}|${deviceId}`;
 const makeUpdatedAt = () => (isMobileDevice() ? nowMs() + 2 : nowMs());
 
 /* =====================
@@ -219,7 +218,15 @@ export function startChecklistPolling(opts: {
   tables?: readonly TableName[];
   abortSignal?: AbortSignal;
 }) {
-  const { userId, getSince, setSince, applyDiffs, intervalMs = 15000, tables = DEFAULT_TABLES, abortSignal } = opts;
+  const {
+    userId,
+    getSince,
+    setSince,
+    applyDiffs,
+    intervalMs = 15000,
+    tables = DEFAULT_TABLES,
+    abortSignal,
+  } = opts;
   let timer: any;
 
   async function tick() {
@@ -296,7 +303,18 @@ export function startSmartSync(opts: {
   pollingIntervalMs?: number;
   abortSignal?: AbortSignal;
 }) {
-  const { userId, deviceId, getSince, setSince, applyDiffs, tables = DEFAULT_TABLES, fallbackPolling = true, pollingIntervalMs = 30000, abortSignal } = opts;
+  const {
+    userId,
+    deviceId,
+    getSince,
+    setSince,
+    applyDiffs,
+    tables = DEFAULT_TABLES,
+    fallbackPolling = true,
+    pollingIntervalMs = 30000,
+    abortSignal,
+  } = opts;
+
   const sseCtl = startRealtimeSync({ userId, getSince, setSince, applyDiffs, tables, abortSignal });
   let pollCtl: { stop: () => void } | undefined;
 
@@ -353,7 +371,11 @@ export async function upsertChecklistAction(p: {
       updated_at: makeUpdatedAt(),
       updated_by: makeUpdatedBy(p.deviceId),
       deleted_at: null,
-      data: { title: p.title, order: p.order, ...(typeof p.is_done === "boolean" ? { is_done: p.is_done } : {}) },
+      data: {
+        title: p.title,
+        order: p.order,
+        ...(typeof p.is_done === "boolean" ? { is_done: p.is_done } : {}),
+      },
     }],
   });
   await pushBatch(payload);
@@ -377,7 +399,11 @@ export async function deleteChecklistAction(p: {
       updated_at: makeUpdatedAt(),
       updated_by: makeUpdatedBy(p.deviceId),
       deleted_at: nowMs(),
-      data: { title: p.title, order: p.order, ...(typeof p.is_done === "boolean" ? { is_done: p.is_done } : {}) },
+      data: {
+        title: p.title,
+        order: p.order,
+        ...(typeof p.is_done === "boolean" ? { is_done: p.is_done } : {}),
+      },
     }],
   });
   await pushBatch(payload);
