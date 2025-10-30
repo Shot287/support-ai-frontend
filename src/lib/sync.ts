@@ -1,9 +1,10 @@
 // frontend/src/lib/sync.ts
 // ===================================================
 // ✅ Support-AI 同期ライブラリ（手動同期（Anki型）対応版）
-//    - API I/F は後方互換を維持
+//    - 既存APIは後方互換を維持
 //    - is_done を Action upsert/delete に対応
-//    - SSE/ポーリングは非推奨（残置）
+//    - dictionary_entries を同期対象に追加
+//    - SSE/ポーリングは非推奨（互換のため残置）
 // ===================================================
 
 /* =====================
@@ -28,8 +29,7 @@ export type ChecklistActionRow = {
   updated_at: number;
   updated_by: string;
   deleted_at: number | null;
-  // ※ 現状のサーバ返却は未同梱だが、将来的な双方向同期のため型だけ許容
-  is_done?: boolean;
+  is_done?: boolean; // サーバ返却がなくても安全に受け取れるよう optional
 };
 
 export type ChecklistActionLogRow = {
@@ -45,12 +45,28 @@ export type ChecklistActionLogRow = {
   deleted_at: number | null;
 };
 
+/** ★ 追加：用語辞典の行 */
+export type DictionaryEntryRow = {
+  id: string;
+  user_id: string;
+  term: string | null;
+  yomi: string | null;
+  meaning: string | null;
+  updated_at: number;
+  updated_by: string;
+  deleted_at: number | null;
+};
+
 export type PullResponse = {
   server_time_ms: number;
   diffs: {
-    checklist_sets: ChecklistSetRow[];
-    checklist_actions: ChecklistActionRow[];
-    checklist_action_logs: ChecklistActionLogRow[];
+    checklist_sets?: ChecklistSetRow[];
+    checklist_actions?: ChecklistActionRow[];
+    checklist_action_logs?: ChecklistActionLogRow[];
+    /** ★ 追加：辞書の差分 */
+    dictionary_entries?: DictionaryEntryRow[];
+    /** 将来拡張のための逃げ道 */
+    [k: string]: unknown;
   };
 };
 
@@ -61,10 +77,12 @@ const BACKEND = process.env.NEXT_PUBLIC_BACKEND!;
 const APP_KEY = process.env.NEXT_PUBLIC_APP_KEY!;
 const nowMs = () => Date.now();
 
+/** ★ 追加：dictionary_entries を既定の pull 対象に含める */
 const DEFAULT_TABLES = [
   "checklist_sets",
   "checklist_actions",
   "checklist_action_logs",
+  "dictionary_entries",
 ] as const;
 export type TableName = (typeof DEFAULT_TABLES)[number];
 
@@ -154,8 +172,23 @@ function pushBatchPayload(params: {
     deleted_at?: number | null;
     data?: { start_at_ms?: number | null; end_at_ms?: number | null; duration_ms?: number | null };
   }>;
+  /** ★ 追加：辞書の変更 */
+  dictionary_entries?: Array<{
+    id: string;
+    updated_at?: number;
+    updated_by?: string;
+    deleted_at?: number | null;
+    data?: { term?: string; yomi?: string; meaning?: string };
+  }>;
 }) {
-  const { userId, deviceId, sets = [], actions = [], action_logs = [] } = params;
+  const {
+    userId,
+    deviceId,
+    sets = [],
+    actions = [],
+    action_logs = [],
+    dictionary_entries = [],
+  } = params;
   return {
     user_id: userId,
     device_id: deviceId,
@@ -163,6 +196,8 @@ function pushBatchPayload(params: {
       checklist_sets: sets,
       checklist_actions: actions,
       checklist_action_logs: action_logs,
+      /** ★ 追加 */
+      dictionary_entries,
     },
   };
 }
@@ -276,7 +311,7 @@ export function startSmartSync(opts: {
 }
 
 /* =====================
- * Upsert/Delete API
+ * Upsert/Delete API（チェックリスト）
  * ===================== */
 export async function upsertChecklistSet(p: {
   userId: string;
@@ -307,7 +342,7 @@ export async function upsertChecklistAction(p: {
   set_id: string;
   title: string;
   order: number;
-  is_done?: boolean; // ★ 追加：完了状態の同期（任意）
+  is_done?: boolean;
 }) {
   const payload = pushBatchPayload({
     userId: p.userId,
@@ -331,7 +366,7 @@ export async function deleteChecklistAction(p: {
   set_id: string;
   title?: string;
   order?: number;
-  is_done?: boolean; // ★ 追加：サーバ側で使う/使わないは任意
+  is_done?: boolean;
 }) {
   const payload = pushBatchPayload({
     userId: p.userId,
@@ -401,17 +436,55 @@ export async function upsertChecklistActionLogEnd(p: {
 }
 
 /* =====================
- * 後方互換シム
+ * 用語辞典 Upsert/Delete（新規）
  * ===================== */
-
-// 旧ホーム画面用：「全機能をこの端末で同期」互換（現仕様ではホーム側の“受信ボタン”がグローバル合図を出す）
-// → ここでは no-op（将来：ローカル→サーバ push の“この端末を正”が必要になったら実装）
-export async function forceSyncAllMaster(_opts: { userId: string; deviceId: string }) {
-  return;
+export async function upsertDictionaryEntry(p: {
+  userId: string;
+  deviceId: string;
+  id: string;
+  term?: string;
+  yomi?: string;
+  meaning?: string;
+  deleted_at?: number | null;
+}) {
+  const payload = pushBatchPayload({
+    userId: p.userId,
+    deviceId: p.deviceId,
+    dictionary_entries: [{
+      id: p.id,
+      updated_at: makeUpdatedAt(),
+      updated_by: makeUpdatedBy(p.deviceId),
+      deleted_at: p.deleted_at ?? null,
+      data: { term: p.term, yomi: p.yomi, meaning: p.meaning },
+    }],
+  });
+  await pushBatch(payload);
 }
 
-// 旧チェックリスト画面用：「この端末を正にする」互換
-// 互換のため：少なくとも最新を pull して適用しておく
+export async function deleteDictionaryEntry(p: {
+  userId: string;
+  deviceId: string;
+  id: string;
+}) {
+  const payload = pushBatchPayload({
+    userId: p.userId,
+    deviceId: p.deviceId,
+    dictionary_entries: [{
+      id: p.id,
+      updated_at: makeUpdatedAt(),
+      updated_by: makeUpdatedBy(p.deviceId),
+      deleted_at: nowMs(),
+      data: {},
+    }],
+  });
+  await pushBatch(payload);
+}
+
+/* =====================
+ * 後方互換シム
+ * ===================== */
+export async function forceSyncAllMaster(_opts: { userId: string; deviceId: string }) { return; }
+
 export async function forceSyncAsMaster(opts: {
   userId: string;
   deviceId: string; // 未使用だが互換のため受け取る

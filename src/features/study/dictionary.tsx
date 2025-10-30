@@ -4,6 +4,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toSearchKey } from "@/features/study/kana";
 
+// ▼▼ 追加：同期ユーティリティ
+import { pullBatch, pushBatch } from "@/lib/sync";
+import { subscribeGlobalPush } from "@/lib/sync-bus";
+import { getDeviceId } from "@/lib/device";
+
 /* ========= 型 ========= */
 type ID = string;
 type Entry = {
@@ -32,6 +37,17 @@ type StoreAny = StoreV2 | StoreV1;
 
 /* ========= 定数 / ユーティリティ ========= */
 const KEY = "dictionary_v1";
+
+// ★ 同期関連（簡易版）
+const USER_ID = "demo"; // 認証導入までは固定
+const SINCE_KEY = `support-ai:sync:since:${USER_ID}`;
+const getSince = () => {
+  const v = typeof window !== "undefined" ? localStorage.getItem(SINCE_KEY) : null;
+  return v ? Number(v) : 0;
+};
+const setSince = (ms: number) => {
+  if (typeof window !== "undefined") localStorage.setItem(SINCE_KEY, String(ms));
+};
 
 const uid = () =>
   (typeof crypto !== "undefined" && "randomUUID" in crypto)
@@ -72,7 +88,11 @@ function save(s: StoreV2) {
 /* ========= 本体 ========= */
 export default function Dictionary() {
   const [store, setStore] = useState<StoreV2>(() => load());
+  const storeRef = useRef(store);
   useEffect(() => save(store), [store]);
+  useEffect(() => {
+    storeRef.current = store;
+  }, [store]);
 
   // 追加フォーム
   const [term, setTerm] = useState("");
@@ -120,6 +140,195 @@ export default function Dictionary() {
     return hit;
   }, [store.entries, q, sortKey, sortAsc]);
 
+  /* ========= 同期：受信（PULL） ========= */
+
+  // サーバ差分をローカルへ反映
+  const applyEntryDiffs = (rows: Array<{
+    id: string;
+    user_id: string;
+    term: string | null;
+    yomi?: string | null;
+    meaning: string | null;
+    updated_at: number;
+    updated_by?: string | null;
+    deleted_at?: number | null;
+  }>) => {
+    if (!rows || rows.length === 0) return;
+
+    setStore((prev) => {
+      const idx = new Map(prev.entries.map((e, i) => [e.id, i]));
+      let entries = prev.entries.slice();
+
+      for (const r of rows) {
+        if (r.deleted_at) {
+          const i = idx.get(r.id);
+          if (i !== undefined) {
+            entries.splice(i, 1);
+            idx.clear();
+            entries.forEach((e, k) => idx.set(e.id, k));
+          }
+          continue;
+        }
+        const i = idx.get(r.id);
+        if (i === undefined) {
+          entries.unshift({
+            id: r.id,
+            term: r.term ?? "",
+            yomi: r.yomi ?? "",
+            meaning: r.meaning ?? "",
+            // createdAt は保持していないので updated_at を代用（問題なし）
+            createdAt: r.updated_at ?? Date.now(),
+            updatedAt: r.updated_at ?? Date.now(),
+          });
+          idx.set(r.id, 0);
+        } else {
+          const cur = entries[i];
+          entries[i] = {
+            ...cur,
+            term: r.term ?? cur.term,
+            yomi: (r.yomi ?? cur.yomi) || "",
+            meaning: r.meaning ?? cur.meaning,
+            updatedAt: r.updated_at ?? cur.updatedAt,
+          };
+        }
+      }
+
+      return { ...prev, entries };
+    });
+  };
+
+  // 受信本体
+  const doPullAll = async () => {
+    try {
+      const json = await pullBatch(USER_ID, getSince(), ["dictionary_entries"]);
+      applyEntryDiffs(json.diffs.dictionary_entries as any);
+      setSince(json.server_time_ms);
+    } catch (e) {
+      console.warn("[dictionary] pull-batch failed:", e);
+      // UIは静かに失敗
+    }
+  };
+
+  // ホームの「🔄 同期（受信）」合図を購読
+  useEffect(() => {
+    const handler = (payload: any) => {
+      if (!payload || payload.type !== "GLOBAL_SYNC_PULL") return;
+      void doPullAll();
+    };
+
+    // BroadcastChannel
+    let bc: BroadcastChannel | undefined;
+    try {
+      if ("BroadcastChannel" in window) {
+        bc = new BroadcastChannel("support-ai-sync");
+        bc.onmessage = (e) => handler(e.data);
+      }
+    } catch {}
+
+    // postMessage
+    const onPostMessage = (e: MessageEvent) => handler(e.data);
+    window.addEventListener("message", onPostMessage);
+
+    // storage
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === "support-ai:sync:pull:req" && e.newValue) {
+        try {
+          handler(JSON.parse(e.newValue));
+        } catch {}
+      }
+    };
+    window.addEventListener("storage", onStorage);
+
+    return () => {
+      try {
+        bc?.close();
+      } catch {}
+      window.removeEventListener("message", onPostMessage);
+      window.removeEventListener("storage", onStorage);
+    };
+  }, []);
+
+  /* ========= 同期：送信（PUSH） ========= */
+
+  // 単発アップサート
+  const pushOne = async (e: Entry, deleted = false) => {
+    try {
+      const updated_at = Date.now();
+      const deviceId = getDeviceId();
+      const updated_by = `${/Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) ? "9" : "5"}|${deviceId}`;
+
+      const change = {
+        id: e.id,
+        updated_at,
+        updated_by,
+        deleted_at: deleted ? updated_at : null,
+        data: deleted
+          ? {}
+          : {
+              term: e.term,
+              yomi: e.yomi ?? "",
+              meaning: e.meaning,
+            },
+      };
+
+      await pushBatch({
+        user_id: USER_ID,
+        device_id: deviceId,
+        changes: { dictionary_entries: [change] },
+      });
+
+      // サーバー時刻を since に進めるために軽くpull（安全）
+      // ※大量更新時は不要だが単発では安全側に
+      await doPullAll();
+    } catch (err) {
+      console.warn("[dictionary] pushOne failed:", err);
+    }
+  };
+
+  // 全量アップロード（ホームの「☁ 手動アップロード」合図に反応）
+  const manualPushAll = async () => {
+    try {
+      const snapshot = storeRef.current;
+      const updated_at = Date.now();
+      const deviceId = getDeviceId();
+      const updated_by = `${/Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) ? "9" : "5"}|${deviceId}`;
+
+      const changes = snapshot.entries.map((e) => ({
+        id: e.id,
+        updated_at,
+        updated_by,
+        deleted_at: null,
+        data: { term: e.term, yomi: e.yomi ?? "", meaning: e.meaning },
+      }));
+
+      await pushBatch({
+        user_id: USER_ID,
+        device_id: deviceId,
+        changes: { dictionary_entries: changes },
+      });
+
+      await doPullAll();
+    } catch (e) {
+      console.warn("[dictionary] manualPushAll failed:", e);
+    }
+  };
+
+  // グローバルPush購読
+  useEffect(() => {
+    const unSub = subscribeGlobalPush((p) => {
+      if (!p || p.userId !== USER_ID) return;
+      void manualPushAll();
+    });
+    return () => {
+      try {
+        unSub();
+      } catch {}
+    };
+    // storeはstoreRef参照なので依存なしOK
+  }, []);
+
+  /* ========= CRUD（ローカル更新＋即時PUSH） ========= */
+
   // 追加
   const add = () => {
     const t = term.trim();
@@ -131,11 +340,15 @@ export default function Dictionary() {
     }
     const now = Date.now();
     const e: Entry = { id: uid(), term: t, meaning: m, yomi: y, createdAt: now, updatedAt: now };
+
     setStore((s) => ({ ...s, entries: [e, ...s.entries] }));
     setTerm("");
     setMeaning("");
     setYomi("");
     termRef.current?.focus();
+
+    // 即時PUSH
+    void pushOne(e, false);
   };
 
   // 編集開始
@@ -159,26 +372,40 @@ export default function Dictionary() {
       return;
     }
     const now = Date.now();
-    setStore((s) => ({
-      ...s,
-      entries: s.entries.map((x) =>
-        x.id === editingId ? { ...x, term: t, meaning: m, yomi: y, updatedAt: now } : x
-      ),
-    }));
+
+    let changed: Entry | null = null;
+    setStore((s) => {
+      const entries = s.entries.map((x) =>
+        x.id === editingId ? (changed = { ...x, term: t, meaning: m, yomi: y, updatedAt: now }) : x
+      ) as Entry[];
+      return { ...s, entries };
+    });
     setEditingId(null);
+
+    if (changed) void pushOne(changed, false);
   };
 
   // 削除
-  const remove = (id: ID) =>
+  const remove = (id: ID) => {
+    const target = store.entries.find((e) => e.id === id);
     setStore((s) => ({ ...s, entries: s.entries.filter((x) => x.id !== id) }));
+    if (target) void pushOne(target, true);
+  };
 
-  // 全削除
+  // 全削除（※同期テーブルごと一掃はしない＝PUSHは各行個別でOK）
   const clearAll = () => {
     if (!confirm("全件削除します。よろしいですか？")) return;
+    // 先にPUSH（削除フラグ）→ ローカル削除
+    const entries = storeRef.current.entries.slice();
+    (async () => {
+      for (const e of entries) {
+        await pushOne(e, true);
+      }
+    })();
     setStore({ entries: [], version: 2 });
   };
 
-  // JSON 入出力
+  // JSON 入出力（ローカルのみ。必要なら全量PUSHボタンで反映可能）
   const exportJson = () => {
     const blob = new Blob([JSON.stringify(store, null, 2)], {
       type: "application/json;charset=utf-8",
@@ -198,7 +425,7 @@ export default function Dictionary() {
       try {
         const parsed = migrate(JSON.parse(String(reader.result)) as StoreAny);
         setStore(parsed);
-        alert("インポートしました。");
+        alert("インポートしました。必要ならホームの『☁ 手動アップロード』でクラウドへ反映してください。");
       } catch {
         alert("JSONの読み込みに失敗しました。");
       }
