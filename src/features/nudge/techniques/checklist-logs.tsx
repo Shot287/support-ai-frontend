@@ -2,8 +2,6 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-
-// 同期ユーティリティ（pull/SSE を使う）
 import {
   startSmartSync,
   pullBatch,
@@ -21,10 +19,11 @@ type Action = { id: ID; title: string; order: number };
 type ChecklistSet = { id: ID; title: string; actions: Action[]; createdAt: number };
 
 /* ===== 同期ユーティリティ ===== */
-const USER_ID = "demo"; // 本実装ではログインID等に差し替え
+const USER_ID = "demo";
 const SINCE_KEY = `support-ai:sync:since:${USER_ID}`;
 const getSince = () => {
-  const v = typeof window !== "undefined" ? localStorage.getItem(SINCE_KEY) : null;
+  if (typeof window === "undefined") return 0;
+  const v = localStorage.getItem(SINCE_KEY);
   return v ? Number(v) : 0;
 };
 const setSince = (ms: number) => {
@@ -78,8 +77,8 @@ export default function ChecklistLogs() {
   const [date, setDate] = useState<string>(() => dateToYmdJst(new Date()));
 
   // ---- diffs 反映（Set/Action） ----
-  const applySetDiffs = (rows: ChecklistSetRow[]) => {
-    if (!rows || rows.length === 0) return;
+  const applySetDiffs = (rows: readonly ChecklistSetRow[] = []) => {
+    if (rows.length === 0) return;
     setSets((prev) => {
       const idx = new Map(prev.map((s, i) => [s.id, i] as const));
       const next = prev.slice();
@@ -110,8 +109,8 @@ export default function ChecklistLogs() {
     });
   };
 
-  const applyActionDiffs = (rows: ChecklistActionRow[]) => {
-    if (!rows || rows.length === 0) return;
+  const applyActionDiffs = (rows: readonly ChecklistActionRow[] = []) => {
+    if (rows.length === 0) return;
     setSets((prev) => {
       const bySet = new Map<string, ChecklistActionRow[]>();
       for (const r of rows) {
@@ -161,8 +160,8 @@ export default function ChecklistLogs() {
   };
 
   // ---- diffs 反映（Action Logs） ----
-  const applyLogDiffs = (rows: ChecklistActionLogRow[]) => {
-    if (!rows || rows.length === 0) return;
+  const applyLogDiffs = (rows: readonly ChecklistActionLogRow[] = []) => {
+    if (rows.length === 0) return;
     setLogs((prev) => {
       const map = new Map<string, ChecklistActionLogRow>();
       for (const x of prev) map.set(x.id, x);
@@ -170,10 +169,9 @@ export default function ChecklistLogs() {
         if (r.deleted_at) {
           map.delete(r.id);
         } else {
-          map.set(r.id, r);
+          map.set(r.id, r as ChecklistActionLogRow);
         }
       }
-      // 安定化のため updated_at でソート
       return Array.from(map.values()).sort(
         (a, b) => (a.updated_at ?? 0) - (b.updated_at ?? 0)
       );
@@ -190,9 +188,9 @@ export default function ChecklistLogs() {
           "checklist_actions",
           "checklist_action_logs",
         ]);
-        applySetDiffs(json.diffs.checklist_sets ?? []);
-        applyActionDiffs(json.diffs.checklist_actions ?? []);
-        applyLogDiffs((json.diffs.checklist_action_logs ?? []) as ChecklistActionLogRow[]);
+        applySetDiffs(json.diffs.checklist_sets);
+        applyActionDiffs(json.diffs.checklist_actions);
+        applyLogDiffs(json.diffs.checklist_action_logs);
         setSince(json.server_time_ms);
       } catch {
         setMsg("同期に失敗しました。しばらくしてから再度お試しください。");
@@ -205,9 +203,9 @@ export default function ChecklistLogs() {
       getSince,
       setSince,
       applyDiffs: (diffs: PullResponse["diffs"]) => {
-        applySetDiffs(diffs.checklist_sets ?? []);
-        applyActionDiffs(diffs.checklist_actions ?? []);
-        applyLogDiffs((diffs.checklist_action_logs ?? []) as ChecklistActionLogRow[]);
+        applySetDiffs(diffs.checklist_sets);
+        applyActionDiffs(diffs.checklist_actions);
+        applyLogDiffs(diffs.checklist_action_logs);
       },
       fallbackPolling: true,
       pollingIntervalMs: 30000,
@@ -222,10 +220,8 @@ export default function ChecklistLogs() {
 
   /* ===== 画面用の組み立て ===== */
 
-  // セット/行動を素早く引くための辞書
   const setMap = useMemo(() => new Map(sets.map((s) => [s.id, s] as const)), [sets]);
 
-  // 表示する日のログのみ抽出
   const day = useMemo(() => dayRangeJst(date), [date]);
   const dayLogs = useMemo(() => {
     const { start, end } = day;
@@ -236,7 +232,6 @@ export default function ChecklistLogs() {
     );
   }, [logs, day]);
 
-  // set_id ごとに、開始時刻で並べて「直前先延ばし→行動」を構成
   const view = useMemo(() => {
     const bySet = new Map<string, ChecklistActionLogRow[]>();
     for (const r of dayLogs) {
@@ -246,7 +241,6 @@ export default function ChecklistLogs() {
 
     const list = Array.from(bySet.entries()).map(([setId, items]) => {
       const set = setMap.get(setId);
-      // 開始基準でソート（同値は updated_at）
       items.sort(
         (a, b) =>
           (a.start_at_ms ?? 0) - (b.start_at_ms ?? 0) ||
@@ -264,7 +258,6 @@ export default function ChecklistLogs() {
           it.duration_ms ??
           (actStart != null && actEnd != null ? actEnd - actStart : undefined);
 
-        // 直前先延ばし（前の行動の終了〜今回の開始）
         let procrast: Row["procrast"] = null;
         if (prevEnd != null && actStart != null && actStart > prevEnd) {
           procrast = { startAt: prevEnd, endAt: actStart, durationMs: actStart - prevEnd };
@@ -276,14 +269,14 @@ export default function ChecklistLogs() {
           action: { startAt: actStart ?? 0, endAt: actEnd, durationMs: actDur },
         });
 
-        prevEnd = actEnd ?? prevEnd; // 終了があるときだけ更新
+        prevEnd = actEnd ?? prevEnd;
       }
 
       const sumAction = rows.reduce((s, r) => s + (r.action.durationMs ?? 0), 0);
       const sumPro = rows.reduce((s, r) => s + (r.procrast?.durationMs ?? 0), 0);
 
       return {
-        runId: uid(), // 同期ログには run の概念が無いので、表示用IDを都度生成
+        runId: uid(),
         setTitle: set?.title ?? "(不明なセット)",
         rows,
         sumAction,
@@ -291,7 +284,6 @@ export default function ChecklistLogs() {
       };
     });
 
-    // セット名でソート
     return list.sort((a, b) => a.setTitle.localeCompare(b.setTitle, "ja"));
   }, [dayLogs, setMap]);
 
@@ -323,7 +315,6 @@ export default function ChecklistLogs() {
               <div className="flex items-center gap-3">
                 <h3 className="font-semibold">{v.setTitle}</h3>
               </div>
-              {/* 同期データなので UI は参照専用 */}
               <button
                 disabled
                 className="rounded-xl border px-3 py-1.5 text-sm text-gray-400"
