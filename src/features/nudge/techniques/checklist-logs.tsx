@@ -10,7 +10,7 @@ import {
   type PullResponse,
   type ChecklistSetRow,
   type ChecklistActionRow,
-  type ChecklistActionLogRow, // /lib/sync から型を取得
+  type ChecklistActionLogRow,
 } from "@/lib/sync";
 import { getDeviceId } from "@/lib/device";
 
@@ -32,7 +32,7 @@ const setSince = (ms: number) => {
 };
 
 const uid = () =>
-  typeof crypto !== "undefined" && "randomUUID" in crypto
+  (typeof crypto !== "undefined" && "randomUUID" in crypto)
     ? crypto.randomUUID()
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
@@ -82,7 +82,7 @@ export default function ChecklistLogs() {
     if (!rows || rows.length === 0) return;
     setSets((prev) => {
       const idx = new Map(prev.map((s, i) => [s.id, i] as const));
-      const next = prev.slice(); // ← 再代入しないので const に変更
+      const next = prev.slice();
       for (const r of rows) {
         if (r.deleted_at) {
           const i = idx.get(r.id);
@@ -190,9 +190,9 @@ export default function ChecklistLogs() {
           "checklist_actions",
           "checklist_action_logs",
         ]);
-        applySetDiffs(json.diffs.checklist_sets);
-        applyActionDiffs(json.diffs.checklist_actions);
-        applyLogDiffs(json.diffs.checklist_action_logs as ChecklistActionLogRow[]);
+        applySetDiffs(json.diffs.checklist_sets ?? []);
+        applyActionDiffs(json.diffs.checklist_actions ?? []);
+        applyLogDiffs((json.diffs.checklist_action_logs ?? []) as ChecklistActionLogRow[]);
         setSince(json.server_time_ms);
       } catch {
         setMsg("同期に失敗しました。しばらくしてから再度お試しください。");
@@ -205,9 +205,9 @@ export default function ChecklistLogs() {
       getSince,
       setSince,
       applyDiffs: (diffs: PullResponse["diffs"]) => {
-        applySetDiffs(diffs.checklist_sets);
-        applyActionDiffs(diffs.checklist_actions);
-        applyLogDiffs(diffs.checklist_action_logs as ChecklistActionLogRow[]);
+        applySetDiffs(diffs.checklist_sets ?? []);
+        applyActionDiffs(diffs.checklist_actions ?? []);
+        applyLogDiffs((diffs.checklist_action_logs ?? []) as ChecklistActionLogRow[]);
       },
       fallbackPolling: true,
       pollingIntervalMs: 30000,
