@@ -39,7 +39,8 @@ const KEY = "dictionary_v1";
 
 // ★ 同期関連（簡易版）
 const USER_ID = "demo"; // 認証導入までは固定
-const SINCE_KEY = `support-ai:sync:since:${USER_ID}`;
+// ✅ チェックリストとSINCEを共有しないよう辞書専用キーにする
+const SINCE_KEY = `support-ai:sync:since:${USER_ID}:dictionary`;
 const getSince = () => {
   const v = typeof window !== "undefined" ? localStorage.getItem(SINCE_KEY) : null;
   return v ? Number(v) : 0;
@@ -151,7 +152,6 @@ export default function Dictionary() {
     updated_at: number;
     updated_by?: string | null;
     deleted_at?: number | null;
-    // data フォールバック
     data?: { term?: string | null; yomi?: string | null; meaning?: string | null };
   }>) => {
     if (!rows || rows.length === 0) return;
@@ -229,7 +229,8 @@ export default function Dictionary() {
         void doPullAll();
       } else if (payload.type === "GLOBAL_SYNC_RESET") {
         try { localStorage.setItem(SINCE_KEY, "0"); } catch {}
-        setStore((s) => ({ ...s, entries: [] })); // 画面側も一旦クリア
+        // 画面側は保持してもOKだが、混乱しないよう一旦クリアして再取得
+        setStore((s) => ({ ...s, entries: [] }));
         void doPullAll();
       }
     };
@@ -295,7 +296,7 @@ export default function Dictionary() {
         changes: { dictionary_entries: [change] },
       });
 
-      // サーバ時刻を進めておく
+      // サーバ時刻を進めておく（以後のpullで取りこぼさない）
       await doPullAll();
     } catch (err) {
       console.warn("[dictionary] pushOne failed:", err);
