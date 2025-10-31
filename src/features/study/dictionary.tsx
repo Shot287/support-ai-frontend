@@ -49,6 +49,10 @@ const setSince = (ms: number) => {
   if (typeof window !== "undefined") localStorage.setItem(SINCE_KEY, String(ms));
 };
 
+// ★ 粘着フラグ（他画面の「受信」要求を5分保持）
+const PULL_STICKY_KEY = "support-ai:sync:pull:sticky";
+const PULL_STICKY_TTL_MS = 5 * 60 * 1000; // 5分
+
 const uid = () =>
   (typeof crypto !== "undefined" && "randomUUID" in crypto)
     ? crypto.randomUUID()
@@ -202,8 +206,13 @@ export default function Dictionary() {
     });
   };
 
+  // 多重PULL防止
+  const pullingRef = useRef(false);
+
   // 受信本体
   const doPullAll = async () => {
+    if (pullingRef.current) return;
+    pullingRef.current = true;
     try {
       const json = await pullBatch(USER_ID, getSince(), ["dictionary_entries"]);
       const rows = (json.diffs?.dictionary_entries ?? []) as any[];
@@ -212,6 +221,8 @@ export default function Dictionary() {
     } catch (e) {
       // 静かに失敗（ネットワーク環境などを考慮）
       console.warn("[dictionary] pull-batch failed:", e);
+    } finally {
+      pullingRef.current = false;
     }
   };
 
@@ -221,6 +232,31 @@ export default function Dictionary() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ★ 粘着フラグ（sticky）で“後追いPULL”
+  useEffect(() => {
+    const checkStickyAndPull = () => {
+      try {
+        const sticky = localStorage.getItem(PULL_STICKY_KEY);
+        if (sticky && Date.now() - Number(sticky) <= PULL_STICKY_TTL_MS) {
+          void doPullAll();
+        }
+      } catch {}
+    };
+
+    // 初回
+    checkStickyAndPull();
+
+    // タブ復帰/フォーカス
+    const onFocusLike = () => checkStickyAndPull();
+    window.addEventListener("focus", onFocusLike);
+    document.addEventListener("visibilitychange", onFocusLike);
+
+    return () => {
+      window.removeEventListener("focus", onFocusLike);
+      document.removeEventListener("visibilitychange", onFocusLike);
+    };
+  }, []);
+
   // ホームの「🔄 同期（受信）」/「RESET」の合図を購読
   useEffect(() => {
     const handler = (payload: any) => {
@@ -228,7 +264,9 @@ export default function Dictionary() {
       if (payload.type === "GLOBAL_SYNC_PULL") {
         void doPullAll();
       } else if (payload.type === "GLOBAL_SYNC_RESET") {
-        try { localStorage.setItem(SINCE_KEY, "0"); } catch {}
+        try {
+          localStorage.setItem(SINCE_KEY, "0");
+        } catch {}
         // 画面側は保持してもOKだが、混乱しないよう一旦クリアして再取得
         setStore((s) => ({ ...s, entries: [] }));
         void doPullAll();
@@ -251,16 +289,22 @@ export default function Dictionary() {
     // storage（他タブ由来）
     const onStorage = (e: StorageEvent) => {
       if (e.key === "support-ai:sync:pull:req" && e.newValue) {
-        try { handler(JSON.parse(e.newValue)); } catch {}
+        try {
+          handler(JSON.parse(e.newValue));
+        } catch {}
       }
       if (e.key === "support-ai:sync:reset:req" && e.newValue) {
-        try { handler(JSON.parse(e.newValue)); } catch {}
+        try {
+          handler(JSON.parse(e.newValue));
+        } catch {}
       }
     };
     window.addEventListener("storage", onStorage);
 
     return () => {
-      try { bc?.close(); } catch {}
+      try {
+        bc?.close();
+      } catch {}
       window.removeEventListener("message", onPostMessage);
       window.removeEventListener("storage", onStorage);
     };
@@ -339,7 +383,9 @@ export default function Dictionary() {
       void manualPushAll();
     });
     return () => {
-      try { unSub(); } catch {}
+      try {
+        unSub();
+      } catch {}
     };
   }, []);
 
