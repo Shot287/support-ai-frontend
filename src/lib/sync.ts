@@ -1,10 +1,11 @@
 // frontend/src/lib/sync.ts
 // ===================================================
-// ✅ Support-AI 同期ライブラリ（手動同期（Anki型）対応版）
+// ✅ Support-AI 同期ライブラリ（Anki型手動同期 + 受信粘着フラグ対応）
 //    - 既存APIは後方互換を維持
 //    - is_done を Action upsert/delete に対応
 //    - dictionary_entries を同期対象に追加
 //    - SSE/ポーリングは非推奨（互換のため残置）
+//    - 粘着フラグ & 受信合図ユーティリティを同梱
 // ===================================================
 
 /* =====================
@@ -29,7 +30,7 @@ export type ChecklistActionRow = {
   updated_at: number;
   updated_by: string;
   deleted_at: number | null;
-  is_done?: boolean; // optional で受け取り安全化
+  is_done?: boolean;
 };
 
 export type ChecklistActionLogRow = {
@@ -45,7 +46,6 @@ export type ChecklistActionLogRow = {
   deleted_at: number | null;
 };
 
-/** ★ 追加：用語辞典の行（data JSONB をサーバ側で展開する想定。null 許容で安全化） */
 export type DictionaryEntryRow = {
   id: string;
   user_id: string;
@@ -63,9 +63,7 @@ export type PullResponse = {
     checklist_sets?: ChecklistSetRow[];
     checklist_actions?: ChecklistActionRow[];
     checklist_action_logs?: ChecklistActionLogRow[];
-    /** ★ 追加：辞書の差分 */
     dictionary_entries?: DictionaryEntryRow[];
-    /** 将来拡張のための逃げ道 */
     [k: string]: unknown;
   };
 };
@@ -73,12 +71,17 @@ export type PullResponse = {
 /* =====================
  * 定数・共通設定
  * ===================== */
-const BACKEND = process.env.NEXT_PUBLIC_BACKEND!;
+const RAW_BACKEND = process.env.NEXT_PUBLIC_BACKEND!;
 const APP_KEY = process.env.NEXT_PUBLIC_APP_KEY!;
+if (!RAW_BACKEND) throw new Error("NEXT_PUBLIC_BACKEND is not set");
+if (!APP_KEY) throw new Error("NEXT_PUBLIC_APP_KEY is not set");
+
+// 末尾スラッシュを除去して2重 // を避ける
+const BACKEND = RAW_BACKEND.replace(/\/+$/, "");
 const nowMs = () => Date.now();
 
-/** ★ 追加：dictionary_entries を既定の pull 対象に含める */
-const DEFAULT_TABLES = [
+/** 既定の pull 対象（辞書を含む） */
+export const DEFAULT_TABLES = [
   "checklist_sets",
   "checklist_actions",
   "checklist_action_logs",
@@ -93,10 +96,49 @@ const makeUpdatedBy = (deviceId: string) => `${isMobileDevice() ? "9" : "5"}|${d
 const makeUpdatedAt = () => (isMobileDevice() ? nowMs() + 2 : nowMs());
 
 /* =====================
- * 共通 fetch ラッパー
+ * 粘着フラグ & 合図（Broadcast / storage）ユーティリティ
  * ===================== */
+export const STICKY_KEY = "support-ai:sync:pull:sticky";
+export const PULL_REQ_KEY = "support-ai:sync:pull:req";
+export const RESET_REQ_KEY = "support-ai:sync:reset:req";
+
+/** 保存直後などに “他タブ・他ページも受信してね” と合図する */
+export function signalGlobalPull() {
+  try {
+    // 同タブ
+    if (typeof window !== "undefined") {
+      window.postMessage({ type: "GLOBAL_SYNC_PULL" }, window.location.origin);
+    }
+    // 他タブ（storage 経由）
+    const payload = JSON.stringify({ type: "GLOBAL_SYNC_PULL" });
+    localStorage.setItem(PULL_REQ_KEY, payload);
+    // 値が変わらないと発火しない環境向けにクリア
+    localStorage.removeItem(PULL_REQ_KEY);
+  } catch {}
+}
+
+/** 直近に保存があった“痕跡”を残す（フォーカス復帰時の自動PULLに使う） */
+export function markStickyPull(now: number = Date.now()) {
+  try {
+    localStorage.setItem(STICKY_KEY, String(now));
+  } catch {}
+}
+
+/* =====================
+ * 共通 fetch ラッパー（詳細エラー付）
+ * ===================== */
+async function parseMaybeJson(res: Response) {
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
 export async function apiGet<T = any>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BACKEND}${path}`, {
+  const url = `${BACKEND}${path.startsWith("/") ? "" : "/"}${path}`;
+  const res = await fetch(url, {
     ...init,
     headers: {
       "x-app-key": APP_KEY,
@@ -105,12 +147,16 @@ export async function apiGet<T = any>(path: string, init?: RequestInit): Promise
     },
     cache: "no-store",
   });
-  if (!res.ok) throw new Error(`GET ${path} failed: ${res.status} ${res.statusText}`);
+  if (!res.ok) {
+    const body = await parseMaybeJson(res);
+    throw new Error(`GET ${path} failed: ${res.status} ${res.statusText} :: ${JSON.stringify(body)}`);
+  }
   return res.json();
 }
 
 export async function apiPost<T = any>(path: string, body: any, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BACKEND}${path}`, {
+  const url = `${BACKEND}${path.startsWith("/") ? "" : "/"}${path}`;
+  const res = await fetch(url, {
     method: "POST",
     body: JSON.stringify(body),
     headers: {
@@ -121,7 +167,10 @@ export async function apiPost<T = any>(path: string, body: any, init?: RequestIn
     },
     ...init,
   });
-  if (!res.ok) throw new Error(`POST ${path} failed: ${res.status} ${res.statusText}`);
+  if (!res.ok) {
+    const resBody = await parseMaybeJson(res);
+    throw new Error(`POST ${path} failed: ${res.status} ${res.statusText} :: ${JSON.stringify(resBody)}`);
+  }
   return res.json();
 }
 
@@ -171,7 +220,6 @@ function pushBatchPayload(params: {
     deleted_at?: number | null;
     data?: { start_at_ms?: number | null; end_at_ms?: number | null; duration_ms?: number | null };
   }>;
-  /** ★ 追加：辞書の変更 */
   dictionary_entries?: Array<{
     id: string;
     updated_at?: number;
@@ -182,7 +230,7 @@ function pushBatchPayload(params: {
 }) {
   const {
     userId,
-    deviceId,
+    deviceId, // 互換のため受け取り続ける（サーバで updated_by を見分ける）
     sets = [],
     actions = [],
     action_logs = [],
@@ -195,7 +243,6 @@ function pushBatchPayload(params: {
       checklist_sets: sets,
       checklist_actions: actions,
       checklist_action_logs: action_logs,
-      /** ★ 追加 */
       dictionary_entries,
     },
   };
@@ -269,9 +316,10 @@ export function startRealtimeSync(opts: {
     user_id: userId,
     since: String(getSince() || 0),
     tables: tables.join(","),
-    app_key: APP_KEY, // ← SSEはヘッダ不可なのでURLにapp_keyを付与
+    app_key: APP_KEY, // SSEはヘッダ不可なのでURLに付与
   });
-  const es = new EventSource(`${BACKEND}/api/sync/stream-sse?${qs.toString()}`, { withCredentials: false });
+  const url = `${BACKEND}/api/sync/stream-sse?${qs.toString()}`;
+  const es = new EventSource(url, { withCredentials: false });
 
   es.onmessage = (ev) => {
     try {
@@ -351,6 +399,7 @@ export async function upsertChecklistSet(p: {
     }],
   });
   await pushBatch(payload);
+  // 呼び出し側で markStickyPull/ signalGlobalPull を行う想定（辞書と統一）
 }
 
 export async function upsertChecklistAction(p: {
@@ -509,11 +558,13 @@ export async function deleteDictionaryEntry(p: {
 /* =====================
  * 後方互換シム
  * ===================== */
-export async function forceSyncAllMaster(_opts: { userId: string; deviceId: string }) { return; }
+export async function forceSyncAllMaster(_opts: { userId: string; deviceId: string }) {
+  return;
+}
 
 export async function forceSyncAsMaster(opts: {
   userId: string;
-  deviceId: string; // 未使用だが互換のため受け取る
+  deviceId: string;
   getSince: () => number;
   setSince: (ms: number) => void;
   applyDiffs: (diffs: PullResponse["diffs"]) => void;
