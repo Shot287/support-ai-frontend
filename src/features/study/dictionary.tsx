@@ -53,6 +53,40 @@ const setSince = (ms: number) => {
 const PULL_STICKY_KEY = "support-ai:sync:pull:sticky";
 const PULL_STICKY_TTL_MS = 5 * 60 * 1000; // 5分
 
+// ★ 受信合図（ホームと同様のpayloadを軽量発火）
+const SYNC_CHANNEL = "support-ai-sync";
+const STORAGE_KEY_PULL_REQ = "support-ai:sync:pull:req";
+function emitLightPullSignal(userId: string, deviceId: string) {
+  const payload = {
+    type: "GLOBAL_SYNC_PULL",
+    userId,
+    deviceId,
+    at: Date.now(),
+    nonce: Math.random().toString(36).slice(2),
+  } as const;
+
+  // 1) BroadcastChannel
+  try {
+    if (typeof window !== "undefined" && "BroadcastChannel" in window) {
+      const bc = new BroadcastChannel(SYNC_CHANNEL);
+      bc.postMessage(payload);
+      bc.close();
+    }
+  } catch {}
+
+  // 2) 同タブ（postMessage）
+  try {
+    if (typeof window !== "undefined") window.postMessage(payload, "*");
+  } catch {}
+
+  // 3) 他タブ（storage）
+  try {
+    if (typeof window !== "undefined") {
+      localStorage.setItem(STORAGE_KEY_PULL_REQ, JSON.stringify(payload));
+    }
+  } catch {}
+}
+
 const uid = () =>
   (typeof crypto !== "undefined" && "randomUUID" in crypto)
     ? crypto.randomUUID()
@@ -264,9 +298,7 @@ export default function Dictionary() {
       if (payload.type === "GLOBAL_SYNC_PULL") {
         void doPullAll();
       } else if (payload.type === "GLOBAL_SYNC_RESET") {
-        try {
-          localStorage.setItem(SINCE_KEY, "0");
-        } catch {}
+        try { localStorage.setItem(SINCE_KEY, "0"); } catch {}
         // 画面側は保持してもOKだが、混乱しないよう一旦クリアして再取得
         setStore((s) => ({ ...s, entries: [] }));
         void doPullAll();
@@ -277,7 +309,7 @@ export default function Dictionary() {
     let bc: BroadcastChannel | undefined;
     try {
       if ("BroadcastChannel" in window) {
-        bc = new BroadcastChannel("support-ai-sync");
+        bc = new BroadcastChannel(SYNC_CHANNEL);
         bc.onmessage = (e) => handler(e.data);
       }
     } catch {}
@@ -288,23 +320,17 @@ export default function Dictionary() {
 
     // storage（他タブ由来）
     const onStorage = (e: StorageEvent) => {
-      if (e.key === "support-ai:sync:pull:req" && e.newValue) {
-        try {
-          handler(JSON.parse(e.newValue));
-        } catch {}
+      if (e.key === STORAGE_KEY_PULL_REQ && e.newValue) {
+        try { handler(JSON.parse(e.newValue)); } catch {}
       }
       if (e.key === "support-ai:sync:reset:req" && e.newValue) {
-        try {
-          handler(JSON.parse(e.newValue));
-        } catch {}
+        try { handler(JSON.parse(e.newValue)); } catch {}
       }
     };
     window.addEventListener("storage", onStorage);
 
     return () => {
-      try {
-        bc?.close();
-      } catch {}
+      try { bc?.close(); } catch {}
       window.removeEventListener("message", onPostMessage);
       window.removeEventListener("storage", onStorage);
     };
@@ -312,7 +338,17 @@ export default function Dictionary() {
 
   /* ========= 同期：送信（PUSH） ========= */
 
-  // 単発アップサート
+  // PUSH後に“すぐ他画面へ反映”させる小細工
+  function afterSuccessfulPush() {
+    try {
+      // 1) 粘着フラグ：フォーカス復帰時の後追いPULLを促す
+      localStorage.setItem(PULL_STICKY_KEY, String(Date.now()));
+    } catch {}
+    // 2) その場で合図も飛ばしておく（即時反映を狙う）
+    emitLightPullSignal(USER_ID, getDeviceId());
+  }
+
+  // 単発アップサート（追加／編集／削除）
   const pushOne = async (e: Entry, deleted = false) => {
     try {
       const updated_at = Date.now();
@@ -339,6 +375,8 @@ export default function Dictionary() {
         device_id: deviceId,
         changes: { dictionary_entries: [change] },
       });
+
+      afterSuccessfulPush();
 
       // サーバ時刻を進めておく（以後のpullで取りこぼさない）
       await doPullAll();
@@ -370,22 +408,21 @@ export default function Dictionary() {
         changes: { dictionary_entries: changes },
       });
 
+      afterSuccessfulPush();
       await doPullAll();
     } catch (e) {
       console.warn("[dictionary] manualPushAll failed:", e);
     }
   };
 
-  // グローバルPush購読
+  // グローバルPush購読（ホームの「☁ 手動アップロード」）
   useEffect(() => {
     const unSub = subscribeGlobalPush((p) => {
       if (!p || p.userId !== USER_ID) return;
       void manualPushAll();
     });
     return () => {
-      try {
-        unSub();
-      } catch {}
+      try { unSub(); } catch {}
     };
   }, []);
 
@@ -422,7 +459,7 @@ export default function Dictionary() {
     setTmpYomi(e.yomi ?? "");
   };
 
-  // 編集確定
+  // 編集確定（保存）
   const commitEdit = () => {
     if (!editingId) return;
     const t = tmpTerm.trim();
