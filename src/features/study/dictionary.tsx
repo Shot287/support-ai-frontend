@@ -4,8 +4,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toSearchKey } from "@/features/study/kana";
 
-// ▼ 同期ユーティリティ
-import { pullBatch, pushBatch } from "@/lib/sync";
+// ▼ 同期ユーティリティ（辞書APIを“必ず”経由）
+import {
+  pullBatch,
+  upsertDictionaryEntry,
+  deleteDictionaryEntry,
+  type PullResponse,
+} from "@/lib/sync";
 import { subscribeGlobalPush } from "@/lib/sync-bus";
 import { getDeviceId } from "@/lib/device";
 
@@ -41,6 +46,13 @@ const KEY = "dictionary_v1";
 const USER_ID = "demo"; // 認証導入までは固定
 // ✅ チェックリストとSINCEを共有しないよう辞書専用キーにする
 const SINCE_KEY = `support-ai:sync:since:${USER_ID}:dictionary`;
+
+const STICKY_KEY = "support-ai:sync:pull:sticky";
+const touchSticky = () => {
+  try {
+    localStorage.setItem(STICKY_KEY, String(Date.now()));
+  } catch {}
+};
 const getSince = () => {
   const v = typeof window !== "undefined" ? localStorage.getItem(SINCE_KEY) : null;
   return v ? Number(v) : 0;
@@ -48,44 +60,6 @@ const getSince = () => {
 const setSince = (ms: number) => {
   if (typeof window !== "undefined") localStorage.setItem(SINCE_KEY, String(ms));
 };
-
-// ★ 粘着フラグ（他画面の「受信」要求を5分保持）
-const PULL_STICKY_KEY = "support-ai:sync:pull:sticky";
-const PULL_STICKY_TTL_MS = 5 * 60 * 1000; // 5分
-
-// ★ 受信合図（ホームと同様のpayloadを軽量発火）
-const SYNC_CHANNEL = "support-ai-sync";
-const STORAGE_KEY_PULL_REQ = "support-ai:sync:pull:req";
-function emitLightPullSignal(userId: string, deviceId: string) {
-  const payload = {
-    type: "GLOBAL_SYNC_PULL",
-    userId,
-    deviceId,
-    at: Date.now(),
-    nonce: Math.random().toString(36).slice(2),
-  } as const;
-
-  // 1) BroadcastChannel
-  try {
-    if (typeof window !== "undefined" && "BroadcastChannel" in window) {
-      const bc = new BroadcastChannel(SYNC_CHANNEL);
-      bc.postMessage(payload);
-      bc.close();
-    }
-  } catch {}
-
-  // 2) 同タブ（postMessage）
-  try {
-    if (typeof window !== "undefined") window.postMessage(payload, "*");
-  } catch {}
-
-  // 3) 他タブ（storage）
-  try {
-    if (typeof window !== "undefined") {
-      localStorage.setItem(STORAGE_KEY_PULL_REQ, JSON.stringify(payload));
-    }
-  } catch {}
-}
 
 const uid = () =>
   (typeof crypto !== "undefined" && "randomUUID" in crypto)
@@ -180,7 +154,7 @@ export default function Dictionary() {
 
   /* ========= 同期：受信（PULL） ========= */
 
-  // サーバ差分をローカルへ反映（data(jsonb) / 直列カラム の両対応）
+  // サーバ差分をローカルへ反映（serverは data(JSONB) を展開して返す）
   const applyEntryDiffs = (rows: Array<{
     id: string;
     user_id: string;
@@ -190,7 +164,6 @@ export default function Dictionary() {
     updated_at: number;
     updated_by?: string | null;
     deleted_at?: number | null;
-    data?: { term?: string | null; yomi?: string | null; meaning?: string | null };
   }>) => {
     if (!rows || rows.length === 0) return;
 
@@ -199,9 +172,9 @@ export default function Dictionary() {
       const entries = prev.entries.slice();
 
       for (const r of rows) {
-        const term = r.term ?? r.data?.term ?? null;
-        const yomi = r.yomi ?? r.data?.yomi ?? null;
-        const meaning = r.meaning ?? r.data?.meaning ?? null;
+        const term = r.term ?? null;
+        const yomi = r.yomi ?? null;
+        const meaning = r.meaning ?? null;
 
         if (r.deleted_at) {
           const i = idx.get(r.id);
@@ -240,55 +213,47 @@ export default function Dictionary() {
     });
   };
 
-  // 多重PULL防止
-  const pullingRef = useRef(false);
-
   // 受信本体
   const doPullAll = async () => {
-    if (pullingRef.current) return;
-    pullingRef.current = true;
     try {
       const json = await pullBatch(USER_ID, getSince(), ["dictionary_entries"]);
       const rows = (json.diffs?.dictionary_entries ?? []) as any[];
       applyEntryDiffs(rows);
       setSince(json.server_time_ms);
     } catch (e) {
-      // 静かに失敗（ネットワーク環境などを考慮）
       console.warn("[dictionary] pull-batch failed:", e);
-    } finally {
-      pullingRef.current = false;
     }
   };
 
-  // 初回マウントで一度だけPULL
+  // 初回マウントでPULL＋粘着フラグ対応
   useEffect(() => {
+    // 1) 初回PULL
     void doPullAll();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
-  // ★ 粘着フラグ（sticky）で“後追いPULL”
-  useEffect(() => {
-    const checkStickyAndPull = () => {
+    // 2) 粘着フラグ → 直近5分なら自動PULL
+    try {
+      const sticky = localStorage.getItem(STICKY_KEY);
+      if (sticky && Date.now() - Number(sticky) <= 5 * 60 * 1000) {
+        void doPullAll();
+      }
+    } catch {}
+
+    // 3) フォーカス/可視化復帰で再チェック
+    const onFocusLike = () => {
       try {
-        const sticky = localStorage.getItem(PULL_STICKY_KEY);
-        if (sticky && Date.now() - Number(sticky) <= PULL_STICKY_TTL_MS) {
+        const sticky = localStorage.getItem(STICKY_KEY);
+        if (sticky && Date.now() - Number(sticky) <= 5 * 60 * 1000) {
           void doPullAll();
         }
       } catch {}
     };
-
-    // 初回
-    checkStickyAndPull();
-
-    // タブ復帰/フォーカス
-    const onFocusLike = () => checkStickyAndPull();
     window.addEventListener("focus", onFocusLike);
     document.addEventListener("visibilitychange", onFocusLike);
-
     return () => {
       window.removeEventListener("focus", onFocusLike);
       document.removeEventListener("visibilitychange", onFocusLike);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ホームの「🔄 同期（受信）」/「RESET」の合図を購読
@@ -299,7 +264,6 @@ export default function Dictionary() {
         void doPullAll();
       } else if (payload.type === "GLOBAL_SYNC_RESET") {
         try { localStorage.setItem(SINCE_KEY, "0"); } catch {}
-        // 画面側は保持してもOKだが、混乱しないよう一旦クリアして再取得
         setStore((s) => ({ ...s, entries: [] }));
         void doPullAll();
       }
@@ -309,7 +273,7 @@ export default function Dictionary() {
     let bc: BroadcastChannel | undefined;
     try {
       if ("BroadcastChannel" in window) {
-        bc = new BroadcastChannel(SYNC_CHANNEL);
+        bc = new BroadcastChannel("support-ai-sync");
         bc.onmessage = (e) => handler(e.data);
       }
     } catch {}
@@ -320,7 +284,7 @@ export default function Dictionary() {
 
     // storage（他タブ由来）
     const onStorage = (e: StorageEvent) => {
-      if (e.key === STORAGE_KEY_PULL_REQ && e.newValue) {
+      if (e.key === "support-ai:sync:pull:req" && e.newValue) {
         try { handler(JSON.parse(e.newValue)); } catch {}
       }
       if (e.key === "support-ai:sync:reset:req" && e.newValue) {
@@ -338,48 +302,30 @@ export default function Dictionary() {
 
   /* ========= 同期：送信（PUSH） ========= */
 
-  // PUSH後に“すぐ他画面へ反映”させる小細工
-  function afterSuccessfulPush() {
-    try {
-      // 1) 粘着フラグ：フォーカス復帰時の後追いPULLを促す
-      localStorage.setItem(PULL_STICKY_KEY, String(Date.now()));
-    } catch {}
-    // 2) その場で合図も飛ばしておく（即時反映を狙う）
-    emitLightPullSignal(USER_ID, getDeviceId());
-  }
+  // PUSH成功後の共通処理：粘着フラグ→直後PULL
+  const afterSuccessfulPush = async () => {
+    touchSticky();
+    await doPullAll();
+  };
 
   // 単発アップサート（追加／編集／削除）
   const pushOne = async (e: Entry, deleted = false) => {
     try {
-      const updated_at = Date.now();
       const deviceId = getDeviceId();
-      const isMobile = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
-      const updated_by = `${isMobile ? "9" : "5"}|${deviceId}`;
-
-      const change = {
-        id: e.id,
-        updated_at,
-        updated_by,
-        deleted_at: deleted ? updated_at : null,
-        data: deleted
-          ? {}
-          : {
-              term: e.term,
-              yomi: e.yomi ?? "",
-              meaning: e.meaning,
-            },
-      };
-
-      await pushBatch({
-        user_id: USER_ID,
-        device_id: deviceId,
-        changes: { dictionary_entries: [change] },
-      });
-
-      afterSuccessfulPush();
-
-      // サーバ時刻を進めておく（以後のpullで取りこぼさない）
-      await doPullAll();
+      if (deleted) {
+        await deleteDictionaryEntry({ userId: USER_ID, deviceId, id: e.id }); // ライブラリ関数に統一
+      } else {
+        await upsertDictionaryEntry({
+          userId: USER_ID,
+          deviceId,
+          id: e.id,
+          term: e.term,
+          yomi: e.yomi ?? "",
+          meaning: e.meaning,
+          deleted_at: null,
+        });
+      }
+      await afterSuccessfulPush();
     } catch (err) {
       console.warn("[dictionary] pushOne failed:", err);
     }
@@ -389,27 +335,22 @@ export default function Dictionary() {
   const manualPushAll = async () => {
     try {
       const snapshot = storeRef.current;
-      const updated_at = Date.now();
       const deviceId = getDeviceId();
-      const isMobile = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
-      const updated_by = `${isMobile ? "9" : "5"}|${deviceId}`;
 
-      const changes = snapshot.entries.map((e) => ({
-        id: e.id,
-        updated_at,
-        updated_by,
-        deleted_at: null,
-        data: { term: e.term, yomi: e.yomi ?? "", meaning: e.meaning },
-      }));
+      // まとめて upsert
+      for (const e of snapshot.entries) {
+        await upsertDictionaryEntry({
+          userId: USER_ID,
+          deviceId,
+          id: e.id,
+          term: e.term,
+          yomi: e.yomi ?? "",
+          meaning: e.meaning,
+          deleted_at: null,
+        });
+      }
 
-      await pushBatch({
-        user_id: USER_ID,
-        device_id: deviceId,
-        changes: { dictionary_entries: changes },
-      });
-
-      afterSuccessfulPush();
-      await doPullAll();
+      await afterSuccessfulPush();
     } catch (e) {
       console.warn("[dictionary] manualPushAll failed:", e);
     }
