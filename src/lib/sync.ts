@@ -1,11 +1,10 @@
 // frontend/src/lib/sync.ts
 // ===================================================
-// ✅ Support-AI 同期ライブラリ（Anki型手動同期 + 受信粘着フラグ対応）
-//    - 既存APIは後方互換を維持
-//    - is_done を Action upsert/delete に対応
-//    - dictionary_entries を同期対象に追加
-//    - SSE/ポーリングは非推奨（互換のため残置）
-//    - 粘着フラグ & 受信合図ユーティリティを同梱
+// ✅ Support-AI 同期ライブラリ（ジェネリック対応 + 既存互換）
+//    - 既存APIは後方互換を維持（checklist / dictionary）
+//    - 新規: useSync(tableName), pushGeneric(table, rows)
+//    - 粘着フラグ & 受信合図は push 成功時に自動実行
+//    - SSE + フォールバック・ポーリング（互換維持）
 // ===================================================
 
 /* =====================
@@ -68,6 +67,18 @@ export type PullResponse = {
   };
 };
 
+/** サーバに渡す Generic ChangeRow（backend の pydantic に合わせた形） */
+export type GenericChangeRow = {
+  id: string;
+  updated_at?: number;
+  updated_by?: string;
+  deleted_at?: number | null;
+  /** 固定外部キー（あれば記入: set_id, action_id など） */
+  [fixed: `${string}_id`]: any;
+} & {
+  data?: Record<string, any>;
+};
+
 /* =====================
  * 定数・共通設定
  * ===================== */
@@ -87,7 +98,7 @@ export const DEFAULT_TABLES = [
   "checklist_action_logs",
   "dictionary_entries",
 ] as const;
-export type TableName = (typeof DEFAULT_TABLES)[number];
+export type TableName = (typeof DEFAULT_TABLES)[number] | string;
 
 const isMobileDevice = () =>
   typeof navigator !== "undefined" && /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
@@ -249,11 +260,15 @@ function pushBatchPayload(params: {
 }
 
 export async function pushBatch(body: any) {
-  return apiPost(`/api/sync/push-batch`, body);
+  const res = await apiPost(`/api/sync/push-batch`, body);
+  // 粘着フラグ＆合図を自動発火
+  markStickyPull();
+  signalGlobalPull();
+  return res;
 }
 
 /* =====================
- * ポーリング（非推奨・互換のため残置）
+ * ポーリング（互換維持）
  * ===================== */
 export function startChecklistPolling(opts: {
   userId: string;
@@ -299,7 +314,7 @@ export function startChecklistPolling(opts: {
 }
 
 /* =====================
- * SSE（リアルタイム同期｜非推奨・互換のため残置）
+ * SSE（リアルタイム同期｜互換維持）
  * ===================== */
 export function startRealtimeSync(opts: {
   userId: string;
@@ -338,7 +353,7 @@ export function startRealtimeSync(opts: {
 }
 
 /* =====================
- * スマート同期（SSE+Fallback｜非推奨・互換のため残置）
+ * スマート同期（SSE+Fallback｜互換維持）
  * ===================== */
 export function startSmartSync(opts: {
   userId: string;
@@ -399,7 +414,6 @@ export async function upsertChecklistSet(p: {
     }],
   });
   await pushBatch(payload);
-  // 呼び出し側で markStickyPull/ signalGlobalPull を行う想定（辞書と統一）
 }
 
 export async function upsertChecklistAction(p: {
@@ -511,7 +525,7 @@ export async function upsertChecklistActionLogEnd(p: {
 }
 
 /* =====================
- * 用語辞典 Upsert/Delete（新規）
+ * 用語辞典 Upsert/Delete
  * ===================== */
 export async function upsertDictionaryEntry(p: {
   userId: string;
@@ -573,4 +587,120 @@ export async function forceSyncAsMaster(opts: {
   const resp = await pullBatch(opts.userId, opts.getSince(), opts.tables ?? DEFAULT_TABLES);
   opts.applyDiffs(resp.diffs);
   opts.setSince(resp.server_time_ms);
+}
+
+/* ===================================================
+ * ★ 新規：汎用 push / 汎用 Hook
+ * =================================================== */
+
+/** 汎用 push（任意テーブル） */
+export async function pushGeneric(p: {
+  table: string;
+  userId: string;
+  deviceId: string;
+  rows: GenericChangeRow[]; // {id, data, *_id?, deleted_at?}
+}) {
+  const { table, userId, deviceId, rows } = p;
+  // updated_at / updated_by を自動補完
+  const cooked = rows.map((r) => ({
+    ...r,
+    updated_at: r.updated_at ?? makeUpdatedAt(),
+    updated_by: r.updated_by ?? makeUpdatedBy(deviceId),
+  }));
+  const body = {
+    user_id: userId,
+    device_id: deviceId,
+    changes: { [table]: cooked },
+  };
+  const res = await pushBatch(body); // pushBatch 内で粘着フラグ/合図を自動実行
+  return res;
+}
+
+/** ローカルストレージキー */
+function sinceKey(userId: string, table: string) {
+  return `support-ai:sync:since:${userId}:${table}`;
+}
+
+/** 既存 applyDiffs と互換の “単一テーブル向け” 抽出 */
+export function pickTableDiffs<T = any>(diffs: PullResponse["diffs"], table: string): T[] {
+  const v = (diffs as any)[table];
+  return Array.isArray(v) ? (v as T[]) : [];
+}
+
+/** ⭐ 汎用 Hook：useSync(tableName) — SSE + Fallback + 手動 pull/push */
+export function useSync(table: string) {
+  if (typeof window === "undefined") {
+    // SSR セーフティ（ダミー）
+    return {
+      start() { return { stop() {} }; },
+      stop() {},
+      getSince() { return 0; },
+      setSince(_ms: number) {},
+      pullNow: async (_p: { userId: string }) => ({ server_time_ms: 0, diffs: {} as PullResponse["diffs"] }),
+      pushRows: async (_p: { userId: string; deviceId: string; rows: GenericChangeRow[] }) => {},
+    };
+  }
+
+  let ctrl: { stop: () => void } | null = null;
+
+  function getSince(userId: string) {
+    const raw = localStorage.getItem(sinceKey(userId, table));
+    return raw ? Number(raw) : 0;
+    }
+
+  function setSince(userId: string, ms: number) {
+    localStorage.setItem(sinceKey(userId, table), String(ms));
+  }
+
+  /** 単発 pull（単一テーブルのみ） */
+  async function pullNow(p: {
+    userId: string;
+    tables?: readonly TableName[];
+  }) {
+    const since = getSince(p.userId);
+    const resp = await pullBatch(p.userId, since, p.tables ?? [table]);
+    // 呼び出し側が applyTableDiffs で適用する運用
+    setSince(p.userId, resp.server_time_ms);
+    return resp;
+  }
+
+  /** 汎用 pushRows（単一テーブル） */
+  async function pushRows(p: { userId: string; deviceId: string; rows: GenericChangeRow[] }) {
+    await pushGeneric({ table, userId: p.userId, deviceId: p.deviceId, rows: p.rows });
+    // pushBatch 内で markStickyPull/signalGlobalPull 済み
+  }
+
+  /** SSE + Fallback を開始（呼び出し側が applyDiffs を渡す） */
+  function start(p: {
+    userId: string;
+    deviceId: string;
+    applyDiffs: (rows: any[]) => void; // テーブル単位の配列を受け取る
+    fallbackPolling?: boolean;
+    pollingIntervalMs?: number;
+    abortSignal?: AbortSignal;
+  }) {
+    const getSinceFn = () => getSince(p.userId);
+    const setSinceFn = (ms: number) => setSince(p.userId, ms);
+
+    ctrl = startSmartSync({
+      userId: p.userId,
+      deviceId: p.deviceId,
+      getSince: getSinceFn,
+      setSince: setSinceFn,
+      tables: [table],
+      fallbackPolling: p.fallbackPolling ?? true,
+      pollingIntervalMs: p.pollingIntervalMs ?? 30000,
+      abortSignal: p.abortSignal,
+      applyDiffs: (diffs) => {
+        const rows = pickTableDiffs(diffs, table);
+        if (rows && rows.length) p.applyDiffs(rows);
+      },
+    });
+
+    return { stop() { ctrl?.stop(); } };
+  }
+
+  function stop() { ctrl?.stop(); ctrl = null; }
+
+  return { start, stop, getSince: (uid: string) => getSince(uid), setSince: (uid: string, ms: number) => setSince(uid, ms), pullNow, pushRows };
 }
