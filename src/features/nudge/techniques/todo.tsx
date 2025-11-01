@@ -3,19 +3,42 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
+// ▼ 同期ユーティリティ（汎用 pull/push を使用）
+import { pullBatch, pushBatch } from "@/lib/sync";
+import { subscribeGlobalPush } from "@/lib/sync-bus";
+import { getDeviceId } from "@/lib/device";
+
 /* ========= 型 ========= */
 type ID = string;
 type Task = {
   id: ID;
   title: string;
   deadline: string;  // YYYY-MM-DD (JST基準)
-  createdAt: number;
+  createdAt: number; // ローカル専用（サーバには保存しない）
   doneAt?: number;   // 完了時刻(ms)。未完了は undefined
 };
 type Store = { tasks: Task[]; version: 1 };
 
 /* ========= 定数 / ユーティリティ ========= */
 const KEY = "todo_v1";
+
+// ★ 同期関連
+const USER_ID = "demo"; // 認証導入までは固定運用
+const TABLE = "todo_items";
+const SINCE_KEY = `support-ai:sync:since:${USER_ID}:${TABLE}`;
+const STICKY_KEY = "support-ai:sync:pull:sticky";
+
+// 粘着フラグ（直近 push の印）
+const touchSticky = () => {
+  try { localStorage.setItem(STICKY_KEY, String(Date.now())); } catch {}
+};
+const getSince = () => {
+  const v = typeof window !== "undefined" ? localStorage.getItem(SINCE_KEY) : null;
+  return v ? Number(v) : 0;
+};
+const setSince = (ms: number) => {
+  if (typeof window !== "undefined") localStorage.setItem(SINCE_KEY, String(ms));
+};
 
 const uid = () =>
   (typeof crypto !== "undefined" && "randomUUID" in crypto)
@@ -68,7 +91,9 @@ function badgeClass(left: number): string {
 /* ========= 本体 ========= */
 export default function TodoTechnique() {
   const [store, setStore] = useState<Store>(() => load());
+  const storeRef = useRef(store);
   useEffect(() => save(store), [store]);
+  useEffect(() => { storeRef.current = store; }, [store]);
 
   // 追加フォーム
   const [title, setTitle] = useState("");
@@ -97,6 +122,235 @@ export default function TodoTechnique() {
     return a;
   }, [store.tasks]);
 
+  /* ========= 同期：受信（PULL） ========= */
+
+  // サーバ差分 → ローカルへ反映（LWW）
+  const applyTaskDiffs = (rows: Array<{
+    id: string;
+    user_id: string;
+    title?: string | null;
+    deadline?: string | null;
+    done_at?: number | null;
+    updated_at: number;
+    updated_by?: string | null;
+    deleted_at?: number | null;
+  }>) => {
+    if (!rows || rows.length === 0) return;
+
+    setStore((prev) => {
+      // id → index
+      const idx = new Map(prev.tasks.map((e, i) => [e.id, i] as const));
+      const tasks = prev.tasks.slice();
+
+      for (const r of rows) {
+        const del = r.deleted_at ? Number(r.deleted_at) : null;
+
+        if (del) {
+          const i = idx.get(r.id);
+          if (i !== undefined) {
+            tasks.splice(i, 1);
+            // index 再構築
+            idx.clear();
+            tasks.forEach((e, k) => idx.set(e.id, k));
+          }
+          continue;
+        }
+
+        const i = idx.get(r.id);
+        if (i === undefined) {
+          // 追加（createdAt は updated_at を代替）
+          tasks.unshift({
+            id: r.id,
+            title: String(r.title ?? ""),
+            deadline: String(r.deadline ?? todayJst()),
+            createdAt: r.updated_at ?? Date.now(),
+            doneAt: r.done_at ?? undefined,
+          });
+          idx.set(r.id, 0);
+        } else {
+          const cur = tasks[i];
+          tasks[i] = {
+            ...cur,
+            title: r.title != null ? String(r.title) : cur.title,
+            deadline: r.deadline != null ? String(r.deadline) : cur.deadline,
+            doneAt: r.done_at != null ? Number(r.done_at) : cur.doneAt,
+            // createdAt は保持（サーバ未管理）
+          };
+        }
+      }
+
+      return { ...prev, tasks };
+    });
+  };
+
+  // 受信本体
+  const doPullAll = async () => {
+    try {
+      const json = await pullBatch(USER_ID, getSince(), [TABLE]);
+      const rows = (json.diffs?.[TABLE] ?? []) as any[];
+      applyTaskDiffs(rows);
+      setSince(json.server_time_ms);
+    } catch (e) {
+      console.warn("[todo] pull-batch failed:", e);
+    }
+  };
+
+  // 初回＋粘着フラグ＋フォーカス復帰
+  useEffect(() => {
+    void doPullAll();
+
+    // 粘着フラグ：直近5分は自動再PULL
+    try {
+      const sticky = localStorage.getItem(STICKY_KEY);
+      if (sticky && Date.now() - Number(sticky) <= 5 * 60 * 1000) {
+        void doPullAll();
+      }
+    } catch {}
+
+    const onFocusLike = () => {
+      try {
+        const sticky = localStorage.getItem(STICKY_KEY);
+        if (sticky && Date.now() - Number(sticky) <= 5 * 60 * 1000) {
+          void doPullAll();
+        }
+      } catch {}
+    };
+    window.addEventListener("focus", onFocusLike);
+    document.addEventListener("visibilitychange", onFocusLike);
+    return () => {
+      window.removeEventListener("focus", onFocusLike);
+      document.removeEventListener("visibilitychange", onFocusLike);
+    };
+  }, []);
+
+  // ホームの「🔄 同期（受信）」/「RESET」の合図を購読
+  useEffect(() => {
+    const handler = (payload: any) => {
+      if (!payload) return;
+      if (payload.type === "GLOBAL_SYNC_PULL") {
+        void doPullAll();
+      } else if (payload.type === "GLOBAL_SYNC_RESET") {
+        try { localStorage.setItem(SINCE_KEY, "0"); } catch {}
+        setStore((s) => ({ ...s, tasks: [] }));
+        void doPullAll();
+      }
+    };
+
+    // BroadcastChannel
+    let bc: BroadcastChannel | undefined;
+    try {
+      if ("BroadcastChannel" in window) {
+        bc = new BroadcastChannel("support-ai-sync");
+        bc.onmessage = (e) => handler(e.data);
+      }
+    } catch {}
+
+    // postMessage
+    const onPostMessage = (e: MessageEvent) => handler(e.data);
+    window.addEventListener("message", onPostMessage);
+
+    // storage（他タブ由来）
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === "support-ai:sync:pull:req" && e.newValue) {
+        try { handler(JSON.parse(e.newValue)); } catch {}
+      }
+      if (e.key === "support-ai:sync:reset:req" && e.newValue) {
+        try { handler(JSON.parse(e.newValue)); } catch {}
+      }
+    };
+    window.addEventListener("storage", onStorage);
+
+    return () => {
+      try { bc?.close(); } catch {}
+      window.removeEventListener("message", onPostMessage);
+      window.removeEventListener("storage", onStorage);
+    };
+  }, []);
+
+  /* ========= 同期：送信（PUSH） ========= */
+
+  // 共通 push（1件）
+  const pushOne = async (t: Task, deleted = false) => {
+    try {
+      const deviceId = getDeviceId();
+      const now = Date.now();
+
+      // ChangeRow（sync API 仕様）
+      const row = {
+        id: t.id,
+        updated_at: now,
+        updated_by: deviceId,
+        deleted_at: deleted ? now : null,
+        // todo_items は固定FKなし。ペイロード列を data に入れる。
+        data: deleted
+          ? {}
+          : {
+              title: t.title,
+              deadline: t.deadline,
+              done_at: t.doneAt ?? null,
+            },
+      };
+
+      await pushBatch({
+        user_id: USER_ID,
+        device_id: deviceId,
+        changes: { [TABLE]: [row] },
+      });
+
+      // 粘着フラグ → 直後PULL
+      touchSticky();
+      await doPullAll();
+    } catch (err) {
+      console.warn("[todo] pushOne failed:", err);
+    }
+  };
+
+  // 手動全量アップロード（ホームの「☁ 手動アップロード」に反応）
+  const manualPushAll = async () => {
+    try {
+      const snapshot = storeRef.current;
+      const deviceId = getDeviceId();
+      const now = Date.now();
+
+      const rows = snapshot.tasks.map((t) => ({
+        id: t.id,
+        updated_at: now,
+        updated_by: deviceId,
+        deleted_at: null,
+        data: {
+          title: t.title,
+          deadline: t.deadline,
+          done_at: t.doneAt ?? null,
+        },
+      }));
+
+      if (rows.length > 0) {
+        await pushBatch({
+          user_id: USER_ID,
+          device_id: deviceId,
+          changes: { [TABLE]: rows },
+        });
+      }
+      touchSticky();
+      await doPullAll();
+    } catch (e) {
+      console.warn("[todo] manualPushAll failed:", e);
+    }
+  };
+
+  // グローバルPush合図を購読
+  useEffect(() => {
+    const unSub = subscribeGlobalPush((p) => {
+      if (!p || p.userId !== USER_ID) return;
+      void manualPushAll();
+    });
+    return () => {
+      try { unSub(); } catch {}
+    };
+  }, []);
+
+  /* ========= CRUD（ローカル更新＋即時PUSH） ========= */
+
   const add = () => {
     const t = title.trim();
     const d = deadline.trim();
@@ -108,23 +362,39 @@ export default function TodoTechnique() {
     setStore(s => ({ ...s, tasks: [item, ...s.tasks] }));
     setTitle("");
     inputRef.current?.focus();
+
+    void pushOne(item, false);
   };
 
   const toggleDone = (id: ID) => {
-    setStore(s => ({
-      ...s,
-      tasks: s.tasks.map(x =>
-        x.id === id ? { ...x, doneAt: x.doneAt ? undefined : Date.now() } : x
-      ),
-    }));
+    let changed: Task | null = null;
+    setStore(s => {
+      const tasks = s.tasks.map(x =>
+        x.id === id ? (changed = { ...x, doneAt: x.doneAt ? undefined : Date.now() }) : x
+      ) as Task[];
+      return { ...s, tasks };
+    });
+    if (changed) void pushOne(changed, false);
   };
 
-  const remove = (id: ID) =>
+  const remove = (id: ID) => {
+    const target = storeRef.current.tasks.find((e) => e.id === id);
     setStore(s => ({ ...s, tasks: s.tasks.filter(x => x.id !== id) }));
+    if (target) void pushOne(target, true);
+  };
 
-  const clearCompleted = () =>
+  const clearCompleted = () => {
+    const completed = storeRef.current.tasks.filter((x) => !!x.doneAt);
+    if (completed.length === 0) return;
+    (async () => {
+      for (const t of completed) {
+        await pushOne(t, true);
+      }
+    })();
     setStore(s => ({ ...s, tasks: s.tasks.filter(x => !x.doneAt) }));
+  };
 
+  // JSON 入出力（ローカルのみ。必要なら全量PUSHボタンで反映可能）
   const exportJson = () => {
     const blob = new Blob([JSON.stringify(store, null, 2)], { type: "application/json;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -143,7 +413,7 @@ export default function TodoTechnique() {
         const parsed = JSON.parse(String(reader.result)) as Store;
         if (!parsed?.version) throw new Error();
         setStore(parsed);
-        alert("インポートしました。");
+        alert("インポートしました。必要ならホームの『☁ 手動アップロード』でクラウドへ反映してください。");
       } catch {
         alert("JSONの読み込みに失敗しました。");
       }
@@ -191,8 +461,12 @@ export default function TodoTechnique() {
             </button>
             <label className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50 cursor-pointer">
               インポート
-              <input type="file" accept="application/json" className="hidden"
-                onChange={(e)=>importJson(e.target.files?.[0] ?? null)} />
+              <input
+                type="file"
+                accept="application/json"
+                className="hidden"
+                onChange={(e)=>importJson(e.target.files?.[0] ?? null)}
+              />
             </label>
             <button
               onClick={clearCompleted}
@@ -230,10 +504,14 @@ export default function TodoTechnique() {
                     </div>
                     <div className="text-xs text-gray-600 mt-0.5">
                       期限: <span className="tabular-nums">{t.deadline}</span>
-                      {t.doneAt && <span className="ml-2">完了: {new Intl.DateTimeFormat("ja-JP", {
-                        timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit", day: "2-digit",
-                        hour: "2-digit", minute: "2-digit", hour12: false,
-                      }).format(new Date(t.doneAt))}</span>}
+                      {t.doneAt && (
+                        <span className="ml-2">
+                          完了: {new Intl.DateTimeFormat("ja-JP", {
+                            timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit", day: "2-digit",
+                            hour: "2-digit", minute: "2-digit", hour12: false,
+                          }).format(new Date(t.doneAt))}
+                        </span>
+                      )}
                     </div>
                   </div>
 
