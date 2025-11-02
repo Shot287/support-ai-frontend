@@ -180,7 +180,7 @@ async function pushActionLog(params: {
     changes: {
       checklist_sets: [],
       checklist_actions: [],
-      // ★ 重要：チェックリストのログは models の実カラムに合わせて“フラット”で送る
+      // ★ 重要：checklist_action_logs は実カラムに合わせた “フラット列”
       checklist_action_logs: [
         {
           id: uid(),
@@ -805,7 +805,7 @@ export default function Checklist() {
           const i = next.actions.findIndex(
             (l) => l.actionId === cur.running!.actionId && !l.endAt
           );
-          if (i >= 0) {
+        if (i >= 0) {
             const log = next.actions[i];
             next.actions[i] = { ...log, endAt: endedAt, durationMs: endedAt - log.startAt };
           }
@@ -1129,7 +1129,34 @@ export default function Checklist() {
         </div>
       </div>
 
-      {msg && <p className="text-xs text-gray-600">{msg}</p>}
+      {/* 同期デバッグ操作 */}
+      <div className="flex flex-wrap gap-2">
+        <button
+          onClick={doPullAll}
+          className="rounded-xl border px-3 py-2 text-xs hover:bg-gray-50"
+          title="サーバ→この端末に反映"
+        >
+          PULL
+        </button>
+        <button
+          onClick={() => {
+            resetSince();
+            void doPullAll();
+          }}
+          className="rounded-xl border px-3 py-2 text-xs hover:bg-gray-50"
+          title="since を 0 に戻して全期間再取得"
+        >
+          RESET
+        </button>
+        <button
+          onClick={manualPushAll}
+          className="rounded-xl border px-3 py-2 text-xs hover:bg-gray-50"
+          title="この端末のセット／行動をサーバに保存（ログは除外）"
+        >
+          PUSH
+        </button>
+        {msg && <span className="text-xs text-gray-600">{msg}</span>}
+      </div>
 
       {/* チェックリスト全体開始/終了 */}
       <section className="rounded-2xl border p-4 shadow-sm">
