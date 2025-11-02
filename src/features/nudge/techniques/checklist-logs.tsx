@@ -12,21 +12,13 @@ import {
 } from "@/lib/sync";
 import { getDeviceId } from "@/lib/device";
 
-/* ========= 型 ========= */
 type ID = string;
 
-// 旧コードの表示モデルを踏襲（UIの並べ方はそのまま）
+/* ===== ローカル表示用の型 ===== */
 type Action = { id: ID; title: string; order: number };
 type ChecklistSet = { id: ID; title: string; actions: Action[]; createdAt: number };
 
-// 行に表示する「直前先延ばし + 行動」
-type Row = {
-  actionTitle: string;
-  procrast: { startAt?: number; endAt?: number; durationMs?: number } | null;
-  action: { startAt: number; endAt?: number; durationMs?: number };
-};
-
-/* ========= 同期ユーティリティ ========= */
+/* ===== 同期ユーティリティ ===== */
 const USER_ID = "demo";
 const SINCE_KEY = `support-ai:sync:since:${USER_ID}`;
 const getSince = () => {
@@ -43,7 +35,7 @@ const uid = () =>
     ? crypto.randomUUID()
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
-/* ========= JST 日付ユーティリティ ========= */
+/* ===== JST 日付ユーティリティ ===== */
 function dateToYmdJst(d: Date): string {
   const p = new Intl.DateTimeFormat("ja-JP", {
     timeZone: "Asia/Tokyo",
@@ -66,7 +58,14 @@ const fmtTime = (t?: number | null) =>
 const fmtDur = (ms?: number | null) =>
   ms == null ? "—" : `${Math.floor(ms / 60000)}分${Math.floor((ms % 60000) / 1000)}秒`;
 
-/* ========= state ========= */
+/* ===== 表示行：直前先延ばし + 行動 ===== */
+type Row = {
+  actionTitle: string;
+  procrast: { startAt?: number; endAt?: number; durationMs?: number } | null;
+  action: { startAt: number; endAt?: number; durationMs?: number };
+};
+
+/* ===== state ===== */
 type SetsState = ChecklistSet[];
 type LogsState = ChecklistActionLogRow[];
 
@@ -77,13 +76,12 @@ export default function ChecklistLogs() {
 
   const [date, setDate] = useState<string>(() => dateToYmdJst(new Date()));
 
-  /* ===== diffs 反映：Set ===== */
+  // ---- diffs 反映（Set/Action） ----
   const applySetDiffs = (rows: readonly ChecklistSetRow[] = []) => {
     if (rows.length === 0) return;
     setSets((prev) => {
       const idx = new Map(prev.map((s, i) => [s.id, i] as const));
-      let next = prev.slice();
-
+      const next = prev.slice(); // ← const に修正（prefer-const対応）
       for (const r of rows) {
         if (r.deleted_at) {
           const i = idx.get(r.id);
@@ -111,7 +109,6 @@ export default function ChecklistLogs() {
     });
   };
 
-  /* ===== diffs 反映：Action（order も反映） ===== */
   const applyActionDiffs = (rows: readonly ChecklistActionRow[] = []) => {
     if (rows.length === 0) return;
     setSets((prev) => {
@@ -120,7 +117,6 @@ export default function ChecklistLogs() {
         if (!bySet.has(r.set_id)) bySet.set(r.set_id, []);
         bySet.get(r.set_id)!.push(r);
       }
-
       return prev.map((set) => {
         const patches = bySet.get(set.id);
         if (!patches || patches.length === 0) return set;
@@ -154,18 +150,16 @@ export default function ChecklistLogs() {
             };
           }
         }
-
         actions = actions
           .slice()
           .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
           .map((a, i) => ({ ...a, order: i }));
-
         return { ...set, actions };
       });
     });
   };
 
-  /* ===== diffs 反映：Action Logs ===== */
+  // ---- diffs 反映（Action Logs） ----
   const applyLogDiffs = (rows: readonly ChecklistActionLogRow[] = []) => {
     if (rows.length === 0) return;
     setLogs((prev) => {
@@ -184,10 +178,9 @@ export default function ChecklistLogs() {
     });
   };
 
-  /* ===== 初期 pull + スマート同期（SSE/ポーリング） ===== */
+  // ---- 初期 pull + スマート同期 ----
   useEffect(() => {
     const abort = new AbortController();
-
     (async () => {
       try {
         const json = await pullBatch(USER_ID, getSince(), [
@@ -199,8 +192,7 @@ export default function ChecklistLogs() {
         applyActionDiffs(json.diffs.checklist_actions ?? []);
         applyLogDiffs(json.diffs.checklist_action_logs ?? []);
         setSince(json.server_time_ms);
-      } catch (e) {
-        console.warn("[checklist-logs] initial pull failed:", e);
+      } catch {
         setMsg("同期に失敗しました。しばらくしてから再度お試しください。");
       }
     })();
@@ -224,28 +216,22 @@ export default function ChecklistLogs() {
       abort.abort();
       ctl.stop();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /* ===== 画面用：旧コードと同じ考え方でビルド ===== */
+  /* ===== 画面用の組み立て ===== */
+
   const setMap = useMemo(() => new Map(sets.map((s) => [s.id, s] as const)), [sets]);
 
-  const range = useMemo(() => dayRangeJst(date), [date]);
-
-  // 選択日のログを抽出（start/end のどちらかがその日にかかっていれば対象）
+  const day = useMemo(() => dayRangeJst(date), [date]);
   const dayLogs = useMemo(() => {
-    const { start, end } = range;
-    return logs.filter((l) => {
-      const st = l.start_at_ms ?? null;
-      const ed = l.end_at_ms ?? null;
-      const hitStart = st != null && st >= start && st <= end;
-      const hitEnd = ed != null && ed >= start && ed <= end;
-      return hitStart || hitEnd;
-    });
-  }, [logs, range]);
+    const { start, end } = day;
+    return logs.filter(
+      (l) =>
+        (l.start_at_ms != null && l.start_at_ms >= start && l.start_at_ms <= end) ||
+        (l.end_at_ms != null && l.end_at_ms >= start && l.end_at_ms <= end)
+    );
+  }, [logs, day]);
 
-  // 旧コードの「直前の先延ばし → 行動」を再現：
-  // - 1日の各セットごとに、開始時刻順に並べ、直前の“隙間”を先延ばしとして表示
   const view = useMemo(() => {
     const bySet = new Map<string, ChecklistActionLogRow[]>();
     for (const r of dayLogs) {
@@ -255,27 +241,23 @@ export default function ChecklistLogs() {
 
     const list = Array.from(bySet.entries()).map(([setId, items]) => {
       const set = setMap.get(setId);
-      // 開始 → 更新で安定ソート
       items.sort(
         (a, b) =>
           (a.start_at_ms ?? 0) - (b.start_at_ms ?? 0) ||
           (a.updated_at ?? 0) - (b.updated_at ?? 0)
       );
-
       const rows: Row[] = [];
       let prevEnd: number | null = null;
 
       for (const it of items) {
         const title =
           set?.actions.find((x) => x.id === it.action_id)?.title ?? "(不明な行動)";
-
         const actStart = it.start_at_ms ?? undefined;
         const actEnd = it.end_at_ms ?? undefined;
         const actDur =
           it.duration_ms ??
           (actStart != null && actEnd != null ? actEnd - actStart : undefined);
 
-        // 直前の隙間を“先延ばし”として付与（旧コードの「直前先延ばし」に相当）
         let procrast: Row["procrast"] = null;
         if (prevEnd != null && actStart != null && actStart > prevEnd) {
           procrast = { startAt: prevEnd, endAt: actStart, durationMs: actStart - prevEnd };
@@ -294,7 +276,7 @@ export default function ChecklistLogs() {
       const sumPro = rows.reduce((s, r) => s + (r.procrast?.durationMs ?? 0), 0);
 
       return {
-        runId: uid(), // 旧UI互換のためダミーIDを振る（同日・同セットの“束”）
+        runId: uid(),
         setTitle: set?.title ?? "(不明なセット)",
         rows,
         sumAction,
@@ -302,11 +284,9 @@ export default function ChecklistLogs() {
       };
     });
 
-    // セット名で安定整列
     return list.sort((a, b) => a.setTitle.localeCompare(b.setTitle, "ja"));
   }, [dayLogs, setMap]);
 
-  /* ========= UI ========= */
   return (
     <div className="space-y-4">
       <section className="rounded-2xl border p-4 shadow-sm">
@@ -322,7 +302,7 @@ export default function ChecklistLogs() {
           {msg && <span className="text-xs text-gray-500">{msg}</span>}
         </div>
         <p className="text-xs text-gray-500 mt-2">
-          指定日のJSTに含まれる記録を表示します（各行は「直前の先延ばし → 行動」のセット）。
+          指定日のJSTに含まれる同期ログを表示します（各行は「直前の先延ばし → 行動」のセット）。
         </p>
       </section>
 
@@ -334,9 +314,7 @@ export default function ChecklistLogs() {
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-3">
                 <h3 className="font-semibold">{v.setTitle}</h3>
-                <div className="text-xs text-gray-500">Run: {v.runId.slice(0, 8)}…</div>
               </div>
-              {/* サーバ同期主体のため、ここでの削除は無効化（旧UI互換の見た目のみ） */}
               <button
                 disabled
                 className="rounded-xl border px-3 py-1.5 text-sm text-gray-400"
@@ -374,7 +352,9 @@ export default function ChecklistLogs() {
                     </tr>
                   ))}
                   <tr className="border-t font-medium">
-                    <td className="py-2 pr-3" colSpan={4}>合計</td>
+                    <td className="py-2 pr-3" colSpan={4}>
+                      合計
+                    </td>
                     <td className="py-2 pr-3 tabular-nums">{fmtDur(v.sumPro)}</td>
                     <td className="py-2 pr-3" colSpan={2}></td>
                     <td className="py-2 pr-3 tabular-nums">{fmtDur(v.sumAction)}</td>
