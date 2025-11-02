@@ -24,7 +24,7 @@ type Action = {
   title: string;
   createdAt: number;
   order: number; // 並び順
-  isDone?: boolean; // ★ サーバ is_done と同期
+  isDone?: boolean; // サーバ is_done と同期
 };
 
 type ChecklistSet = {
@@ -73,7 +73,7 @@ type Store = {
 /* ========= ユーティリティ ========= */
 const KEY = "checklist_v1";
 
-// ★ 同期関連（簡易版）：ユーザーと since をローカルに保存
+// 同期関連（簡易版）：ユーザーと since をローカルに保存
 const USER_ID = "demo"; // ← 本実装ではログインID等に差し替え
 const SINCE_KEY = `support-ai:sync:since:${USER_ID}`;
 const getSince = () => {
@@ -160,7 +160,7 @@ const isMobileDevice = () =>
   typeof navigator !== "undefined" && /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
 const makeUpdatedBy = (deviceId: string) => `${isMobileDevice() ? "9" : "5"}|${deviceId}`;
 
-/** ★ 行動ログを1レコード送信（start〜end の確定後にまとめて送る） */
+/** 行動ログを1レコード送信（end時にまとめて挿入） */
 async function pushActionLog(params: {
   userId: string;
   deviceId: string;
@@ -180,16 +180,16 @@ async function pushActionLog(params: {
     changes: {
       checklist_sets: [],
       checklist_actions: [],
-      // ★ ログを追加（固定FKは info.sync_fixed_fk で検証される想定）
+      // 重要：set_id / action_id / *_ms は data 側に入れる（sync_fixed_fk を満たす）
       checklist_action_logs: [
         {
           id: uid(),
-          set_id: setId,
-          action_id: actionId,
           updated_at,
           updated_by,
           deleted_at: null,
           data: {
+            set_id: setId,
+            action_id: actionId,
             start_at_ms: startAt,
             end_at_ms: endAt,
             duration_ms,
@@ -314,7 +314,7 @@ export default function Checklist() {
     });
   };
 
-  // ★ 受信（PULL）処理
+  // 受信（PULL）処理
   const doPullAll = async () => {
     if (pullingRef.current) return;
     pullingRef.current = true;
@@ -322,7 +322,6 @@ export default function Checklist() {
       const json = await pullBatch(USER_ID, getSince(), [
         "checklist_sets",
         "checklist_actions",
-        // ※ この画面では使わないが since を進める都合で敢えて取得しない
         // ログ参照は /nudge/checklist/logs 側で pull します
       ]);
       applySetDiffs(json.diffs.checklist_sets ?? []);
@@ -348,7 +347,7 @@ export default function Checklist() {
     }
   };
 
-  // ★ 手動アップロード（PUSH）：ローカル全量をサーバに保存（ログは対象外のまま）
+  // 手動アップロード（PUSH）：ローカル全量をサーバに保存（ログは対象外）
   const manualPushAll = async () => {
     try {
       const snapshot = storeRef.current;
@@ -398,7 +397,7 @@ export default function Checklist() {
     }
   };
 
-  // ★ グローバル合図購読（PULL / RESET）
+  // グローバル合図購読（PULL / RESET）
   useEffect(() => {
     const handler = (payload: any) => {
       if (!payload) return;
@@ -448,7 +447,7 @@ export default function Checklist() {
     };
   }, []);
 
-  // ★ グローバル“手動アップロード（PUSH）合図”の購読
+  // グローバル“手動アップロード（PUSH）合図”の購読
   useEffect(() => {
     const unSub = subscribeGlobalPush((p) => {
       if (!p || p.userId !== USER_ID) return;
@@ -461,7 +460,7 @@ export default function Checklist() {
     };
   }, []);
 
-  // ★ 初回マウント時に一度だけ Pull
+  // 初回マウント時に一度だけ Pull
   useEffect(() => {
     void doPullAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -605,7 +604,7 @@ export default function Checklist() {
           set_id: currentSet.id,
           title,
           order,
-          is_done: false, // ★ 新規は未完了
+          is_done: false, // 新規は未完了
         } as any);
       } catch (e) {
         console.warn("[sync] addAction failed:", e);
@@ -791,7 +790,7 @@ export default function Checklist() {
     const endedAt = now();
     const deviceId = getDeviceId();
 
-    // 事前に現在の running を取得（setState 前に確保）
+    // setState 前に現在の状態を確保
     const curSetId = store.current?.setId;
     const curRunning = store.current?.running;
 
@@ -835,7 +834,7 @@ export default function Checklist() {
       };
     });
 
-    // ★ 実行中だった行動のログを確定送信
+    // 実行中だった行動のログを確定送信
     (async () => {
       try {
         if (curSetId && curRunning) {
@@ -854,7 +853,7 @@ export default function Checklist() {
     })();
   };
 
-  // 行動を開始（★ is_done=false を同期）
+  // 行動を開始（is_done=false を同期）
   const startAction = (a: Action) => {
     const p = store.current?.procrastinating;
     if (p) {
@@ -925,7 +924,7 @@ export default function Checklist() {
     const endedAt = now();
     const deviceId = getDeviceId();
 
-    // ★ setState 前に参照を確保
+    // setState 前に参照を確保
     const curSetId = store.current?.setId;
     const curRunning = store.current?.running;
 
@@ -958,7 +957,7 @@ export default function Checklist() {
       };
     });
 
-    // ★ 実行中だった行動のログを確定送信
+    // 実行中だった行動のログを確定送信
     (async () => {
       try {
         if (curSetId && curRunning) {
@@ -977,12 +976,12 @@ export default function Checklist() {
     })();
   };
 
-  // ★終了：最後の行動ならラン終了／それ以外は次の行動までの先延ばしを開始
+  // 終了：最後の行動ならラン終了／それ以外は次の行動までの先延ばしを開始
   const endActionInternal = (actionId: ID) => {
     const endedAt = now();
     const deviceId = getDeviceId();
 
-    // ★ setState 前に現在の running/startAt と setId を確保
+    // setState 前に現在の running/startAt と setId を確保
     const curSetId = store.current?.setId;
     const curRunning = store.current?.running;
 
@@ -1048,7 +1047,7 @@ export default function Checklist() {
       };
     });
 
-    // ★ ログ確定の PUSH（startAt は curRunning から取得）
+    // ログ確定の PUSH（startAt は curRunning から取得）＋ is_done=true をサーバ反映
     (async () => {
       try {
         if (curSetId && curRunning && curRunning.actionId === actionId) {
@@ -1064,6 +1063,23 @@ export default function Checklist() {
       } catch (e) {
         console.warn("[sync] endAction pushActionLog failed:", e);
       }
+      // is_done=true を同期
+      try {
+        const a = currentSet?.actions.find((x) => x.id === actionId);
+        if (a && currentSet) {
+          await upsertChecklistAction({
+            userId: USER_ID,
+            deviceId,
+            id: a.id,
+            set_id: currentSet.id,
+            title: a.title,
+            order: a.order,
+            is_done: true,
+          } as any);
+        }
+      } catch (e) {
+        console.warn("[sync] endAction is_done=true failed:", e);
+      }
     })();
   };
 
@@ -1078,7 +1094,7 @@ export default function Checklist() {
   /* ====== UI ====== */
   return (
     <div className="space-y-4">
-      {/* セット切替/操作（画面内の“同期ボタン”は廃止：ホームに1つだけ） */}
+      {/* セット切替/操作 */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <label className="text-sm text-gray-600">チェックリスト：</label>
