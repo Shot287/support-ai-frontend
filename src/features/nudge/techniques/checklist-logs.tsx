@@ -20,7 +20,14 @@ type ChecklistSet = { id: ID; title: string; actions: Action[]; createdAt: numbe
 
 /* ===== 同期ユーティリティ ===== */
 const USER_ID = "demo";
-const SINCE_KEY = `support-ai:sync:since:${USER_ID}`;
+
+/**
+ * 他画面（例: checklist.tsx）と since を共有すると、
+ * 先に他画面で since が大きく進み、当日の古いログが pull 範囲から漏れることがある。
+ * そこでログ画面専用のキーに分離。
+ */
+const SINCE_KEY = `support-ai:sync:since:${USER_ID}:checklist-logs`;
+
 const getSince = () => {
   if (typeof window === "undefined") return 0;
   const v = localStorage.getItem(SINCE_KEY);
@@ -29,7 +36,12 @@ const getSince = () => {
 const setSince = (ms: number) => {
   if (typeof window !== "undefined") localStorage.setItem(SINCE_KEY, String(ms));
 };
+/** 必要に応じて“全期間再取得”に戻す（UIは増やさず内部用） */
+const resetSince = () => {
+  if (typeof window !== "undefined") localStorage.setItem(SINCE_KEY, "0");
+};
 
+// ✅ これで置き換え
 const uid = () =>
   (typeof crypto !== "undefined" && "randomUUID" in crypto)
     ? crypto.randomUUID()
@@ -81,7 +93,7 @@ export default function ChecklistLogs() {
     if (rows.length === 0) return;
     setSets((prev) => {
       const idx = new Map(prev.map((s, i) => [s.id, i] as const));
-      const next = prev.slice(); // ← const に修正（prefer-const対応）
+      const next = prev.slice(); // const で固定（prefer-const対応）
       for (const r of rows) {
         if (r.deleted_at) {
           const i = idx.get(r.id);
@@ -172,6 +184,7 @@ export default function ChecklistLogs() {
           map.set(r.id, r as ChecklistActionLogRow);
         }
       }
+      // updated_at 昇順で安定化（画面合成時の順序の前処理）
       return Array.from(map.values()).sort(
         (a, b) => (a.updated_at ?? 0) - (b.updated_at ?? 0)
       );
@@ -181,6 +194,11 @@ export default function ChecklistLogs() {
   // ---- 初期 pull + スマート同期 ----
   useEffect(() => {
     const abort = new AbortController();
+
+    // もし他画面の since 共有でログが欠けている疑いがある場合は一度リセットして全期間pull
+    // （必要なら下行を有効化）
+    // resetSince();
+
     (async () => {
       try {
         const json = await pullBatch(USER_ID, getSince(), [
