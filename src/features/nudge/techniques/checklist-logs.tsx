@@ -182,7 +182,7 @@ export default function ChecklistLogs() {
           map.set(r.id, r as ChecklistActionLogRow);
         }
       }
-      // updated_at 昇順で安定化
+      // updated_at 昇順で安定化（画面合成時の順序前処理）
       return Array.from(map.values()).sort(
         (a, b) => (a.updated_at ?? 0) - (b.updated_at ?? 0)
       );
@@ -232,6 +232,38 @@ export default function ChecklistLogs() {
       ctl.stop();
     };
   }, []);
+
+  /**
+   * ★ 重要：選択日が「既に進んだ since よりも過去」なら、
+   * その日のログが pull 範囲外になって見えなくなる。
+   * その場合は一度だけ履歴バックフィル（since=0）を行う。
+   */
+  useEffect(() => {
+    const ensureBackfillForDate = async () => {
+      try {
+        const { end } = dayRangeJst(date);
+        const since = getSince();
+        // マージン（5分）を持たせて厳しすぎるリセットを回避
+        const marginMs = 5 * 60 * 1000;
+        if (end + marginMs < since) {
+          // 履歴バックフィル（ログ中心だが、タイトル解決用にセット/アクションも含める）
+          const json = await pullBatch(USER_ID, 0, [
+            "checklist_sets",
+            "checklist_actions",
+            "checklist_action_logs",
+          ]);
+          applySetDiffs(json.diffs.checklist_sets ?? []);
+          applyActionDiffs(json.diffs.checklist_actions ?? []);
+          applyLogDiffs(json.diffs.checklist_action_logs ?? []);
+          // since は最新に揃える（以降は増分のみ）
+          setSince(json.server_time_ms);
+        }
+      } catch {
+        // 失敗しても致命ではない（次の通常同期に任せる）
+      }
+    };
+    void ensureBackfillForDate();
+  }, [date]); // 日付変更時のみチェック
 
   /* ===== 画面用の組み立て ===== */
 
@@ -315,6 +347,32 @@ export default function ChecklistLogs() {
             className="rounded-xl border px-3 py-2"
           />
           {msg && <span className="text-xs text-gray-500">{msg}</span>}
+          <button
+            onClick={() => {
+              resetSince();
+              setMsg("履歴を含めて再取得しました。");
+              // 直後に1回だけ強制 pull（バックフィル）
+              (async () => {
+                try {
+                  const json = await pullBatch(USER_ID, 0, [
+                    "checklist_sets",
+                    "checklist_actions",
+                    "checklist_action_logs",
+                  ]);
+                  applySetDiffs(json.diffs.checklist_sets ?? []);
+                  applyActionDiffs(json.diffs.checklist_actions ?? []);
+                  applyLogDiffs(json.diffs.checklist_action_logs ?? []);
+                  setSince(json.server_time_ms);
+                } catch {
+                  setMsg("再取得に失敗しました。");
+                }
+              })();
+            }}
+            className="rounded-xl border px-3 py-2 text-xs hover:bg-gray-50"
+            title="当日のみならず、過去分も含めて再取得します"
+          >
+            全履歴を再取得
+          </button>
         </div>
         <p className="text-xs text-gray-500 mt-2">
           指定日のJSTに含まれる同期ログを表示します（各行は「直前の先延ばし → 行動」のセット）。

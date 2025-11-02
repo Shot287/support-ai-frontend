@@ -160,7 +160,7 @@ const isMobileDevice = () =>
   typeof navigator !== "undefined" && /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
 const makeUpdatedBy = (deviceId: string) => `${isMobileDevice() ? "9" : "5"}|${deviceId}`;
 
-/** 行動ログを1レコード送信（end時にまとめて挿入） */
+/** 行動ログを1レコード送信（end時にまとめて挿入）— フラット列で送る */
 async function pushActionLog(params: {
   userId: string;
   deviceId: string;
@@ -180,20 +180,19 @@ async function pushActionLog(params: {
     changes: {
       checklist_sets: [],
       checklist_actions: [],
-      // 重要：set_id / action_id / *_ms は data 側に入れる（sync_fixed_fk を満たす）
+      // ★ 重要：チェックリストのログは models の実カラムに合わせて“フラット”で送る
       checklist_action_logs: [
         {
           id: uid(),
+          user_id: userId,
+          set_id: setId,
+          action_id: actionId,
+          start_at_ms: startAt,
+          end_at_ms: endAt,
+          duration_ms,
           updated_at,
           updated_by,
           deleted_at: null,
-          data: {
-            set_id: setId,
-            action_id: actionId,
-            start_at_ms: startAt,
-            end_at_ms: endAt,
-            duration_ms,
-          },
         },
       ],
     },
@@ -463,7 +462,6 @@ export default function Checklist() {
   // 初回マウント時に一度だけ Pull
   useEffect(() => {
     void doPullAll();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   // ====== 同期差し込み ここまで ======
 
