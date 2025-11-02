@@ -63,7 +63,7 @@ type Store = {
   current?: {
     setId: ID;
     index: number; // 表示中のアクション
-    running?: { actionId: ID; startAt: number };
+    running?: { actionId: ID; startAt: number; logId: ID }; // ★ logId を保持
     procrastinating?: { fromActionId: ID | null; startAt: number };
     runId: ID;
   };
@@ -160,12 +160,74 @@ const isMobileDevice = () =>
   typeof navigator !== "undefined" && /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
 const makeUpdatedBy = (deviceId: string) => `${isMobileDevice() ? "9" : "5"}|${deviceId}`;
 
+/* ========= サーバ push ヘルパ ========= */
+async function pushActionLogCreate(params: {
+  setId: ID;
+  actionId: ID;
+  logId: ID;
+  startAt: number;
+}) {
+  const deviceId = getDeviceId();
+  const updated_at = Date.now();
+  const updated_by = makeUpdatedBy(deviceId);
+  await pushBatch({
+    user_id: USER_ID,
+    device_id: deviceId,
+    changes: {
+      checklist_action_logs: [
+        {
+          id: params.logId,
+          set_id: params.setId,
+          action_id: params.actionId,
+          updated_at,
+          updated_by,
+          deleted_at: null,
+          data: { start_at_ms: params.startAt, end_at_ms: null, duration_ms: null },
+        },
+      ],
+    },
+  });
+}
+
+async function pushActionLogUpdate(params: {
+  setId: ID;
+  actionId: ID;
+  logId: ID;
+  startAt: number;
+  endAt: number;
+}) {
+  const deviceId = getDeviceId();
+  const updated_at = Date.now();
+  const updated_by = makeUpdatedBy(deviceId);
+  await pushBatch({
+    user_id: USER_ID,
+    device_id: deviceId,
+    changes: {
+      checklist_action_logs: [
+        {
+          id: params.logId,
+          set_id: params.setId,
+          action_id: params.actionId,
+          updated_at,
+          updated_by,
+          deleted_at: null,
+          data: {
+            start_at_ms: params.startAt,
+            end_at_ms: params.endAt,
+            duration_ms: Math.max(0, params.endAt - params.startAt),
+          },
+        },
+      ],
+    },
+  });
+}
+
 /* ========= 本体 ========= */
 export default function Checklist() {
   const [store, setStore] = useState<Store>(() => load());
   const [msg, setMsg] = useState<string | null>(null);
   const pullingRef = useRef(false); // 多重PULL防止
-  const storeRef = useRef(store); // 手動Pushで最新storeを参照
+  const storeRef = useRef(store); // 手動Pushや非同期pushで最新storeを参照
   useEffect(() => save(store), [store]);
   useEffect(() => {
     storeRef.current = store;
@@ -302,15 +364,14 @@ export default function Checklist() {
       });
 
       setMsg("チェックリストを最新化しました。");
-    } catch (e) {
-      console.error("[sync] pull-batch failed:", e);
+    } catch {
       setMsg("チェックリストの受信に失敗しました。");
     } finally {
       pullingRef.current = false;
     }
   };
 
-  // ★ 手動アップロード（PUSH）：ローカル全量をサーバに保存
+  // ★ 手動アップロード（PUSH）：ローカル全量をサーバに保存（ログも含めて再構成）
   const manualPushAll = async () => {
     try {
       const snapshot = storeRef.current;
@@ -342,22 +403,38 @@ export default function Checklist() {
         });
       }
 
-      const payload = {
+      // ★ runs → action_logs を再構成
+      const logChanges: any[] = [];
+      for (const r of snapshot.runs) {
+        for (const l of r.actions) {
+          logChanges.push({
+            id: uid(), // 既存IDがないローカル履歴は新規として保存
+            set_id: r.setId,
+            action_id: l.actionId,
+            updated_at,
+            updated_by,
+            deleted_at: null,
+            data: {
+              start_at_ms: l.startAt,
+              end_at_ms: l.endAt ?? null,
+              duration_ms: l.durationMs ?? (l.endAt ? Math.max(0, l.endAt - l.startAt) : null),
+            },
+          });
+        }
+      }
+
+      await pushBatch({
         user_id: USER_ID,
         device_id: deviceId,
         changes: {
           checklist_sets: setChanges,
           checklist_actions: actionChanges,
-          checklist_action_logs: [],
+          checklist_action_logs: logChanges,
         },
-      };
+      });
 
-      console.log("[manualPushAll] start", payload);
-      await pushBatch(payload);
-      console.log("[manualPushAll] done");
       setMsg("この端末のチェックリストをクラウドに保存しました。");
-    } catch (e) {
-      console.warn("[manualPushAll] failed:", e);
+    } catch {
       setMsg("手動アップロードに失敗しました。");
     }
   };
@@ -416,7 +493,6 @@ export default function Checklist() {
   useEffect(() => {
     const unSub = subscribeGlobalPush((p) => {
       if (!p || p.userId !== USER_ID) return;
-      console.log("[bus] push recv", p);
       void manualPushAll();
     });
     return () => {
@@ -477,8 +553,8 @@ export default function Checklist() {
           title: newSet.title,
           order: store.sets.length,
         });
-      } catch (e) {
-        console.warn("[sync] upsert new set failed:", e);
+      } catch {
+        setMsg("セットの保存に失敗しました。");
       }
     })();
   };
@@ -501,8 +577,8 @@ export default function Checklist() {
           title,
           order: Math.max(0, order),
         });
-      } catch (e) {
-        console.warn("[sync] rename set failed:", e);
+      } catch {
+        setMsg("セット名の更新に失敗しました。");
       }
     })();
   };
@@ -532,8 +608,8 @@ export default function Checklist() {
           order: Math.max(0, store.sets.findIndex((s) => s.id === deletingId)),
           deleted_at: Date.now(),
         });
-      } catch (e) {
-        console.warn("[sync] delete set failed:", e);
+      } catch {
+        setMsg("セットの削除同期に失敗しました。");
       }
     })();
   };
@@ -573,8 +649,8 @@ export default function Checklist() {
           order,
           is_done: false, // ★ 新規は未完了
         } as any);
-      } catch (e) {
-        console.warn("[sync] addAction failed:", e);
+      } catch {
+        setMsg("行動の追加に失敗しました。");
       }
     })();
   };
@@ -608,8 +684,8 @@ export default function Checklist() {
           order: a.order,
           is_done: a.isDone ?? false,
         } as any);
-      } catch (e) {
-        console.warn("[sync] renameAction failed:", e);
+      } catch {
+        setMsg("行動名の更新に失敗しました。");
       }
     })();
   };
@@ -648,8 +724,8 @@ export default function Checklist() {
           order: target.order,
           is_done: target.isDone ?? false,
         } as any);
-      } catch (e) {
-        console.warn("[sync] deleteAction failed:", e);
+      } catch {
+        setMsg("行動の削除同期に失敗しました。");
       }
     })();
   };
@@ -693,8 +769,8 @@ export default function Checklist() {
               is_done: a.isDone ?? false,
             } as any);
           }
-        } catch (e) {
-          console.warn("[sync] reorder actions failed:", e);
+        } catch {
+          setMsg("行動の並び替え同期に失敗しました。");
         }
       })();
     }
@@ -755,32 +831,38 @@ export default function Checklist() {
   // チェックリスト全体を終了（手動）
   const endChecklist = () => {
     const endedAt = now();
+
+    // push 用に事前に参照
+    const cur = storeRef.current.current;
+    const curSetId = cur?.setId;
+    const curRunning = cur?.running;
+
     setStore((prev) => {
       if (!prev.current) return prev;
-      const cur = prev.current;
-      const runId = cur.runId;
+      const cur2 = prev.current;
+      const runId = cur2.runId;
 
       const runs = prev.runs.map((r) => {
         if (r.id !== runId) return r;
         const next = { ...r };
 
-        if (cur.running) {
+        if (cur2.running) {
           const i = next.actions.findIndex(
-            (l) => l.actionId === cur.running!.actionId && !l.endAt
+            (l) => l.actionId === cur2.running!.actionId && !l.endAt
           );
           if (i >= 0) {
             const log = next.actions[i];
             next.actions[i] = { ...log, endAt: endedAt, durationMs: endedAt - log.startAt };
           }
         }
-        if (cur.procrastinating) {
+        if (cur2.procrastinating) {
           next.procrastinations = [
             ...next.procrastinations,
             {
-              fromActionId: cur.procrastinating.fromActionId,
-              startAt: cur.procrastinating.startAt,
+              fromActionId: cur2.procrastinating.fromActionId,
+              startAt: cur2.procrastinating.startAt,
               endAt: endedAt,
-              durationMs: endedAt - cur.procrastinating.startAt,
+              durationMs: endedAt - cur2.procrastinating.startAt,
             },
           ];
         }
@@ -791,12 +873,29 @@ export default function Checklist() {
       return {
         ...prev,
         runs,
-        current: { ...cur, running: undefined, procrastinating: undefined },
+        current: { ...cur2, running: undefined, procrastinating: undefined },
       };
     });
+
+    // 実行中の行動が残っていればログを更新 push
+    (async () => {
+      try {
+        if (curSetId && curRunning) {
+          await pushActionLogUpdate({
+            setId: curSetId,
+            actionId: curRunning.actionId,
+            logId: curRunning.logId,
+            startAt: curRunning.startAt,
+            endAt: endedAt,
+          });
+        }
+      } catch {
+        setMsg("ログの終了同期に失敗しました。");
+      }
+    })();
   };
 
-  // 行動を開始（★ is_done=false を同期）
+  // 行動を開始（★ is_done=false を同期 + ログ作成 push）
   const startAction = (a: Action) => {
     const p = store.current?.procrastinating;
     if (p) {
@@ -828,6 +927,8 @@ export default function Checklist() {
 
     ensureRun();
     const t = now();
+    const newLogId = uid();
+
     setStore((s) => ({
       ...s,
       // 画面上の isDone を false に（開始＝未了）
@@ -836,7 +937,7 @@ export default function Checklist() {
           ? set
           : { ...set, actions: set.actions.map((x) => (x.id === a.id ? { ...x, isDone: false } : x)) }
       ),
-      current: { ...s.current!, running: { actionId: a.id, startAt: t } },
+      current: { ...s.current!, running: { actionId: a.id, startAt: t, logId: newLogId } },
       runs: s.runs.map((r) =>
         r.id !== s.current!.runId
           ? r
@@ -844,7 +945,7 @@ export default function Checklist() {
       ),
     }));
 
-    // サーバに is_done=false を同期
+    // サーバ：is_done=false と ログ新規作成
     (async () => {
       try {
         await upsertChecklistAction({
@@ -856,8 +957,15 @@ export default function Checklist() {
           order: a.order,
           is_done: false,
         } as any);
-      } catch (e) {
-        console.warn("[sync] startAction is_done=false failed:", e);
+
+        await pushActionLogCreate({
+          setId: currentSet!.id,
+          actionId: a.id,
+          logId: newLogId,
+          startAt: t,
+        });
+      } catch {
+        setMsg("開始の同期に失敗しました。");
       }
     })();
   };
@@ -865,12 +973,18 @@ export default function Checklist() {
   // 行動を「先延ばしへ」
   const procrastinateNow = () => {
     const endedAt = now();
-    setStore((prev) => {
-      const cur = prev.current;
-      if (!cur || !cur.running) return prev;
 
-      const actionId = cur.running.actionId;
-      const runId = cur.runId;
+    // push 用に事前に参照
+    const cur = storeRef.current.current;
+    const curSetId = cur?.setId;
+    const curRunning = cur?.running;
+
+    setStore((prev) => {
+      const cur2 = prev.current;
+      if (!cur2 || !cur2.running) return prev;
+
+      const actionId = cur2.running.actionId;
+      const runId = cur2.runId;
 
       const runs = prev.runs.map((r) => {
         if (r.id !== runId) return r;
@@ -887,26 +1001,49 @@ export default function Checklist() {
         ...prev,
         runs,
         current: {
-          ...cur,
+          ...cur2,
           running: undefined,
           procrastinating: { fromActionId: actionId, startAt: endedAt },
         },
       };
     });
+
+    // サーバ：該当ログを終了に更新
+    (async () => {
+      try {
+        if (curSetId && curRunning) {
+          await pushActionLogUpdate({
+            setId: curSetId,
+            actionId: curRunning.actionId,
+            logId: curRunning.logId,
+            startAt: curRunning.startAt,
+            endAt: endedAt,
+          });
+        }
+      } catch {
+        setMsg("先延ばしへの切替同期に失敗しました。");
+      }
+    })();
   };
 
   // ★終了：最後の行動ならラン終了／それ以外は次の行動までの先延ばしを開始
   const endActionInternal = (actionId: ID) => {
     const endedAt = now();
+
+    // push 用に事前に参照
+    const cur = storeRef.current.current;
+    const curSetId = cur?.setId;
+    const curRunning = cur?.running;
+
     setStore((prev) => {
       if (!prev.current) return prev;
 
-      const cur = prev.current;
-      const runId = cur.runId;
+      const cur2 = prev.current;
+      const runId = cur2.runId;
 
-      const setForCalc = prev.sets.find((s) => s.id === cur.setId);
+      const setForCalc = prev.sets.find((s) => s.id === cur2.setId);
       const total = setForCalc ? setForCalc.actions.length : 0;
-      const isLast = (cur.index ?? 0) >= Math.max(0, total - 1);
+      const isLast = (cur2.index ?? 0) >= Math.max(0, total - 1);
 
       const runs = prev.runs.map((run) => {
         if (run.id !== runId) return run;
@@ -929,7 +1066,7 @@ export default function Checklist() {
 
       // 終了したアクションを isDone=true に
       const nextSets = prev.sets.map((set) =>
-        set.id !== cur.setId
+        set.id !== cur2.setId
           ? set
           : {
               ...set,
@@ -942,17 +1079,17 @@ export default function Checklist() {
           ...prev,
           sets: nextSets,
           runs,
-          current: { ...cur, running: undefined, procrastinating: undefined },
+          current: { ...cur2, running: undefined, procrastinating: undefined },
         };
       }
 
-      const nextIndex = Math.min((cur.index ?? 0) + 1, Math.max(0, (total ?? 1) - 1));
+      const nextIndex = Math.min((cur2.index ?? 0) + 1, Math.max(0, (total ?? 1) - 1));
       return {
         ...prev,
         sets: nextSets,
         runs,
         current: {
-          ...cur,
+          ...cur2,
           index: nextIndex,
           running: undefined,
           procrastinating: { fromActionId: actionId, startAt: endedAt },
@@ -960,10 +1097,21 @@ export default function Checklist() {
       };
     });
 
-    // サーバに is_done=true を同期
+    // サーバ：該当ログを終了に更新 ＋ アクション is_done=true
     (async () => {
       try {
-        const set = store.sets.find((s) => s.id === store.current?.setId);
+        if (curSetId && curRunning) {
+          // 実行中のログをクローズ
+          await pushActionLogUpdate({
+            setId: curSetId,
+            actionId: curRunning.actionId,
+            logId: curRunning.logId,
+            startAt: curRunning.startAt,
+            endAt: endedAt,
+          });
+        }
+        // is_done=true
+        const set = storeRef.current.sets.find((s) => s.id === storeRef.current.current?.setId);
         const a = set?.actions.find((x) => x.id === actionId);
         if (set && a) {
           await upsertChecklistAction({
@@ -976,8 +1124,8 @@ export default function Checklist() {
             is_done: true,
           } as any);
         }
-      } catch (e) {
-        console.warn("[sync] endAction is_done=true failed:", e);
+      } catch {
+        setMsg("終了の同期に失敗しました。");
       }
     })();
   };
