@@ -1,11 +1,10 @@
 // src/features/nudge/techniques/checklist-logs.tsx
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   startSmartSync,
   pullBatch,
-  pushBatch,
   type PullResponse,
   type ChecklistSetRow,
   type ChecklistActionRow,
@@ -13,13 +12,21 @@ import {
 } from "@/lib/sync";
 import { getDeviceId } from "@/lib/device";
 
+/* ========= 型 ========= */
 type ID = string;
 
-/* ===== ローカル表示用の型 ===== */
+// 旧コードの表示モデルを踏襲（UIの並べ方はそのまま）
 type Action = { id: ID; title: string; order: number };
 type ChecklistSet = { id: ID; title: string; actions: Action[]; createdAt: number };
 
-/* ===== 同期ユーティリティ ===== */
+// 行に表示する「直前先延ばし + 行動」
+type Row = {
+  actionTitle: string;
+  procrast: { startAt?: number; endAt?: number; durationMs?: number } | null;
+  action: { startAt: number; endAt?: number; durationMs?: number };
+};
+
+/* ========= 同期ユーティリティ ========= */
 const USER_ID = "demo";
 const SINCE_KEY = `support-ai:sync:since:${USER_ID}`;
 const getSince = () => {
@@ -36,7 +43,7 @@ const uid = () =>
     ? crypto.randomUUID()
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
-/* ===== JST 日付ユーティリティ ===== */
+/* ========= JST 日付ユーティリティ ========= */
 function dateToYmdJst(d: Date): string {
   const p = new Intl.DateTimeFormat("ja-JP", {
     timeZone: "Asia/Tokyo",
@@ -59,14 +66,7 @@ const fmtTime = (t?: number | null) =>
 const fmtDur = (ms?: number | null) =>
   ms == null ? "—" : `${Math.floor(ms / 60000)}分${Math.floor((ms % 60000) / 1000)}秒`;
 
-/* ===== 表示行：直前先延ばし + 行動 ===== */
-type Row = {
-  actionTitle: string;
-  procrast: { startAt?: number; endAt?: number; durationMs?: number } | null;
-  action: { startAt: number; endAt?: number; durationMs?: number };
-};
-
-/* ===== state ===== */
+/* ========= state ========= */
 type SetsState = ChecklistSet[];
 type LogsState = ChecklistActionLogRow[];
 
@@ -77,22 +77,13 @@ export default function ChecklistLogs() {
 
   const [date, setDate] = useState<string>(() => dateToYmdJst(new Date()));
 
-  // 参照用の最新スナップショット
-  const setsRef = useRef<SetsState>([]);
-  const logsRef = useRef<LogsState>([]);
-  useEffect(() => {
-    setsRef.current = sets;
-  }, [sets]);
-  useEffect(() => {
-    logsRef.current = logs;
-  }, [logs]);
-
-  // ---- diffs 反映（Set/Action） ----
+  /* ===== diffs 反映：Set ===== */
   const applySetDiffs = (rows: readonly ChecklistSetRow[] = []) => {
     if (rows.length === 0) return;
     setSets((prev) => {
       const idx = new Map(prev.map((s, i) => [s.id, i] as const));
-      const next = prev.slice();
+      let next = prev.slice();
+
       for (const r of rows) {
         if (r.deleted_at) {
           const i = idx.get(r.id);
@@ -120,24 +111,16 @@ export default function ChecklistLogs() {
     });
   };
 
-  /**
-   * ★ 重要ポイント
-   * checklist.tsx では is_done（true/false）の同期のみ行い、ログテーブルに直接書き込みません。
-   * そこで本画面では「チェックリストの Action diffs を監視」し、
-   *  - true -> false への変化を「開始」
-   *  - false -> true への変化を「終了」
-   * とみなして checklist_action_logs に push します。
-   */
+  /* ===== diffs 反映：Action（order も反映） ===== */
   const applyActionDiffs = (rows: readonly ChecklistActionRow[] = []) => {
     if (rows.length === 0) return;
-
-    // 1) 先にUI（sets）を更新
     setSets((prev) => {
       const bySet = new Map<string, ChecklistActionRow[]>();
       for (const r of rows) {
         if (!bySet.has(r.set_id)) bySet.set(r.set_id, []);
         bySet.get(r.set_id)!.push(r);
       }
+
       return prev.map((set) => {
         const patches = bySet.get(set.id);
         if (!patches || patches.length === 0) return set;
@@ -171,19 +154,18 @@ export default function ChecklistLogs() {
             };
           }
         }
+
         actions = actions
           .slice()
           .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
           .map((a, i) => ({ ...a, order: i }));
+
         return { ...set, actions };
       });
     });
-
-    // 2) is_done の変化からログ開始/終了を生成して push
-    void reflectLogsFromActionStates(rows);
   };
 
-  // ---- diffs 反映（Action Logs） ----
+  /* ===== diffs 反映：Action Logs ===== */
   const applyLogDiffs = (rows: readonly ChecklistActionLogRow[] = []) => {
     if (rows.length === 0) return;
     setLogs((prev) => {
@@ -202,9 +184,10 @@ export default function ChecklistLogs() {
     });
   };
 
-  // ---- 初期 pull + スマート同期 ----
+  /* ===== 初期 pull + スマート同期（SSE/ポーリング） ===== */
   useEffect(() => {
     const abort = new AbortController();
+
     (async () => {
       try {
         const json = await pullBatch(USER_ID, getSince(), [
@@ -212,11 +195,12 @@ export default function ChecklistLogs() {
           "checklist_actions",
           "checklist_action_logs",
         ]);
-        applySetDiffs(json.diffs.checklist_sets);
-        applyActionDiffs(json.diffs.checklist_actions);
-        applyLogDiffs(json.diffs.checklist_action_logs);
+        applySetDiffs(json.diffs.checklist_sets ?? []);
+        applyActionDiffs(json.diffs.checklist_actions ?? []);
+        applyLogDiffs(json.diffs.checklist_action_logs ?? []);
         setSince(json.server_time_ms);
-      } catch {
+      } catch (e) {
+        console.warn("[checklist-logs] initial pull failed:", e);
         setMsg("同期に失敗しました。しばらくしてから再度お試しください。");
       }
     })();
@@ -227,9 +211,9 @@ export default function ChecklistLogs() {
       getSince,
       setSince,
       applyDiffs: (diffs: PullResponse["diffs"]) => {
-        applySetDiffs(diffs.checklist_sets);
-        applyActionDiffs(diffs.checklist_actions);
-        applyLogDiffs(diffs.checklist_action_logs);
+        applySetDiffs(diffs.checklist_sets ?? []);
+        applyActionDiffs(diffs.checklist_actions ?? []);
+        applyLogDiffs(diffs.checklist_action_logs ?? []);
       },
       fallbackPolling: true,
       pollingIntervalMs: 30000,
@@ -240,159 +224,28 @@ export default function ChecklistLogs() {
       abort.abort();
       ctl.stop();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /* ===== is_done 変化 → ログ生成の実装 ===== */
-
-  // 直近の「未クローズ」のログを取るヘルパ
-  const findOpenLog = (setId: ID, actionId: ID) => {
-    // updated_at 降順で最新の未クローズ
-    const list = logsRef.current
-      .filter((l) => !l.deleted_at && l.set_id === setId && l.action_id === actionId)
-      .sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0));
-    return list.find((l) => l.end_at_ms == null) ?? null;
-  };
-
-  // 行動タイトルの解決（ビュー整形のため）
-  const resolveActionTitle = (setId: ID, actionId: ID) => {
-    const s = setsRef.current.find((x) => x.id === setId);
-    return s?.actions.find((a) => a.id === actionId)?.title ?? "(不明な行動)";
-  };
-
-  // rows（checklist_actions の diff）から is_done 遷移を検出してログを push
-  const reflectLogsFromActionStates = async (rows: readonly ChecklistActionRow[]) => {
-    if (rows.length === 0) return;
-
-    // 変化を時系列で安定処理
-    const sorted = rows
-      .slice()
-      .sort((a, b) => (a.updated_at ?? 0) - (b.updated_at ?? 0));
-
-    const deviceId = getDeviceId();
-    const toPush: ChecklistActionLogRow[] = []; // ローカル先行反映用
-    const changes: Array<{
-      id: string;
-      updated_at: number;
-      updated_by: string;
-      deleted_at: number | null;
-      set_id: string;
-      action_id: string;
-      data: Partial<Pick<ChecklistActionLogRow, "start_at_ms" | "end_at_ms" | "duration_ms">>;
-    }> = [];
-
-    for (const r of sorted) {
-      if (r.deleted_at) continue; // 削除はログ生成対象外
-      const setId = r.set_id;
-      const actionId = r.id;
-      const updatedAt = r.updated_at ?? Date.now();
-      const nextDone = (r as any).is_done as boolean | undefined;
-
-      // 直前状態（前の sets の is_done）を、最も近い既知情報から推測
-      // → logs 側で「未クローズの有無」を使い、なければ「前は完了していた」とみなす
-      const open = findOpenLog(setId, actionId);
-      const hadOpen = !!open;
-
-      // ルール:
-      //   nextDone===false -> 開始イベント（未クローズがあれば無視）
-      //   nextDone===true  -> 終了イベント（未クローズがなければ開始時刻=updatedAtで補完して即クローズ）
-      if (nextDone === false) {
-        if (!hadOpen) {
-          const newId = uid();
-          // ローカル先行
-          toPush.unshift({
-            id: newId,
-            set_id: setId,
-            action_id: actionId,
-            start_at_ms: updatedAt,
-            end_at_ms: null,
-            duration_ms: null,
-            updated_at: updatedAt,
-            deleted_at: null,
-          } as ChecklistActionLogRow);
-
-          changes.push({
-            id: newId,
-            updated_at: updatedAt,
-            updated_by: deviceId,
-            deleted_at: null,
-            set_id: setId,
-            action_id: actionId,
-            data: { start_at_ms: updatedAt, end_at_ms: null, duration_ms: null },
-          });
-        }
-      } else if (nextDone === true) {
-        // 終了
-        const startMs = open?.start_at_ms ?? updatedAt;
-        const endMs = updatedAt;
-        const dur = Math.max(0, endMs - startMs);
-
-        const targetId = open?.id ?? uid();
-        // ローカル先行（open が無かった場合は新規→即クローズを一発で）
-        toPush.unshift({
-          id: targetId,
-          set_id: setId,
-          action_id: actionId,
-          start_at_ms: startMs,
-          end_at_ms: endMs,
-          duration_ms: dur,
-          updated_at: endMs,
-          deleted_at: null,
-        } as ChecklistActionLogRow);
-
-        changes.push({
-          id: targetId,
-          updated_at: endMs,
-          updated_by: deviceId,
-          deleted_at: null,
-          set_id: setId,
-          action_id: actionId,
-          data: { start_at_ms: startMs, end_at_ms: endMs, duration_ms: dur },
-        });
-      }
-    }
-
-    if (changes.length === 0) return;
-
-    // ローカル先行反映（即時UI応答）
-    setLogs((prev) => {
-      const map = new Map(prev.map((x) => [x.id, x] as const));
-      for (const r of toPush) map.set(r.id, r);
-      return Array.from(map.values()).sort((a, b) => (a.updated_at ?? 0) - (b.updated_at ?? 0));
-    });
-
-    // サーバーへ push
-    try {
-      await pushBatch({
-        user_id: USER_ID,
-        device_id: deviceId,
-        changes: { checklist_action_logs: changes },
-      });
-      // push 後に pull してサーバ時刻に寄せる
-      const json = await pullBatch(USER_ID, getSince(), [
-        "checklist_action_logs",
-      ]);
-      applyLogDiffs(json.diffs.checklist_action_logs);
-      setSince(json.server_time_ms);
-    } catch (e) {
-      console.warn("[logs] push from action diffs failed:", e);
-      setMsg("記録の送信に失敗しました。ネットワークをご確認ください。");
-    }
-  };
-
-  /* ===== 画面用の組み立て ===== */
-
+  /* ===== 画面用：旧コードと同じ考え方でビルド ===== */
   const setMap = useMemo(() => new Map(sets.map((s) => [s.id, s] as const)), [sets]);
 
-  const day = useMemo(() => dayRangeJst(date), [date]);
-  const dayLogs = useMemo(() => {
-    const { start, end } = day;
-    return logs.filter(
-      (l) =>
-        (l.start_at_ms != null && l.start_at_ms >= start && l.start_at_ms <= end) ||
-        (l.end_at_ms != null && l.end_at_ms >= start && l.end_at_ms <= end)
-    );
-  }, [logs, day]);
+  const range = useMemo(() => dayRangeJst(date), [date]);
 
+  // 選択日のログを抽出（start/end のどちらかがその日にかかっていれば対象）
+  const dayLogs = useMemo(() => {
+    const { start, end } = range;
+    return logs.filter((l) => {
+      const st = l.start_at_ms ?? null;
+      const ed = l.end_at_ms ?? null;
+      const hitStart = st != null && st >= start && st <= end;
+      const hitEnd = ed != null && ed >= start && ed <= end;
+      return hitStart || hitEnd;
+    });
+  }, [logs, range]);
+
+  // 旧コードの「直前の先延ばし → 行動」を再現：
+  // - 1日の各セットごとに、開始時刻順に並べ、直前の“隙間”を先延ばしとして表示
   const view = useMemo(() => {
     const bySet = new Map<string, ChecklistActionLogRow[]>();
     for (const r of dayLogs) {
@@ -402,23 +255,27 @@ export default function ChecklistLogs() {
 
     const list = Array.from(bySet.entries()).map(([setId, items]) => {
       const set = setMap.get(setId);
+      // 開始 → 更新で安定ソート
       items.sort(
         (a, b) =>
           (a.start_at_ms ?? 0) - (b.start_at_ms ?? 0) ||
           (a.updated_at ?? 0) - (b.updated_at ?? 0)
       );
+
       const rows: Row[] = [];
       let prevEnd: number | null = null;
 
       for (const it of items) {
         const title =
-          set?.actions.find((x) => x.id === it.action_id)?.title ?? resolveActionTitle(setId, it.action_id);
+          set?.actions.find((x) => x.id === it.action_id)?.title ?? "(不明な行動)";
+
         const actStart = it.start_at_ms ?? undefined;
         const actEnd = it.end_at_ms ?? undefined;
         const actDur =
           it.duration_ms ??
           (actStart != null && actEnd != null ? actEnd - actStart : undefined);
 
+        // 直前の隙間を“先延ばし”として付与（旧コードの「直前先延ばし」に相当）
         let procrast: Row["procrast"] = null;
         if (prevEnd != null && actStart != null && actStart > prevEnd) {
           procrast = { startAt: prevEnd, endAt: actStart, durationMs: actStart - prevEnd };
@@ -437,7 +294,7 @@ export default function ChecklistLogs() {
       const sumPro = rows.reduce((s, r) => s + (r.procrast?.durationMs ?? 0), 0);
 
       return {
-        runId: uid(),
+        runId: uid(), // 旧UI互換のためダミーIDを振る（同日・同セットの“束”）
         setTitle: set?.title ?? "(不明なセット)",
         rows,
         sumAction,
@@ -445,9 +302,11 @@ export default function ChecklistLogs() {
       };
     });
 
+    // セット名で安定整列
     return list.sort((a, b) => a.setTitle.localeCompare(b.setTitle, "ja"));
   }, [dayLogs, setMap]);
 
+  /* ========= UI ========= */
   return (
     <div className="space-y-4">
       <section className="rounded-2xl border p-4 shadow-sm">
@@ -463,7 +322,7 @@ export default function ChecklistLogs() {
           {msg && <span className="text-xs text-gray-500">{msg}</span>}
         </div>
         <p className="text-xs text-gray-500 mt-2">
-          指定日のJSTに含まれる同期ログを表示します（各行は「直前の先延ばし → 行動」のセット）。
+          指定日のJSTに含まれる記録を表示します（各行は「直前の先延ばし → 行動」のセット）。
         </p>
       </section>
 
@@ -475,7 +334,9 @@ export default function ChecklistLogs() {
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-3">
                 <h3 className="font-semibold">{v.setTitle}</h3>
+                <div className="text-xs text-gray-500">Run: {v.runId.slice(0, 8)}…</div>
               </div>
+              {/* サーバ同期主体のため、ここでの削除は無効化（旧UI互換の見た目のみ） */}
               <button
                 disabled
                 className="rounded-xl border px-3 py-1.5 text-sm text-gray-400"
@@ -513,9 +374,7 @@ export default function ChecklistLogs() {
                     </tr>
                   ))}
                   <tr className="border-t font-medium">
-                    <td className="py-2 pr-3" colSpan={4}>
-                      合計
-                    </td>
+                    <td className="py-2 pr-3" colSpan={4}>合計</td>
                     <td className="py-2 pr-3 tabular-nums">{fmtDur(v.sumPro)}</td>
                     <td className="py-2 pr-3" colSpan={2}></td>
                     <td className="py-2 pr-3 tabular-nums">{fmtDur(v.sumAction)}</td>
