@@ -212,7 +212,7 @@ async function pushRunStartMarker(params: {
 }) {
   const { userId, deviceId, setId, actionIdForMarker, startedAt } = params;
   const t = startedAt ?? Date.now();
-  const actionId = actionIdForMarker ?? "00000000-0000-0000-0000-000000000000"; // 念のため固定ダミー（実運用は先頭アクション推奨）
+  const actionId = actionIdForMarker ?? "00000000-0000-0000-0000-000000000000"; // ダミー
   await pushActionLog({
     userId,
     deviceId,
@@ -221,6 +221,28 @@ async function pushRunStartMarker(params: {
     startAt: t,
     endAt: t,
     extraData: { kind: "run_start" },
+  });
+}
+
+/** ラン終了マーカ（run_end）を書き込む。duration=0 で記録 */
+async function pushRunEndMarker(params: {
+  userId: string;
+  deviceId: string;
+  setId: string;
+  actionIdForMarker?: string | null; // ダミー or 直近アクションID
+  endedAt?: number;
+}) {
+  const { userId, deviceId, setId, actionIdForMarker, endedAt } = params;
+  const t = endedAt ?? Date.now();
+  const actionId = actionIdForMarker ?? "00000000-0000-0000-0000-000000000000";
+  await pushActionLog({
+    userId,
+    deviceId,
+    setId,
+    actionId,
+    startAt: t,
+    endAt: t,
+    extraData: { kind: "run_end" },
   });
 }
 
@@ -821,7 +843,7 @@ export default function Checklist() {
     }
     if (store.current?.procrastinating || store.current?.running) return;
 
-    ensureRun();
+    const run = ensureRun();
     setStore((s) => ({
       ...s,
       current: {
@@ -830,6 +852,23 @@ export default function Checklist() {
         procrastinating: { fromActionId: null, startAt: now() },
       },
     }));
+
+    // ★ run_start マーカーを確実に送る（開始ボタン時）
+    (async () => {
+      try {
+        const deviceId = getDeviceId();
+        const firstActionId = actionsSorted[0]?.id ?? null;
+        await pushRunStartMarker({
+          userId: USER_ID,
+          deviceId,
+          setId: run.setId,
+          actionIdForMarker: firstActionId ?? undefined,
+          startedAt: Date.now(),
+        });
+      } catch (e) {
+        console.warn("[sync] startChecklist push run_start failed:", e);
+      }
+    })();
   };
 
   // チェックリスト全体を終了（手動）
@@ -912,6 +951,25 @@ export default function Checklist() {
         }
       } catch (e) {
         console.warn("[sync] endChecklist pushActionLog failed:", e);
+      }
+
+      // ★ run_end マーカー（終了ボタンで必ず区切る）
+      try {
+        if (curSetId) {
+          const lastActId = storeRef.current.sets
+            .find((s) => s.id === curSetId)
+            ?.actions?.[Math.min(storeRef.current.current?.index ?? 0, (actionsSorted.length - 1) | 0)]
+            ?.id ?? null;
+          await pushRunEndMarker({
+            userId: USER_ID,
+            deviceId,
+            setId: curSetId,
+            actionIdForMarker: lastActId ?? undefined,
+            endedAt,
+          });
+        }
+      } catch (e) {
+        console.warn("[sync] push run_end failed:", e);
       }
     })();
   };

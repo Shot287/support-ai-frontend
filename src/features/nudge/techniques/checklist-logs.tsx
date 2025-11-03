@@ -73,7 +73,7 @@ const fmtDur = (ms?: number | null) =>
 type Row = {
   actionTitle: string;
   actionLogId: ID;                 // 行動ログの id（削除に使用）
-  maybeProcrastLogId?: ID;         // 1番目前の先延ばしログの id（存在時の一括削除用）
+  maybeProcrastLogId?: ID;         // 1番目前の先延ばしログの id（合流している場合、一緒に削除）
   procrast: { startAt?: number; endAt?: number; durationMs?: number } | null;
   action: { startAt: number; endAt?: number; durationMs?: number };
 };
@@ -82,11 +82,11 @@ type RunView = {
   runKey: string;                  // 表示用キー
   setId: ID;
   setTitle: string;
-  startedAt: number | null;        // ★ null 許容に変更（代入側の null と整合）
+  startedAt: number | null;        // run_start or 最初のログ
   rows: Row[];
   sumAction: number;
   sumPro: number;
-  rawLogIds: ID[];                 // このランに含めたログID（削除に使用、マーカー含む）
+  rawLogIds: ID[];                 // このランに含めたログID（削除用、マーカー含む）
 };
 
 /* ===== state ===== */
@@ -102,9 +102,8 @@ async function softDeleteLogs(
   if (targets.length === 0) return;
   const updated_at = Date.now();
   const updated_by =
-    (typeof navigator !== "undefined" && /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) ? "9" : "5") +
-    "|" +
-    deviceId;
+    (typeof navigator !== "undefined" && /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) ? "9" : "5")
+    + "|" + deviceId;
 
   const checklist_action_logs = targets.map((t) => ({
     id: t.id,
@@ -131,8 +130,8 @@ export default function ChecklistLogs() {
   const [sets, setSets] = useState<SetsState>([]);
   const [logs, setLogs] = useState<LogsState>([]);
   const [msg, setMsg] = useState<string | null>(null);
-
   const [date, setDate] = useState<string>(() => dateToYmdJst(new Date()));
+  const [order, setOrder] = useState<"asc" | "desc">("asc"); // 使用順の並び
 
   // ---- diffs 反映（Set/Action） ----
   const applySetDiffs = (rows: readonly ChecklistSetRow[] = []) => {
@@ -310,7 +309,6 @@ export default function ChecklistLogs() {
 
   /* ===== 画面用の組み立て ===== */
   const setMap = useMemo(() => new Map(sets.map((s) => [s.id, s] as const)), [sets]);
-
   const day = useMemo(() => dayRangeJst(date), [date]);
 
   // 対象日のログのみ抽出（start か end が当日範囲にかかるもの）
@@ -319,20 +317,22 @@ export default function ChecklistLogs() {
     return logs.filter(
       (l) =>
         !l.deleted_at &&
-        ((l.start_at_ms != null && l.start_at_ms >= start && l.start_at_ms <= end) ||
-          (l.end_at_ms != null && l.end_at_ms >= start && l.end_at_ms <= end))
+        (
+          (l.start_at_ms != null && l.start_at_ms >= start && l.start_at_ms <= end) ||
+          (l.end_at_ms != null && l.end_at_ms >= start && l.end_at_ms <= end)
+        )
     );
   }, [logs, day]);
 
   /**
-   * ラン単位に分割してから、ランの開始時刻（run_start か最初のログ）で昇順整列。
-   * 表示は「古い → 新しい」（＝新しいほど下）。
-   * - run_start（data.kind==="run_start"）でランを切る
-   * - procrastination_before_first は該当アクションの「直前先延ばし」に合流させる
-   * - それ以外の隙間は通常のギャップ先延ばしとして算出
+   * ラン分割ルール
+   * - 明示マーカー：data.kind === "run_start" で新規ラン開始、"run_end" でラン終了
+   * - 初手先延ばし：data.kind === "procrastination_before_first" が来た時点で新規ラン扱い
+   * - 長いギャップ：直前の action の end から次の start までが閾値以上なら分割
    */
+  const GAP_SPLIT_MS = 15 * 60 * 1000; // 15分（必要なら調整可）
+
   const views: RunView[] = useMemo(() => {
-    // セットごとに当日ログを処理
     const bySet = new Map<string, ChecklistActionLogRow[]>();
     for (const r of dayLogs) {
       if (!bySet.has(r.set_id)) bySet.set(r.set_id, []);
@@ -351,25 +351,26 @@ export default function ChecklistLogs() {
             (a.updated_at ?? 0) - (b.updated_at ?? 0)
         );
 
-      // ラン切り分け
       let currentRunLogs: ChecklistActionLogRow[] = [];
+      let lastActionEnd: number | null = null;
+
       const flush = () => {
         if (currentRunLogs.length === 0) return;
 
-        // 1ランを Row[] に変換
+        // 1ラン → Row[]
         const rows: Row[] = [];
         let prevEnd: number | null = null;
-        let pendingFirstProcrast: { id: ID; startAt: number; endAt: number } | null =
-          null;
+        let pendingFirstProcrast: { id: ID; startAt: number; endAt: number } | null = null;
+        let runStartedAt: number | null = null;
+        const rawIds: ID[] = [];
 
-        const pushRow = (log: ChecklistActionLogRow) => {
+        const pushRowFromAction = (log: ChecklistActionLogRow) => {
           const title =
             set?.actions.find((x) => x.id === log.action_id)?.title ?? "(不明な行動)";
           const actStart = log.start_at_ms ?? 0;
           const actEnd = log.end_at_ms ?? undefined;
           const actDur =
-            log.duration_ms ??
-            (actEnd != null ? Math.max(0, actEnd - actStart) : undefined);
+            log.duration_ms ?? (actEnd != null ? Math.max(0, actEnd - actStart) : undefined);
 
           // 直前先延ばし
           let procrast: Row["procrast"] = null;
@@ -379,10 +380,7 @@ export default function ChecklistLogs() {
             procrast = {
               startAt: pendingFirstProcrast.startAt,
               endAt: pendingFirstProcrast.endAt,
-              durationMs: Math.max(
-                0,
-                pendingFirstProcrast.endAt - pendingFirstProcrast.startAt
-              ),
+              durationMs: Math.max(0, pendingFirstProcrast.endAt - pendingFirstProcrast.startAt),
             };
             maybeProcrastLogId = pendingFirstProcrast.id;
             pendingFirstProcrast = null;
@@ -401,12 +399,12 @@ export default function ChecklistLogs() {
           if (actEnd != null) prevEnd = actEnd;
         };
 
-        // ラン内部ログを巡回
-        let runStartAt: number | undefined = undefined;
         for (const log of currentRunLogs) {
+          rawIds.push(log.id);
           const kind = (log as any).data?.kind;
+
           if (kind === "run_start") {
-            runStartAt = log.start_at_ms ?? log.updated_at ?? runStartAt;
+            runStartedAt = log.start_at_ms ?? log.updated_at ?? runStartedAt ?? null;
             continue; // マーカーは行にしない
           }
           if (kind === "procrastination_before_first") {
@@ -416,60 +414,101 @@ export default function ChecklistLogs() {
                 startAt: log.start_at_ms,
                 endAt: log.end_at_ms,
               };
+              if (runStartedAt == null) {
+                runStartedAt = log.start_at_ms ?? log.updated_at ?? null;
+              }
             }
-            continue; // 次の実アクションに合流
+            continue;
           }
-          // 通常アクションログ
-          pushRow(log);
+          if (kind === "run_end") {
+            // 終了マーカー。行は作らず、runStartedAt 未取得なら補完のみ。
+            if (runStartedAt == null) {
+              runStartedAt = currentRunLogs[0]?.start_at_ms ?? currentRunLogs[0]?.updated_at ?? null;
+            }
+            continue;
+          }
+
+          // 通常アクション
+          if (runStartedAt == null) {
+            runStartedAt = log.start_at_ms ?? log.updated_at ?? null;
+          }
+          pushRowFromAction(log);
         }
 
         const sumAction = rows.reduce((s, r) => s + (r.action.durationMs ?? 0), 0);
         const sumPro = rows.reduce((s, r) => s + (r.procrast?.durationMs ?? 0), 0);
 
-        const rawLogIds = currentRunLogs.map((x) => x.id);
-        allRuns.push({
-          runKey: uid(),
-          setId,
-          setTitle: set?.title ?? "(不明なセット)",
-          startedAt: runStartAt ?? (currentRunLogs[0]?.start_at_ms ?? null), // ★ null に正規化
-          rows,
-          sumAction,
-          sumPro,
-          rawLogIds,
-        });
+        if (rows.length > 0) {
+          allRuns.push({
+            runKey: uid(),
+            setId,
+            setTitle: set?.title ?? "(不明なセット)",
+            startedAt: runStartedAt ?? rows[0].action.startAt ?? null,
+            rows,
+            sumAction,
+            sumPro,
+            rawLogIds: rawIds,
+          });
+        }
 
         currentRunLogs = [];
+        lastActionEnd = null;
       };
 
       for (const it of items) {
-        const kind = (it as any).data?.kind;
-        if (kind === "run_start") {
-          // 直前のランを確定してから新ラン開始
+        const kind = (it as any).data?.kind as string | undefined;
+
+        // ラン明示境界
+        if (kind === "run_start" || kind === "procrastination_before_first") {
           flush();
           currentRunLogs.push(it);
-        } else {
-          currentRunLogs.push(it);
+          // 「開始マーカー」後は lastActionEnd リセット
+          lastActionEnd = null;
+          continue;
+        }
+
+        // 長いギャップで自動分割（最後のアクション終了時刻があり、次の開始と大きく離れている）
+        const nextStart = it.start_at_ms ?? it.updated_at ?? null;
+        if (lastActionEnd != null && nextStart != null && nextStart - lastActionEnd >= GAP_SPLIT_MS) {
+          flush();
+        }
+
+        currentRunLogs.push(it);
+
+        // run_end マーカーで即 flush
+        if (kind === "run_end") {
+          flush();
+          continue;
+        }
+
+        // アクションなら lastActionEnd を更新
+        if (!kind) {
+          const endAt = it.end_at_ms ?? null;
+          if (endAt != null) lastActionEnd = endAt;
         }
       }
+
       // 末尾 flush
       flush();
     }
 
-    // 使用順で並べる（古い→新しい＝新しいほど下に来る）
-    return allRuns.sort(
-      (a, b) =>
-        (a.startedAt ?? 0) - (b.startedAt ?? 0) ||
-        a.setTitle.localeCompare(b.setTitle, "ja")
-    );
-  }, [dayLogs, setMap]);
+    // 使用順（ランの開始時刻）で並べ替え
+    const asc = allRuns
+      .slice()
+      .sort(
+        (a, b) =>
+          (a.startedAt ?? 0) - (b.startedAt ?? 0) ||
+          a.setTitle.localeCompare(b.setTitle, "ja")
+      );
+
+    return order === "asc" ? asc : asc.reverse();
+  }, [dayLogs, setMap, order]);
 
   /* ===== 削除ハンドラ ===== */
-  const handleDeleteRow = async (_rv: RunView, row: Row) => {
-    if (!confirm("この行（先延ばし含む）を削除しますか？")) return;
+  const handleDeleteRow = async (rv: RunView, row: Row) => {
+    if (!confirm("この行（先延ばし合流があればそれも）を削除しますか？")) return;
     const deviceId = getDeviceId();
 
-    // 表示行に紐づく actionLog を必ず削除。
-    // 先延ばしが「procrastination_before_first」で合流している場合は、そのログIDも一緒に削除。
     const toDelete: Array<{ id: ID; set_id: ID; action_id: ID; data?: any }> = [];
 
     const actionLog = dayLogs.find((l) => l.id === row.actionLogId);
@@ -496,7 +535,7 @@ export default function ChecklistLogs() {
 
     try {
       await softDeleteLogs(USER_ID, deviceId, toDelete);
-      // ローカル即時反映
+      // 即時反映：対象IDをローカルから除去
       setLogs((prev) => prev.filter((l) => !toDelete.some((d) => d.id === l.id)));
       setMsg("記録を削除しました。");
     } catch {
@@ -508,7 +547,6 @@ export default function ChecklistLogs() {
     if (!confirm("このランの記録をすべて削除しますか？（取り消せません）")) return;
     const deviceId = getDeviceId();
 
-    // run に含めた rawLogIds（run_start を含む）を一括削除
     const targets = dayLogs
       .filter((l) => rv.rawLogIds.includes(l.id))
       .map((l) => ({
@@ -530,8 +568,20 @@ export default function ChecklistLogs() {
   return (
     <div className="space-y-4">
       <section className="rounded-2xl border p-4 shadow-sm">
-        <h2 className="font-semibold mb-2">記録参照</h2>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center justify-between">
+          <h2 className="font-semibold">記録参照</h2>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setOrder((o) => (o === "asc" ? "desc" : "asc"))}
+              className="rounded-xl border px-3 py-2 text-xs hover:bg-gray-50"
+              title="チェックリスト使用順の並び替え"
+            >
+              並び: {order === "asc" ? "昇順（古→新）" : "降順（新→古）"}
+            </button>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3 mt-2">
           <label className="text-sm text-gray-600">日付:</label>
           <input
             type="date"
@@ -539,14 +589,11 @@ export default function ChecklistLogs() {
             onChange={(e) => setDate(e.target.value)}
             className="rounded-xl border px-3 py-2"
           />
-        </div>
-        {msg && <p className="text-xs text-gray-500 mt-2">{msg}</p>}
-        <div className="mt-2">
+          {msg && <span className="text-xs text-gray-500">{msg}</span>}
           <button
             onClick={() => {
               resetSince();
               setMsg("履歴を含めて再取得しました。");
-              // 直後に1回だけ強制 pull（バックフィル）
               (async () => {
                 try {
                   const json = await pullBatch(USER_ID, 0, [
@@ -570,7 +617,7 @@ export default function ChecklistLogs() {
           </button>
         </div>
         <p className="text-xs text-gray-500 mt-2">
-          指定日のJSTに含まれる同期ログを表示します。下に行くほど新しい使用（ラン）です。
+          指定日のJSTに含まれる同期ログを表示します。使用（ラン）単位で区切り、下ほど新しい使用になります（トグルで反転可）。
         </p>
       </section>
 
@@ -583,20 +630,22 @@ export default function ChecklistLogs() {
               <div className="flex items-center gap-3">
                 <h3 className="font-semibold">{v.setTitle}</h3>
                 {v.startedAt != null && (
-                  <span className="text-xs text-gray-500">開始: {fmtTime(v.startedAt)}</span>
+                  <span className="text-xs text-gray-500">
+                    開始: {fmtTime(v.startedAt)}
+                  </span>
                 )}
               </div>
               <button
                 onClick={() => void handleDeleteRun(v)}
                 className="rounded-xl border px-3 py-1.5 text-sm hover:bg-gray-50"
-                title="このランに含まれるログ（run_start 含む）をすべて削除します"
+                title="このランに含まれるログ（run_start / run_end / 先延ばしマーカー含む）をすべて削除します"
               >
                 ランを削除
               </button>
             </div>
 
             <div className="overflow-x-auto">
-              <table className="min-w-[820px] w-full text-sm">
+              <table className="min-w-[840px] w-full text-sm">
                 <thead>
                   <tr className="text-left text-gray-600">
                     <th className="py-2 pr-3">#</th>
@@ -625,7 +674,7 @@ export default function ChecklistLogs() {
                         <button
                           onClick={() => void handleDeleteRow(v, r)}
                           className="rounded-lg border px-2 py-1 text-xs hover:bg-gray-50"
-                          title="この行（先延ばしログが合流している場合はそれも）を削除"
+                          title="この行（合流した先延ばしを含む）を削除"
                         >
                           行を削除
                         </button>
