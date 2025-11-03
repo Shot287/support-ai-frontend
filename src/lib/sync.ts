@@ -646,7 +646,7 @@ export function useSync(table: string) {
   function getSince(userId: string) {
     const raw = localStorage.getItem(sinceKey(userId, table));
     return raw ? Number(raw) : 0;
-    }
+  }
 
   function setSince(userId: string, ms: number) {
     localStorage.setItem(sinceKey(userId, table), String(ms));
@@ -702,5 +702,12 @@ export function useSync(table: string) {
 
   function stop() { ctrl?.stop(); ctrl = null; }
 
-  return { start, stop, getSince: (uid: string) => getSince(uid), setSince: (uid: string, ms: number) => setSince(uid, ms), pullNow, pushRows };
+  return {
+    start,
+    stop,
+    getSince: (uid: string) => getSince(uid),
+    setSince: (uid: string, ms: number) => setSince(uid, ms),
+    pullNow,
+    pushRows,
+  };
 }
