@@ -160,7 +160,7 @@ const isMobileDevice = () =>
   typeof navigator !== "undefined" && /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
 const makeUpdatedBy = (deviceId: string) => `${isMobileDevice() ? "9" : "5"}|${deviceId}`;
 
-/** 行動ログを1レコード送信（end時にまとめて挿入）— フラット列で送る */
+/** 行動ログを1レコード送信（end時にまとめて挿入）— data に詰めて送る */
 async function pushActionLog(params: {
   userId: string;
   deviceId: string;
@@ -180,19 +180,20 @@ async function pushActionLog(params: {
     changes: {
       checklist_sets: [],
       checklist_actions: [],
-      // ★ 重要：checklist_action_logs は実カラムに合わせた “フラット列”
+      // 可変列は data にまとめる（固定FK: set_id, action_id は直下）
       checklist_action_logs: [
         {
           id: uid(),
-          user_id: userId,
           set_id: setId,
           action_id: actionId,
-          start_at_ms: startAt,
-          end_at_ms: endAt,
-          duration_ms,
           updated_at,
           updated_by,
           deleted_at: null,
+          data: {
+            start_at_ms: startAt,
+            end_at_ms: endAt,
+            duration_ms,
+          },
         },
       ],
     },
@@ -805,7 +806,7 @@ export default function Checklist() {
           const i = next.actions.findIndex(
             (l) => l.actionId === cur.running!.actionId && !l.endAt
           );
-        if (i >= 0) {
+          if (i >= 0) {
             const log = next.actions[i];
             next.actions[i] = { ...log, endAt: endedAt, durationMs: endedAt - log.startAt };
           }
