@@ -330,7 +330,7 @@ export default function ChecklistLogs() {
    * - 初手先延ばし：data.kind === "procrastination_before_first" が来た時点で新規ラン扱い
    * - 長いギャップ：直前の action の end から次の start までが閾値以上なら分割
    */
-  const GAP_SPLIT_MS = 15 * 60 * 1000; // 15分（必要なら調整可）
+  const GAP_SPLIT_MS = 15 * 60 * 1000; // 15分
 
   const views: RunView[] = useMemo(() => {
     const bySet = new Map<string, ChecklistActionLogRow[]>();
@@ -357,7 +357,7 @@ export default function ChecklistLogs() {
       const flush = () => {
         if (currentRunLogs.length === 0) return;
 
-        // 1ラン → Row[]
+        // 1ラン → Row[] へ変換
         const rows: Row[] = [];
         let prevEnd: number | null = null;
         let pendingFirstProcrast: { id: ID; startAt: number; endAt: number } | null = null;
@@ -372,7 +372,7 @@ export default function ChecklistLogs() {
           const actDur =
             log.duration_ms ?? (actEnd != null ? Math.max(0, actEnd - actStart) : undefined);
 
-          // 直前先延ばし
+          // 直前先延ばし（マーカー合流 or 空白区間）
           let procrast: Row["procrast"] = null;
           let maybeProcrastLogId: ID | undefined;
 
@@ -421,7 +421,6 @@ export default function ChecklistLogs() {
             continue;
           }
           if (kind === "run_end") {
-            // 終了マーカー。行は作らず、runStartedAt 未取得なら補完のみ。
             if (runStartedAt == null) {
               runStartedAt = currentRunLogs[0]?.start_at_ms ?? currentRunLogs[0]?.updated_at ?? null;
             }
@@ -462,12 +461,11 @@ export default function ChecklistLogs() {
         if (kind === "run_start" || kind === "procrastination_before_first") {
           flush();
           currentRunLogs.push(it);
-          // 「開始マーカー」後は lastActionEnd リセット
           lastActionEnd = null;
           continue;
         }
 
-        // 長いギャップで自動分割（最後のアクション終了時刻があり、次の開始と大きく離れている）
+        // 長いギャップで自動分割
         const nextStart = it.start_at_ms ?? it.updated_at ?? null;
         if (lastActionEnd != null && nextStart != null && nextStart - lastActionEnd >= GAP_SPLIT_MS) {
           flush();

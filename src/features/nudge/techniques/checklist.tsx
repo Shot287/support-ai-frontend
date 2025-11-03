@@ -202,17 +202,17 @@ async function pushActionLog(params: {
   await pushBatch(payload);
 }
 
-/** ラン開始マーカ（run_start）を書き込む。duration=0 で記録 */
+/** ラン開始マーカ（run_start） */
 async function pushRunStartMarker(params: {
   userId: string;
   deviceId: string;
   setId: string;
-  actionIdForMarker?: string | null; // 既存スキーマ都合で何かしら入れる（先頭アクション等）
+  actionIdForMarker?: string | null;
   startedAt?: number;
 }) {
   const { userId, deviceId, setId, actionIdForMarker, startedAt } = params;
   const t = startedAt ?? Date.now();
-  const actionId = actionIdForMarker ?? "00000000-0000-0000-0000-000000000000"; // ダミー
+  const actionId = actionIdForMarker ?? "00000000-0000-0000-0000-000000000000";
   await pushActionLog({
     userId,
     deviceId,
@@ -224,12 +224,12 @@ async function pushRunStartMarker(params: {
   });
 }
 
-/** ラン終了マーカ（run_end）を書き込む。duration=0 で記録 */
+/** ラン終了マーカ（run_end） */
 async function pushRunEndMarker(params: {
   userId: string;
   deviceId: string;
   setId: string;
-  actionIdForMarker?: string | null; // ダミー or 直近アクションID
+  actionIdForMarker?: string | null;
   endedAt?: number;
 }) {
   const { userId, deviceId, setId, actionIdForMarker, endedAt } = params;
@@ -250,14 +250,14 @@ async function pushRunEndMarker(params: {
 export default function Checklist() {
   const [store, setStore] = useState<Store>(() => load());
   const [msg, setMsg] = useState<string | null>(null);
-  const pullingRef = useRef(false); // 多重PULL防止
-  const storeRef = useRef(store); // 手動Pushで最新storeを参照
+  const pullingRef = useRef(false);
+  const storeRef = useRef(store);
   useEffect(() => save(store), [store]);
   useEffect(() => {
     storeRef.current = store;
   }, [store]);
 
-  // ====== ここから同期（Set + Action）差し込み ======
+  // ====== diffs 反映（Set/Action） ======
   const applySetDiffs = (rows: readonly ChecklistSetRow[] = []) => {
     if (rows.length === 0) return;
     setStore((prev) => {
@@ -367,7 +367,6 @@ export default function Checklist() {
       const json = await pullBatch(USER_ID, getSince(), [
         "checklist_sets",
         "checklist_actions",
-        // ログ参照は /nudge/checklist/logs 側で pull します
       ]);
       applySetDiffs(json.diffs.checklist_sets ?? []);
       applyActionDiffs(json.diffs.checklist_actions ?? []);
@@ -430,7 +429,7 @@ export default function Checklist() {
         changes: {
           checklist_sets: setChanges,
           checklist_actions: actionChanges,
-          checklist_action_logs: [], // 全量PUSHでもログは送らない（確定時のみ送信）
+          checklist_action_logs: [],
         },
       };
 
@@ -509,7 +508,6 @@ export default function Checklist() {
   useEffect(() => {
     void doPullAll();
   }, []);
-  // ====== 同期差し込み ここまで ======
 
   const currentSet = useMemo(() => {
     const id = store.current?.setId;
@@ -740,9 +738,7 @@ export default function Checklist() {
       if (idx < 0 || j < 0 || j >= list.length) break nextTick;
 
       const swapped = list.slice();
-      const tmp = swapped[idx];
-      swapped[idx] = swapped[j];
-      swapped[j] = tmp;
+      [swapped[idx], swapped[j]] = [swapped[j], swapped[idx]];
 
       setStore((s) => ({
         ...s,
@@ -853,7 +849,7 @@ export default function Checklist() {
       },
     }));
 
-    // ★ run_start マーカーを確実に送る（開始ボタン時）
+    // run_start マーカーを確実に送る
     (async () => {
       try {
         const deviceId = getDeviceId();
@@ -876,7 +872,6 @@ export default function Checklist() {
     const endedAt = now();
     const deviceId = getDeviceId();
 
-    // setState 前に現在の状態を確保
     const curSetId = store.current?.setId;
     const curRunning = store.current?.running;
     const curPro = store.current?.procrastinating;
@@ -934,7 +929,6 @@ export default function Checklist() {
             endAt: endedAt,
           });
         } else if (curSetId && curPro && curPro.fromActionId === null) {
-          // 1番目の行動が始まらず終了した先延ばし
           const firstActionId =
             storeRef.current.sets.find((s) => s.id === curSetId)?.actions?.[0]?.id;
           if (firstActionId) {
@@ -953,13 +947,12 @@ export default function Checklist() {
         console.warn("[sync] endChecklist pushActionLog failed:", e);
       }
 
-      // ★ run_end マーカー（終了ボタンで必ず区切る）
+      // run_end マーカー（終了ボタンで必ず区切る）
       try {
         if (curSetId) {
-          const lastActId = storeRef.current.sets
-            .find((s) => s.id === curSetId)
-            ?.actions?.[Math.min(storeRef.current.current?.index ?? 0, (actionsSorted.length - 1) | 0)]
-            ?.id ?? null;
+          const curIdx = Math.min(storeRef.current.current?.index ?? 0, Math.max(0, actionsSorted.length - 1));
+          const lastActId =
+            storeRef.current.sets.find((s) => s.id === curSetId)?.actions?.[curIdx]?.id ?? null;
           await pushRunEndMarker({
             userId: USER_ID,
             deviceId,
@@ -1001,7 +994,7 @@ export default function Checklist() {
         current: { ...s.current!, procrastinating: undefined },
       }));
 
-      // ★ ここで「開始→1番目まで」の先延ばしを push（fromActionId === null）
+      // 「開始→1番目まで」の先延ばしを push（fromActionId === null）
       (async () => {
         try {
           if (p.fromActionId === null && currentSet) {
@@ -1009,7 +1002,7 @@ export default function Checklist() {
               userId: USER_ID,
               deviceId: getDeviceId(),
               setId: currentSet.id,
-              actionId: a.id, // 1番目として開始した行動に紐づけ
+              actionId: a.id,
               startAt: p.startAt,
               endAt: endedAt,
               extraData: { kind: "procrastination_before_first" },
@@ -1027,7 +1020,6 @@ export default function Checklist() {
     const t = now();
     setStore((s) => ({
       ...s,
-      // 画面上の isDone を false に（開始＝未了）
       sets: s.sets.map((set) =>
         set.id !== currentSet!.id
           ? set
@@ -1041,7 +1033,6 @@ export default function Checklist() {
       ),
     }));
 
-    // サーバに is_done=false を同期
     (async () => {
       try {
         await upsertChecklistAction({
@@ -1064,7 +1055,6 @@ export default function Checklist() {
     const endedAt = now();
     const deviceId = getDeviceId();
 
-    // setState 前に参照を確保
     const curSetId = store.current?.setId;
     const curRunning = store.current?.running;
 
@@ -1097,7 +1087,6 @@ export default function Checklist() {
       };
     });
 
-    // 実行中だった行動のログを確定送信
     (async () => {
       try {
         if (curSetId && curRunning) {
@@ -1121,7 +1110,6 @@ export default function Checklist() {
     const endedAt = now();
     const deviceId = getDeviceId();
 
-    // setState 前に現在の running/startAt と setId を確保
     const curSetId = store.current?.setId;
     const curRunning = store.current?.running;
 
@@ -1187,7 +1175,7 @@ export default function Checklist() {
       };
     });
 
-    // ログ確定の PUSH（startAt は curRunning から取得）＋ is_done=true をサーバ反映
+    // ログ確定の PUSH＋ is_done=true をサーバ反映
     (async () => {
       try {
         if (curSetId && curRunning && curRunning.actionId === actionId) {
@@ -1203,7 +1191,6 @@ export default function Checklist() {
       } catch (e) {
         console.warn("[sync] endAction pushActionLog failed:", e);
       }
-      // is_done=true を同期
       try {
         const a = currentSet?.actions.find((x) => x.id === actionId);
         if (a && currentSet) {
