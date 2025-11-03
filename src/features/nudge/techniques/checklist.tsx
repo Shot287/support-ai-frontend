@@ -100,7 +100,7 @@ function fmtDuration(ms: number) {
   const m = Math.floor((s % 3600) / 60);
   const sec = s % 60;
   const hh = h > 0 ? `${h}時間` : "";
-  const mm = m > 0 ? `${m}分` : h > 0 && sec > 0 ? "0分" : "";
+  const mm = m > 0 ? `${m}分` : (h > 0 && sec > 0 ? "0分" : "");
   const ss = `${sec}秒`;
   return `${hh}${mm}${ss}`;
 }
@@ -160,7 +160,7 @@ const isMobileDevice = () =>
   typeof navigator !== "undefined" && /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
 const makeUpdatedBy = (deviceId: string) => `${isMobileDevice() ? "9" : "5"}|${deviceId}`;
 
-/** 行動ログを1レコード送信（end時にまとめて挿入）— data に詰めて送る */
+/** 行動ログ push（固定FK直下、可変列は data）+ 任意メタを extraData に同梱可能 */
 async function pushActionLog(params: {
   userId: string;
   deviceId: string;
@@ -168,8 +168,9 @@ async function pushActionLog(params: {
   actionId: string;
   startAt: number;
   endAt: number;
+  extraData?: Record<string, any>;
 }) {
-  const { userId, deviceId, setId, actionId, startAt, endAt } = params;
+  const { userId, deviceId, setId, actionId, startAt, endAt, extraData } = params;
   const updated_at = Date.now();
   const updated_by = makeUpdatedBy(deviceId);
   const duration_ms = Math.max(0, endAt - startAt);
@@ -180,7 +181,6 @@ async function pushActionLog(params: {
     changes: {
       checklist_sets: [],
       checklist_actions: [],
-      // 可変列は data にまとめる（固定FK: set_id, action_id は直下）
       checklist_action_logs: [
         {
           id: uid(),
@@ -193,12 +193,35 @@ async function pushActionLog(params: {
             start_at_ms: startAt,
             end_at_ms: endAt,
             duration_ms,
+            ...(extraData ?? {}),
           },
         },
       ],
     },
   };
   await pushBatch(payload);
+}
+
+/** ラン開始マーカ（run_start）を書き込む。duration=0 で記録 */
+async function pushRunStartMarker(params: {
+  userId: string;
+  deviceId: string;
+  setId: string;
+  actionIdForMarker?: string | null; // 既存スキーマ都合で何かしら入れる（先頭アクション等）
+  startedAt?: number;
+}) {
+  const { userId, deviceId, setId, actionIdForMarker, startedAt } = params;
+  const t = startedAt ?? Date.now();
+  const actionId = actionIdForMarker ?? "00000000-0000-0000-0000-000000000000"; // 念のため固定ダミー（実運用は先頭アクション推奨）
+  await pushActionLog({
+    userId,
+    deviceId,
+    setId,
+    actionId,
+    startAt: t,
+    endAt: t,
+    extraData: { kind: "run_start" },
+  });
 }
 
 /* ========= 本体 ========= */
@@ -746,6 +769,31 @@ export default function Checklist() {
           }
         : s.current,
     }));
+
+  // セット切替時：runId を新規にし、run_start マーカーを push
+  const onChangeSet = (setId: ID) => {
+    setStore((s) => ({
+      ...s,
+      current: { setId, index: 0, runId: uid() },
+    }));
+    (async () => {
+      try {
+        const deviceId = getDeviceId();
+        const target = storeRef.current.sets.find((x) => x.id === setId);
+        const firstActionId = target?.actions?.[0]?.id ?? null;
+        await pushRunStartMarker({
+          userId: USER_ID,
+          deviceId,
+          setId,
+          actionIdForMarker: firstActionId ?? undefined,
+          startedAt: Date.now(),
+        });
+      } catch (e) {
+        console.warn("[sync] push run_start failed:", e);
+      }
+    })();
+  };
+
   const prev = () => go(index - 1);
   const next = () => go(index + 1);
 
@@ -765,7 +813,7 @@ export default function Checklist() {
     return run;
   };
 
-  // チェックリスト全体の開始
+  // チェックリスト全体の開始（先延ばし開始・ランはローカル確保）
   const startChecklist = () => {
     if (!currentSet || actionsSorted.length === 0) {
       alert("先に行動を追加してください。");
@@ -792,6 +840,7 @@ export default function Checklist() {
     // setState 前に現在の状態を確保
     const curSetId = store.current?.setId;
     const curRunning = store.current?.running;
+    const curPro = store.current?.procrastinating;
 
     setStore((prev) => {
       if (!prev.current) return prev;
@@ -833,7 +882,7 @@ export default function Checklist() {
       };
     });
 
-    // 実行中だった行動のログを確定送信
+    // 実行中だった行動 or 「開始→何も始めず終了」の先延ばしを確定送信
     (async () => {
       try {
         if (curSetId && curRunning) {
@@ -845,6 +894,21 @@ export default function Checklist() {
             startAt: curRunning.startAt,
             endAt: endedAt,
           });
+        } else if (curSetId && curPro && curPro.fromActionId === null) {
+          // 1番目の行動が始まらず終了した先延ばし
+          const firstActionId =
+            storeRef.current.sets.find((s) => s.id === curSetId)?.actions?.[0]?.id;
+          if (firstActionId) {
+            await pushActionLog({
+              userId: USER_ID,
+              deviceId,
+              setId: curSetId,
+              actionId: firstActionId,
+              startAt: curPro.startAt,
+              endAt: endedAt,
+              extraData: { kind: "procrastination_before_first" },
+            });
+          }
         }
       } catch (e) {
         console.warn("[sync] endChecklist pushActionLog failed:", e);
@@ -852,7 +916,7 @@ export default function Checklist() {
     })();
   };
 
-  // 行動を開始（is_done=false を同期）
+  // 行動を開始（is_done=false を同期）＋「開始→1番目まで」の先延ばしを確定保存
   const startAction = (a: Action) => {
     const p = store.current?.procrastinating;
     if (p) {
@@ -878,6 +942,25 @@ export default function Checklist() {
         ),
         current: { ...s.current!, procrastinating: undefined },
       }));
+
+      // ★ ここで「開始→1番目まで」の先延ばしを push（fromActionId === null）
+      (async () => {
+        try {
+          if (p.fromActionId === null && currentSet) {
+            await pushActionLog({
+              userId: USER_ID,
+              deviceId: getDeviceId(),
+              setId: currentSet.id,
+              actionId: a.id, // 1番目として開始した行動に紐づけ
+              startAt: p.startAt,
+              endAt: endedAt,
+              extraData: { kind: "procrastination_before_first" },
+            });
+          }
+        } catch (e) {
+          console.warn("[sync] push procrastination_before_first failed:", e);
+        }
+      })();
     }
 
     if (running && running.actionId !== a.id) endActionInternal(running.actionId);
@@ -1099,12 +1182,7 @@ export default function Checklist() {
           <label className="text-sm text-gray-600">チェックリスト：</label>
           <select
             value={currentSet?.id ?? ""}
-            onChange={(e) =>
-              setStore((s) => ({
-                ...s,
-                current: { setId: e.target.value as ID, index: 0, runId: uid() },
-              }))
-            }
+            onChange={(e) => onChangeSet(e.target.value as ID)}
             className="rounded-xl border px-3 py-2"
           >
             {store.sets
