@@ -93,7 +93,27 @@ type RunView = {
 type SetsState = ChecklistSet[];
 type LogsState = ChecklistActionLogRow[];
 
-/* ===== 削除（ソフトデリート） ===== */
+/* ===== SQL ヘルパ（psql用） ===== */
+function sqlList(ids: string[]) {
+  return ids.map((x) => `'${x.replace(/'/g, "''")}'`).join(", ");
+}
+function sqlSoftDelete(ids: string[]) {
+  if (ids.length === 0) return "";
+  return `-- ソフトデリート（推奨）
+UPDATE checklist_action_logs
+SET deleted_at = (EXTRACT(EPOCH FROM NOW())*1000)::bigint
+WHERE id IN (${sqlList(ids)});
+`;
+}
+function sqlHardDelete(ids: string[]) {
+  if (ids.length === 0) return "";
+  return `-- ハードデリート（最終手段・復元不可）
+DELETE FROM checklist_action_logs
+WHERE id IN (${sqlList(ids)});
+`;
+}
+
+/* ===== 削除（ソフトデリート；API経由） ===== */
 async function softDeleteLogs(
   userId: string,
   deviceId: string,
@@ -132,6 +152,8 @@ export default function ChecklistLogs() {
   const [msg, setMsg] = useState<string | null>(null);
   const [date, setDate] = useState<string>(() => dateToYmdJst(new Date()));
   const [order, setOrder] = useState<"asc" | "desc">("asc"); // 使用順の並び
+  const [adminOpen, setAdminOpen] = useState(false);
+  const [adminSql, setAdminSql] = useState("");
 
   // ---- diffs 反映（Set/Action） ----
   const applySetDiffs = (rows: readonly ChecklistSetRow[] = []) => {
@@ -330,7 +352,7 @@ export default function ChecklistLogs() {
    * - 初手先延ばし：data.kind === "procrastination_before_first" が来た時点で新規ラン扱い
    * - 長いギャップ：直前の action の end から次の start までが閾値以上なら分割
    */
-  const GAP_SPLIT_MS = 15 * 60 * 1000; // 15分（必要なら調整可）
+  const GAP_SPLIT_MS = 15 * 60 * 1000; // 15分
 
   const views: RunView[] = useMemo(() => {
     const bySet = new Map<string, ChecklistActionLogRow[]>();
@@ -357,7 +379,7 @@ export default function ChecklistLogs() {
       const flush = () => {
         if (currentRunLogs.length === 0) return;
 
-        // 1ラン → Row[]
+        // 1ラン → Row[] 作成
         const rows: Row[] = [];
         let prevEnd: number | null = null;
         let pendingFirstProcrast: { id: ID; startAt: number; endAt: number } | null = null;
@@ -421,7 +443,6 @@ export default function ChecklistLogs() {
             continue;
           }
           if (kind === "run_end") {
-            // 終了マーカー。行は作らず、runStartedAt 未取得なら補完のみ。
             if (runStartedAt == null) {
               runStartedAt = currentRunLogs[0]?.start_at_ms ?? currentRunLogs[0]?.updated_at ?? null;
             }
@@ -462,12 +483,11 @@ export default function ChecklistLogs() {
         if (kind === "run_start" || kind === "procrastination_before_first") {
           flush();
           currentRunLogs.push(it);
-          // 「開始マーカー」後は lastActionEnd リセット
           lastActionEnd = null;
           continue;
         }
 
-        // 長いギャップで自動分割（最後のアクション終了時刻があり、次の開始と大きく離れている）
+        // 長いギャップで自動分割
         const nextStart = it.start_at_ms ?? it.updated_at ?? null;
         if (lastActionEnd != null && nextStart != null && nextStart - lastActionEnd >= GAP_SPLIT_MS) {
           flush();
@@ -504,13 +524,23 @@ export default function ChecklistLogs() {
     return order === "asc" ? asc : asc.reverse();
   }, [dayLogs, setMap, order]);
 
-  /* ===== 削除ハンドラ ===== */
-  const handleDeleteRow = async (rv: RunView, row: Row) => {
-    if (!confirm("この行（先延ばし合流があればそれも）を削除しますか？")) return;
+  /* ===== 削除ハンドラ（即時反映＋検証Pull） ===== */
+  async function verifyPull() {
+    try {
+      const json = await pullBatch(USER_ID, getSince(), ["checklist_action_logs"]);
+      applyLogDiffs(json.diffs.checklist_action_logs ?? []);
+      setSince(json.server_time_ms);
+    } catch {
+      /* noop */
+    }
+  }
+
+  const handleDeleteRow = async (_rv: RunView, row: Row) => {
+    if (!confirm("この行（合流した先延ばしを含む）を削除しますか？")) return;
     const deviceId = getDeviceId();
 
+    // 対象ログを特定
     const toDelete: Array<{ id: ID; set_id: ID; action_id: ID; data?: any }> = [];
-
     const actionLog = dayLogs.find((l) => l.id === row.actionLogId);
     if (actionLog) {
       toDelete.push({
@@ -520,7 +550,6 @@ export default function ChecklistLogs() {
         data: (actionLog as any).data ?? null,
       });
     }
-
     if (row.maybeProcrastLogId) {
       const proLog = dayLogs.find((l) => l.id === row.maybeProcrastLogId);
       if (proLog) {
@@ -533,13 +562,19 @@ export default function ChecklistLogs() {
       }
     }
 
+    // 楽観的に即時除去
+    const deleteIds = new Set(toDelete.map((d) => d.id));
+    setLogs((prev) => prev.filter((l) => !deleteIds.has(l.id)));
+
     try {
       await softDeleteLogs(USER_ID, deviceId, toDelete);
-      // 即時反映：対象IDをローカルから除去
-      setLogs((prev) => prev.filter((l) => !toDelete.some((d) => d.id === l.id)));
       setMsg("記録を削除しました。");
     } catch {
-      setMsg("削除に失敗しました。");
+      setMsg("削除に失敗しました（サーバ未反映の可能性）。");
+      // 失敗時は検証Pullで復元
+    } finally {
+      // サーバ状態で再検証
+      await verifyPull();
     }
   };
 
@@ -556,14 +591,33 @@ export default function ChecklistLogs() {
         data: (l as any).data ?? null,
       }));
 
+    // 楽観的に即時除去
+    const ids = new Set(rv.rawLogIds);
+    setLogs((prev) => prev.filter((l) => !ids.has(l.id)));
+
     try {
       await softDeleteLogs(USER_ID, deviceId, targets);
-      setLogs((prev) => prev.filter((l) => !rv.rawLogIds.includes(l.id)));
       setMsg("ランの記録を削除しました。");
     } catch {
-      setMsg("削除に失敗しました。");
+      setMsg("削除に失敗しました（サーバ未反映の可能性）。");
+    } finally {
+      await verifyPull();
     }
   };
+
+  /* ====== 管理（psql用SQL生成） ====== */
+  function openSqlForRun(v: RunView) {
+    const ids = v.rawLogIds;
+    const sql = sqlSoftDelete(ids) + "\n" + sqlHardDelete(ids);
+    setAdminSql(sql);
+    setAdminOpen(true);
+  }
+  function openSqlForRow(v: RunView, r: Row) {
+    const ids = [r.actionLogId, ...(r.maybeProcrastLogId ? [r.maybeProcrastLogId] : [])];
+    const sql = sqlSoftDelete(ids) + "\n" + sqlHardDelete(ids);
+    setAdminSql(sql);
+    setAdminOpen(true);
+  }
 
   return (
     <div className="space-y-4">
@@ -577,6 +631,13 @@ export default function ChecklistLogs() {
               title="チェックリスト使用順の並び替え"
             >
               並び: {order === "asc" ? "昇順（古→新）" : "降順（新→古）"}
+            </button>
+            <button
+              onClick={() => setAdminOpen((v) => !v)}
+              className="rounded-xl border px-3 py-2 text-xs hover:bg-gray-50"
+              title="psql で直接操作したい場合のSQL生成ツールを開閉"
+            >
+              管理（SQL）
             </button>
           </div>
         </div>
@@ -616,6 +677,23 @@ export default function ChecklistLogs() {
             全履歴を再取得
           </button>
         </div>
+
+        {adminOpen && (
+          <div className="mt-3 space-y-2 rounded-xl border p-3 bg-gray-50">
+            <div className="text-xs text-gray-600">
+              psql で実行する SQL（<b>まずは UPDATE によるソフトデリートを推奨</b>）。必要に応じて手動で id を編集できます。
+            </div>
+            <textarea
+              className="w-full h-40 rounded-lg border p-2 font-mono text-xs"
+              value={adminSql}
+              onChange={(e) => setAdminSql(e.target.value)}
+            />
+            <div className="text-xs text-gray-500">
+              テーブル名: <code>checklist_action_logs</code>（変更している場合は合わせて修正してください）
+            </div>
+          </div>
+        )}
+
         <p className="text-xs text-gray-500 mt-2">
           指定日のJSTに含まれる同期ログを表示します。使用（ラン）単位で区切り、下ほど新しい使用になります（トグルで反転可）。
         </p>
@@ -635,17 +713,26 @@ export default function ChecklistLogs() {
                   </span>
                 )}
               </div>
-              <button
-                onClick={() => void handleDeleteRun(v)}
-                className="rounded-xl border px-3 py-1.5 text-sm hover:bg-gray-50"
-                title="このランに含まれるログ（run_start / run_end / 先延ばしマーカー含む）をすべて削除します"
-              >
-                ランを削除
-              </button>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => openSqlForRun(v)}
+                  className="rounded-xl border px-3 py-1.5 text-xs hover:bg-gray-50"
+                  title="このランのログIDを使ったSQL（UPDATE/DELETE）を生成して管理パネルに表示"
+                >
+                  SQL(このラン)
+                </button>
+                <button
+                  onClick={() => void handleDeleteRun(v)}
+                  className="rounded-xl border px-3 py-1.5 text-sm hover:bg-gray-50"
+                  title="このランに含まれるログ（run_start / run_end / 先延ばしマーカー含む）をすべて削除します"
+                >
+                  ランを削除
+                </button>
+              </div>
             </div>
 
             <div className="overflow-x-auto">
-              <table className="min-w-[840px] w-full text-sm">
+              <table className="min-w-[980px] w-full text-sm">
                 <thead>
                   <tr className="text-left text-gray-600">
                     <th className="py-2 pr-3">#</th>
@@ -671,13 +758,22 @@ export default function ChecklistLogs() {
                       <td className="py-2 pr-3 tabular-nums">{fmtTime(r.action.endAt)}</td>
                       <td className="py-2 pr-3 tabular-nums">{fmtDur(r.action.durationMs)}</td>
                       <td className="py-2 pr-3">
-                        <button
-                          onClick={() => void handleDeleteRow(v, r)}
-                          className="rounded-lg border px-2 py-1 text-xs hover:bg-gray-50"
-                          title="この行（合流した先延ばしを含む）を削除"
-                        >
-                          行を削除
-                        </button>
+                        <div className="flex gap-1">
+                          <button
+                            onClick={() => openSqlForRow(v, r)}
+                            className="rounded-lg border px-2 py-1 text-xs hover:bg-gray-50"
+                            title="この行（＋合流の先延ばし分）のIDでSQLを生成して管理パネルに表示"
+                          >
+                            SQL(行)
+                          </button>
+                          <button
+                            onClick={() => void handleDeleteRow(v, r)}
+                            className="rounded-lg border px-2 py-1 text-xs hover:bg-gray-50"
+                            title="この行（合流した先延ばしを含む）を削除"
+                          >
+                            行を削除
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}
