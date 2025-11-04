@@ -2,12 +2,9 @@
 import "./globals.css";
 import type { ReactNode } from "react";
 import PushBootstrap from "@/features/push/PushBootstrap";
-import dynamic from "next/dynamic";
 
-// ★ PC限定：最前面タイマー（Document Picture-in-Picture）起動ドックを遅延ロード
-//    - SSR不要のため ssr:false
-//    - 非対応環境（モバイル/非Chromium）では内部で非表示
-const StudyTimer = dynamic(() => import("@/features/study/StudyTimer"), { ssr: false });
+// ★ クライアントコンポーネントを直接インポート（dynamic/ssr:falseは使わない）
+import StudyTimer from "@/features/study/StudyTimer";
 
 export const metadata = {
   title: "サポートAI",
