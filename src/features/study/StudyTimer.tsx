@@ -6,10 +6,10 @@ import * as ReactDOM from "react-dom/client";
 
 /**
  * PC限定 学習タイマー（Document Picture-in-Picture）
- * - 5分固定のカウントダウンのみ
- * - 無音（終了時は小ウィンドウ側の視覚演出で通知）
- * - 同期なし（localStorageのみ）
- * - どのページでも起動できる常駐ドック + study-timer:open イベントで起動
+ * - 5分固定カウントダウン
+ * - 無音（0で視覚演出）
+ * - 同期なし（localStorage）
+ * - 常駐ドック + study-timer:open で起動
  */
 
 const DURATION_MS = 5 * 60 * 1000;
@@ -53,7 +53,6 @@ function load(): SavedState {
         obj.anchorEpoch = Date.now();
       }
     }
-    // 5分固定に整合
     if (obj.remainMs > DURATION_MS) obj.remainMs = DURATION_MS;
     return obj;
   } catch {
@@ -94,7 +93,7 @@ export default function StudyTimer() {
   const rootRef = useRef<ReactDOM.Root | null>(null);
   const intervalRef = useRef<number | null>(null);
 
-  // tick更新（setInterval：非アクティブでも進む／Date.now差分で正確化）
+  // 親側のカウントダウンtick（バックグラウンドでも進む）
   useEffect(() => {
     const tick = () => {
       setState((prev) => {
@@ -114,7 +113,6 @@ export default function StudyTimer() {
       });
     };
 
-    // 250ms周期（バックグラウンドではブラウザにより最小1s程度に絞られるが、差分で補正）
     intervalRef.current = window.setInterval(tick, 250);
     return () => {
       if (intervalRef.current != null) window.clearInterval(intervalRef.current);
@@ -148,9 +146,29 @@ export default function StudyTimer() {
     doc.head.appendChild(style);
 
     const PiPApp = () => {
-      const [snap, setSnap] = useState<SavedState>(state);
-      useEffect(() => setSnap(state), [state]);
+      // PiP側は localStorage を定期ポーリングして最新値を反映（親の setState に依存しない）
+      const [snap, setSnap] = useState<SavedState>(() => {
+        try {
+          const raw = localStorage.getItem(STORAGE_KEY);
+          return raw ? (JSON.parse(raw) as SavedState) : DEFAULT;
+        } catch {
+          return DEFAULT;
+        }
+      });
 
+      useEffect(() => {
+        const id = window.setInterval(() => {
+          try {
+            const raw = localStorage.getItem(STORAGE_KEY);
+            if (!raw) return;
+            const obj = JSON.parse(raw) as SavedState;
+            setSnap(obj);
+          } catch {}
+        }, 250);
+        return () => window.clearInterval(id);
+      }, []);
+
+      // 操作: start / pause / reset → 親のstateを直接更新（保存も行う）
       const start = () =>
         setState((p) => {
           if (p.running) return p;
@@ -176,7 +194,7 @@ export default function StudyTimer() {
         setState(next);
       };
 
-      const display = useMemo(() => mmss(snap.remainMs), [snap]);
+      const display = useMemo(() => mmss(snap.remainMs), [snap.remainMs]);
       const done = snap.remainMs === 0;
 
       return (
@@ -228,7 +246,7 @@ export default function StudyTimer() {
     }
   };
 
-  // 勉強ページなどからの外部起動イベントを受ける
+  // 外部起動イベント
   useEffect(() => {
     const handler = () => openPiP();
     window.addEventListener("study-timer:open", handler);
