@@ -2,7 +2,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 
 export default function StudyPage() {
   // タイマー起動イベントを送信
@@ -11,10 +11,13 @@ export default function StudyPage() {
     window.dispatchEvent(ev);
   };
 
-  // PC判定
-  const isPc = () =>
-    typeof navigator !== "undefined" &&
-    !/Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
+  // PC判定（クライアント実行前提）
+  const isPc = useMemo(
+    () =>
+      typeof navigator !== "undefined" &&
+      !/Mobi|Android|iPhone|iPad/i.test(navigator.userAgent),
+    []
+  );
 
   const cards = [
     {
@@ -22,6 +25,13 @@ export default function StudyPage() {
       title: "用語辞典",
       description: "科目別の用語を検索・整理（実装は後ほど）",
       href: "/study/dictionary",
+      type: "link" as const,
+    },
+    {
+      id: "dev-plan",
+      title: "開発計画",
+      description: "フォルダー→ノート→小ノート（課題点／計画など）を作成・編集",
+      href: "/study/dev-plan",
       type: "link" as const,
     },
     {
@@ -35,7 +45,7 @@ export default function StudyPage() {
   ] as const;
 
   useEffect(() => {
-    // 他のタブからも起動できるようにする余地を残す（現時点では特に処理なし）
+    // 他タブ連携などの拡張余地（現時点では処理なし）
   }, []);
 
   return (
@@ -53,7 +63,7 @@ export default function StudyPage() {
               <p className="text-sm text-gray-600 mt-1">{c.description}</p>
             </Link>
           ) : (
-            isPc() && (
+            isPc && (
               <button
                 key={c.id}
                 onClick={openTimer}
