@@ -60,12 +60,27 @@ function save(s: SavedState) {
   } catch {}
 }
 
+/** Document Picture-in-Picture 型補助 */
+type DocumentPiP = {
+  requestWindow: (options?: {
+    width?: number;
+    height?: number;
+    disallowReturnToOpener?: boolean;
+  }) => Promise<Window>;
+};
+
 export default function StudyTimer() {
+  const dPiP: DocumentPiP | undefined =
+    typeof window !== "undefined"
+      ? (window as unknown as { documentPictureInPicture?: DocumentPiP })
+          .documentPictureInPicture
+      : undefined;
+
   const supported =
     typeof window !== "undefined" &&
     !isMobile() &&
-    "documentPictureInPicture" in window &&
-    typeof (window as any).documentPictureInPicture?.requestWindow === "function";
+    !!dPiP &&
+    typeof dPiP.requestWindow === "function";
 
   const [state, setState] = useState<SavedState>(() => {
     const s = load();
@@ -113,7 +128,9 @@ export default function StudyTimer() {
           if (nextRemain <= 0) {
             // 終了
             if (beepRef.current) {
-              try { beepRef.current.play().catch(() => {}); } catch {}
+              try {
+                beepRef.current.play().catch(() => {});
+              } catch {}
             }
             const next: SavedState = {
               ...prev,
@@ -177,7 +194,9 @@ export default function StudyTimer() {
       const [snap, setSnap] = useState<SavedState>(state);
 
       // 親→子の状態同期
-      useEffect(() => setSnap(state), [state]);
+      useEffect(() => {
+        setSnap(state);
+      }, [state]);
 
       const start = () =>
         setState((p) => {
@@ -293,8 +312,7 @@ export default function StudyTimer() {
       return;
     }
     try {
-      // @ts-ignore
-      const pipWin: Window = await (window as any).documentPictureInPicture.requestWindow({
+      const pipWin = await dPiP!.requestWindow({
         width: 280,
         height: 180,
         disallowReturnToOpener: true,
@@ -313,6 +331,13 @@ export default function StudyTimer() {
       alert("タイマー小ウィンドウの作成に失敗しました。ポップアップやPiPの許可設定をご確認ください。");
     }
   };
+
+  // 勉強ページなどからの外部起動イベントを受ける
+  useEffect(() => {
+    const handler = () => openPiP();
+    window.addEventListener("study-timer:open", handler);
+    return () => window.removeEventListener("study-timer:open", handler);
+  }, []);
 
   // 下部ドック（どの画面でも起動可能）
   if (!supported) return null;
