@@ -53,7 +53,7 @@ function load(): SavedState {
         obj.anchorEpoch = Date.now();
       }
     }
-    // 5分固定に合わせる（古い保存値が長い場合も整合）
+    // 5分固定に整合
     if (obj.remainMs > DURATION_MS) obj.remainMs = DURATION_MS;
     return obj;
   } catch {
@@ -92,9 +92,9 @@ export default function StudyTimer() {
 
   const pipRef = useRef<Window | null>(null);
   const rootRef = useRef<ReactDOM.Root | null>(null);
-  const rafRef = useRef<number | null>(null);
+  const intervalRef = useRef<number | null>(null);
 
-  // tick更新（rAF）
+  // tick更新（setInterval：非アクティブでも進む／Date.now差分で正確化）
   useEffect(() => {
     const tick = () => {
       setState((prev) => {
@@ -112,11 +112,12 @@ export default function StudyTimer() {
         save(next);
         return next;
       });
-      rafRef.current = requestAnimationFrame(tick);
     };
-    rafRef.current = requestAnimationFrame(tick);
+
+    // 250ms周期（バックグラウンドではブラウザにより最小1s程度に絞られるが、差分で補正）
+    intervalRef.current = window.setInterval(tick, 250);
     return () => {
-      if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
+      if (intervalRef.current != null) window.clearInterval(intervalRef.current);
     };
   }, []);
 
@@ -129,24 +130,20 @@ export default function StudyTimer() {
     const container = doc.createElement("div");
     doc.body.appendChild(container);
 
-    // 最低限のスタイル（終了時は背景点滅＆縁取りアニメで強調）
+    // 小型UI＋終了時の点滅演出
     const style = doc.createElement("style");
     style.textContent = `
       html,body { margin:0; padding:0; background:#111; color:#fff; font-family:system-ui, -apple-system, Segoe UI, Roboto, 'Helvetica Neue', Arial; }
-      .wrap { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; padding:14px; min-width:220px; }
-      .big { font-size:32px; line-height:1; letter-spacing:0.5px; font-weight:700; }
-      .row { display:flex; gap:8px; }
-      button { font-size:12px; padding:6px 12px; border-radius:10px; border:1px solid #333; background:#222; color:#fff; }
+      .wrap { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; padding:10px; min-width:170px; }
+      .big { font-size:26px; line-height:1; letter-spacing:0.5px; font-weight:700; }
+      .row { display:flex; gap:6px; }
+      button { font-size:11px; padding:5px 10px; border-radius:10px; border:1px solid #333; background:#222; color:#fff; }
       button:hover { background:#2a2a2a; }
-      .done { animation: flash 1s infinite; box-shadow: 0 0 0 3px #ff5252 inset; }
-      .done .big { text-shadow: 0 0 8px #ff9a9a; }
-      .badge { font-size:11px; padding:2px 8px; border-radius:9999px; background:#333; }
+      .done { animation: flash 1s infinite; box-shadow: 0 0 0 2px #ff5252 inset; }
+      .done .big { text-shadow: 0 0 6px #ff9a9a; }
+      .badge { font-size:10px; padding:1px 8px; border-radius:9999px; background:#333; }
       .done .badge { background:#ff5252; color:#111; font-weight:700; }
-      @keyframes flash {
-        0%   { background:#111; }
-        50%  { background:#2a0000; }
-        100% { background:#111; }
-      }
+      @keyframes flash { 0%{background:#111;} 50%{background:#2a0000;} 100%{background:#111;} }
     `;
     doc.head.appendChild(style);
 
@@ -157,7 +154,6 @@ export default function StudyTimer() {
       const start = () =>
         setState((p) => {
           if (p.running) return p;
-          // 0秒なら5分に戻してから開始
           const base = p.remainMs <= 0 ? DURATION_MS : p.remainMs;
           const next: SavedState = { remainMs: base, running: true, anchorEpoch: Date.now() };
           save(next);
@@ -181,7 +177,6 @@ export default function StudyTimer() {
       };
 
       const display = useMemo(() => mmss(snap.remainMs), [snap]);
-
       const done = snap.remainMs === 0;
 
       return (
@@ -215,14 +210,13 @@ export default function StudyTimer() {
     }
     try {
       const pipWin = await dPiP!.requestWindow({
-        width: 260,
-        height: 160,
+        width: 210,
+        height: 120,
         disallowReturnToOpener: true,
       });
       pipRef.current = pipWin;
       renderPiP();
 
-      // PiPを閉じたら参照を破棄
       pipWin.addEventListener("pagehide", () => {
         rootRef.current?.unmount();
         rootRef.current = null;
