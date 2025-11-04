@@ -1,6 +1,8 @@
+// src/features/mental/posture/PostureLauncher.tsx
 "use client";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { getOrCreateDock, type Panel } from "@/lib/pipDock";
 
 export default function PostureLauncher() {
   const [isDesktop, setIsDesktop] = useState(false);
@@ -11,45 +13,43 @@ export default function PostureLauncher() {
     setIsDesktop(wide && !touch);
   }, []);
 
+  // Doc-PiP対応確認（共有ドックの土台があるか）
   const hasDocPiP = useMemo(() => {
     const dip = (window as any).documentPictureInPicture;
     return !!dip && typeof dip.requestWindow === "function";
   }, []);
 
-  // 推奨：Document Picture-in-Picture（常に前面）
-  const openDocPiP = async () => {
+  // 共有PiPドックで開く（学習タイマーと同居）
+  const openInDock = async () => {
     try {
-      const dip = (window as any).documentPictureInPicture;
-      if (!dip || typeof dip.requestWindow !== "function") {
-        openPopup();
+      const dock = getOrCreateDock();
+      if (!dock) {
+        openPopup(); // 非対応なら従来ポップアップ
         return;
       }
-
-      const pipWin: Window = await dip.requestWindow({ width: 240, height: 160 });
-
-      const mount = pipWin.document.createElement("div");
-      pipWin.document.body.appendChild(mount);
-
-      const style = pipWin.document.createElement("style");
-      style.textContent = `
-        html,body{margin:0;padding:6px;background:#fff;}
-        *{font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Noto Sans, Helvetica, Arial;}
-      `;
-      pipWin.document.head.appendChild(style);
+      await dock.ensureOpen({ width: 230, height: 170 });
 
       const [{ createRoot }, { default: Widget }] = await Promise.all([
         import("react-dom/client"),
         import("./PostureMiniWidget"),
       ]);
-      const root = createRoot(mount);
-      root.render(<Widget />);
-      pipWin.addEventListener("unload", () => root.unmount());
+
+      const panel: Panel = {
+        id: "posture",
+        render: (mountEl) => {
+          const root = createRoot(mountEl);
+          root.render(<Widget />);
+          return () => root.unmount();
+        },
+      };
+
+      await dock.addPanel(panel);
     } catch {
       openPopup();
     }
   };
 
-  // 従来ポップアップ
+  // 従来ポップアップ（Doc-PiP非対応時のフォールバック）
   const openPopup = () => {
     const w = 240, h = 160;
     const y = Math.max(0, Math.round((window.outerHeight - h) / 3));
@@ -61,12 +61,15 @@ export default function PostureLauncher() {
     window.open("/mental/posture/mini", "posture-mini", features);
   };
 
-  const openRecommended = () => (hasDocPiP ? openDocPiP() : openPopup());
+  // 推奨アクション：共有ドック優先、非対応ならポップアップ
+  const openRecommended = () => (getOrCreateDock() ? openInDock() : openPopup());
 
   return (
     <main className="max-w-xl mx-auto space-y-6">
       <h1 className="text-2xl font-bold">背筋（最前面ミニウィンドウ）</h1>
-      <p className="text-gray-600">Doc-PiP（対応ブラウザ）なら常に前面。非対応なら小ポップアップで開きます。</p>
+      <p className="text-gray-600">
+        共有ドック方式で学習タイマーと同時に使えます。Doc-PiP非対応なら小ポップアップで開きます。
+      </p>
 
       <div className="rounded-2xl border p-5 space-y-4">
         <div className="flex gap-3 flex-wrap">
