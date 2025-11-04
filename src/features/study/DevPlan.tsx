@@ -1,6 +1,7 @@
 // src/features/study/DevPlan.tsx
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 type ID = string;
@@ -8,7 +9,6 @@ type ID = string;
 type SubNote = { id: ID; title: string; content: string };
 type Note = { id: ID; title: string; subnotes: SubNote[] };
 type Folder = { id: ID; title: string };
-
 type Store = {
   folders: Folder[];
   notesByFolder: Record<ID, Note[]>;
@@ -42,16 +42,20 @@ function load(): Store {
       };
     }
     const parsed = JSON.parse(raw) as Store;
-    return parsed;
+    // ゆるい正規化
+    return {
+      folders: Array.isArray(parsed.folders) ? parsed.folders : [],
+      notesByFolder: typeof parsed.notesByFolder === "object" && parsed.notesByFolder ? parsed.notesByFolder : {},
+      currentFolderId: parsed.currentFolderId,
+      version: 1,
+    };
   } catch {
     return { folders: [], notesByFolder: {}, version: 1 };
   }
 }
 
 function save(s: Store) {
-  try {
-    localStorage.setItem(KEY, JSON.stringify(s));
-  } catch {}
+  try { localStorage.setItem(KEY, JSON.stringify(s)); } catch {}
 }
 
 export function DevPlan() {
@@ -61,25 +65,23 @@ export function DevPlan() {
 
   const folders = store.folders;
   const currentFolderId = store.currentFolderId ?? folders[0]?.id;
-  const currentNotes = useMemo<Note[]>(
+  const currentFolder = folders.find(f => f.id === currentFolderId);
+  const notes = useMemo<Note[]>(
     () => (currentFolderId ? (store.notesByFolder[currentFolderId] || []) : []),
     [store.notesByFolder, currentFolderId]
   );
-  const currentFolder = folders.find(f => f.id === currentFolderId);
 
-  /* ===== フォルダー ===== */
+  /* ===== フォルダー操作 ===== */
   const addFolder = () => {
     const title = prompt("新しいフォルダー名", "新しいフォルダー");
     if (!title) return;
     const id = uid();
-    const next: Store = {
-      ...storeRef.current,
-      folders: [...storeRef.current.folders, { id, title }],
-      notesByFolder: { ...storeRef.current.notesByFolder, [id]: [] },
+    setStore(s => ({
+      ...s,
+      folders: [...s.folders, { id, title }],
+      notesByFolder: { ...s.notesByFolder, [id]: [] },
       currentFolderId: id,
-      version: 1,
-    };
-    setStore(next);
+    }));
   };
 
   const renameFolder = (id: ID) => {
@@ -91,28 +93,25 @@ export function DevPlan() {
   };
 
   const deleteFolder = (id: ID) => {
-    if (!confirm("削除しますか？")) return;
+    if (!confirm("このフォルダーを削除しますか？（配下のノートも削除）")) return;
     setStore(s => {
       const remain = s.folders.filter(x => x.id !== id);
       const { [id]: _, ...notesByFolder } = s.notesByFolder;
-      return {
-        ...s,
-        folders: remain,
-        notesByFolder,
-        currentFolderId: s.currentFolderId === id ? remain[0]?.id : s.currentFolderId,
-      };
+      const nextCurrent = s.currentFolderId === id ? remain[0]?.id : s.currentFolderId;
+      return { ...s, folders: remain, notesByFolder, currentFolderId: nextCurrent };
     });
   };
 
   const switchFolder = (id: ID) => setStore(s => ({ ...s, currentFolderId: id }));
 
-  /* ===== ノート ===== */
+  /* ===== ノート操作（一覧側） ===== */
   const addNote = (folderId: ID) => {
-    const title = prompt("ノートのタイトル", "新しいノート");
+    const title = prompt("ノートのタイトル（機能名など）", "新しいノート");
     if (!title) return;
-    const newNote: Note = {
+    const note: Note = {
       id: uid(),
       title,
+      // 詳細ページ（開いた状態）で見せるため、初期で2枚用意
       subnotes: [
         { id: uid(), title: "課題点", content: "" },
         { id: uid(), title: "計画", content: "" },
@@ -122,124 +121,100 @@ export function DevPlan() {
       ...s,
       notesByFolder: {
         ...s.notesByFolder,
-        [folderId]: [...(s.notesByFolder[folderId] || []), newNote],
+        [folderId]: [...(s.notesByFolder[folderId] || []), note],
       },
     }));
   };
 
   const renameNote = (folderId: ID, noteId: ID) => {
-    const note = (storeRef.current.notesByFolder[folderId] || []).find(n => n.id === noteId);
-    if (!note) return;
-    const title = prompt("ノートのタイトルを変更", note.title);
+    const n = (storeRef.current.notesByFolder[folderId] || []).find(x => x.id === noteId);
+    if (!n) return;
+    const title = prompt("ノートのタイトルを変更", n.title);
     if (!title) return;
     setStore(s => ({
       ...s,
       notesByFolder: {
         ...s.notesByFolder,
-        [folderId]: (s.notesByFolder[folderId] || []).map(n => n.id === noteId ? { ...n, title } : n),
+        [folderId]: (s.notesByFolder[folderId] || []).map(x => x.id === noteId ? { ...x, title } : x),
       },
     }));
   };
 
   const deleteNote = (folderId: ID, noteId: ID) => {
-    if (!confirm("削除しますか？")) return;
+    if (!confirm("このノートを削除しますか？（配下の小ノートも削除）")) return;
     setStore(s => ({
       ...s,
       notesByFolder: {
         ...s.notesByFolder,
-        [folderId]: (s.notesByFolder[folderId] || []).filter(n => n.id !== noteId),
-      },
-    }));
-  };
-
-  /* ===== 小ノート ===== */
-  const addSubNote = (folderId: ID, noteId: ID) => {
-    const title = prompt("小ノートのタイトル", "小ノート");
-    if (!title) return;
-    setStore(s => ({
-      ...s,
-      notesByFolder: {
-        ...s.notesByFolder,
-        [folderId]: (s.notesByFolder[folderId] || []).map(n =>
-          n.id === noteId
-            ? { ...n, subnotes: [...n.subnotes, { id: uid(), title, content: "" }] }
-            : n
-        ),
-      },
-    }));
-  };
-
-  const updateSubNote = (folderId: ID, noteId: ID, subId: ID, content: string) => {
-    setStore(s => ({
-      ...s,
-      notesByFolder: {
-        ...s.notesByFolder,
-        [folderId]: (s.notesByFolder[folderId] || []).map(n =>
-          n.id === noteId
-            ? { ...n, subnotes: n.subnotes.map(sn => sn.id === subId ? { ...sn, content } : sn) }
-            : n
-        ),
+        [folderId]: (s.notesByFolder[folderId] || []).filter(x => x.id !== noteId),
       },
     }));
   };
 
   return (
     <div className="grid gap-4 md:grid-cols-[260px_1fr]">
-      {/* 左：フォルダー */}
+      {/* 左：フォルダー一覧 */}
       <section className="rounded-2xl border p-4 shadow-sm">
         <div className="flex items-center justify-between mb-2">
           <h2 className="font-semibold">フォルダー</h2>
-          <button onClick={addFolder} className="rounded-lg border px-2 py-1 text-sm">＋</button>
+          <button onClick={addFolder} className="rounded-xl border px-3 py-1.5 text-sm hover:bg-gray-50">追加</button>
         </div>
-        {folders.map(f => (
-          <div
-            key={f.id}
-            className={`flex justify-between items-center px-2 py-1 rounded-lg ${
-              currentFolderId === f.id ? "bg-gray-50 border" : ""
-            }`}
-          >
-            <button onClick={() => switchFolder(f.id)}>{f.title}</button>
-            <div className="flex gap-1">
-              <button onClick={() => renameFolder(f.id)} className="text-xs border px-1">名</button>
-              <button onClick={() => deleteFolder(f.id)} className="text-xs border px-1">削</button>
-            </div>
-          </div>
-        ))}
+        {folders.length === 0 ? (
+          <p className="text-sm text-gray-500">フォルダーがありません。</p>
+        ) : (
+          <ul className="space-y-1">
+            {folders.map((f) => (
+              <li key={f.id}>
+                <div className={`flex items-center justify-between gap-2 rounded-xl px-2 py-1.5 ${currentFolderId === f.id ? "bg-gray-50 border" : ""}`}>
+                  <button onClick={() => switchFolder(f.id)} className="text-left min-w-0 truncate" title={f.title}>
+                    {f.title}
+                  </button>
+                  <div className="flex gap-1 shrink-0">
+                    <button onClick={() => renameFolder(f.id)} className="rounded-lg border px-2 py-1 text-xs">名</button>
+                    <button onClick={() => deleteFolder(f.id)} className="rounded-lg border px-2 py-1 text-xs">削</button>
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
 
-      {/* 右：ノートと小ノート */}
+      {/* 右：ノート（親は閉じた表示。タイトルで詳細へ） */}
       <section className="rounded-2xl border p-4 shadow-sm">
-        <div className="flex justify-between mb-2">
-          <h2 className="font-semibold">{currentFolder?.title ?? "ノート"}</h2>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="font-semibold">{currentFolder ? `「${currentFolder.title}」のノート` : "ノート"}</h2>
           {currentFolderId && (
-            <button onClick={() => addNote(currentFolderId)} className="rounded-lg border px-2 py-1 text-sm">ノート追加</button>
+            <button onClick={() => addNote(currentFolderId)} className="rounded-xl border px-3 py-1.5 text-sm hover:bg-gray-50">
+              ノート追加
+            </button>
           )}
         </div>
 
-        {currentNotes.map(n => (
-          <div key={n.id} className="rounded-xl border p-3 mb-3">
-            <div className="flex justify-between items-center mb-2">
-              <h3 className="font-semibold">{n.title}</h3>
-              <div className="flex gap-1">
-                <button onClick={() => renameNote(currentFolderId!, n.id)} className="text-xs border px-1">名</button>
-                <button onClick={() => deleteNote(currentFolderId!, n.id)} className="text-xs border px-1">削</button>
-                <button onClick={() => addSubNote(currentFolderId!, n.id)} className="text-xs border px-1">＋小</button>
-              </div>
-            </div>
-
-            {n.subnotes.map(sn => (
-              <div key={sn.id} className="border rounded-lg p-2 mb-2">
-                <p className="text-sm font-medium mb-1">{sn.title}</p>
-                <textarea
-                  value={sn.content}
-                  onChange={(e) => updateSubNote(currentFolderId!, n.id, sn.id, e.target.value)}
-                  className="w-full border rounded-lg px-2 py-1 text-sm min-h-[80px]"
-                  placeholder="ここに記入..."
-                />
-              </div>
+        {(!currentFolderId || notes.length === 0) ? (
+          <p className="text-sm text-gray-500">{currentFolderId ? "ノートがありません。「ノート追加」で作成してください。" : "フォルダーを選択してください。"}</p>
+        ) : (
+          <ul className="space-y-2">
+            {notes.map((n) => (
+              <li key={n.id} className="rounded-xl border p-3">
+                <div className="flex items-center justify-between">
+                  {/* タイトルクリックで詳細ページへ遷移 */}
+                  <Link
+                    href={`/study/dev-plan/${currentFolderId}/${n.id}`}
+                    className="font-semibold underline-offset-2 hover:underline break-words"
+                  >
+                    {n.title}
+                  </Link>
+                  <div className="flex gap-2">
+                    <button onClick={() => renameNote(currentFolderId!, n.id)} className="rounded-lg border px-2 py-1 text-xs">名</button>
+                    <button onClick={() => deleteNote(currentFolderId!, n.id)} className="rounded-lg border px-2 py-1 text-xs">削</button>
+                  </div>
+                </div>
+                <p className="mt-1 text-xs text-gray-500">※ クリックで詳細ページへ。小ノートは詳細で常時展開されます。</p>
+              </li>
             ))}
-          </div>
-        ))}
+          </ul>
+        )}
       </section>
     </div>
   );
