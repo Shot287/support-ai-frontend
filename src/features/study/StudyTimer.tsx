@@ -6,14 +6,15 @@ import * as ReactDOM from "react-dom/client";
 
 /**
  * PC限定 学習タイマー（Document Picture-in-Picture）
- * - 5分固定カウントダウン（無音／0で視覚演出）
+ * - 1分 / 5分 を切替できるカウントダウン（無音／0で視覚演出）
  * - 共有PiPドックに「study」パネルとして登録（背筋タイマーと同居可能）
  * - 親は setInterval + Date.now 差分で正確に減算、PiPは localStorage ポーリングで表示追従
  * - 常駐ドック + "study-timer:open" で起動
  */
 
-const DURATION_MS = 5 * 60 * 1000;
-const STORAGE_KEY = "study_timer:v2_simple5min";
+const STORAGE_KEY = "study_timer:v2_simple5min"; // 既存キーを流用（後方互換）
+const ONE_MIN = 1 * 60 * 1000;
+const FIVE_MIN = 5 * 60 * 1000;
 
 // ===== 共有PiPドック（シングルトン） ============================
 type Panel = {
@@ -57,7 +58,7 @@ function getOrCreateDock(): PiPDock | null {
       if (dock.win && !dock.win.closed) return dock.win;
       const w = await dPiP.requestWindow({
         width: opts?.width ?? 230,
-        height: opts?.height ?? 170,
+        height: opts?.height ?? 190,
         disallowReturnToOpener: true,
       });
       dock.win = w;
@@ -76,6 +77,9 @@ function getOrCreateDock(): PiPDock | null {
         .row { display:flex; gap:6px; justify-content:center; }
         button { font-size:11px; padding:5px 10px; border-radius:10px; border:1px solid #333; background:#222; color:#fff; }
         button:hover { background:#2a2a2a; }
+        .seg { display:flex; gap:6px; justify-content:center; }
+        .seg > button[aria-pressed="true"] { background:#444; font-weight:700; }
+        .seg > button:disabled { opacity:.5; }
         @keyframes flash { 0%{background:#161616;} 50%{background:#2a0000;} 100%{background:#161616;} }
       `;
       doc.head.appendChild(style);
@@ -125,11 +129,13 @@ type SavedState = {
   remainMs: number;
   running: boolean;
   anchorEpoch?: number;
+  presetMin: 1 | 5; // ★ 追加：プリセット（1 or 5）
 };
 
 const DEFAULT: SavedState = {
-  remainMs: DURATION_MS,
+  remainMs: FIVE_MIN,
   running: false,
+  presetMin: 5,
 };
 
 const isMobile = () =>
@@ -146,20 +152,30 @@ function load(): SavedState {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return DEFAULT;
-    const obj = JSON.parse(raw) as SavedState;
+    const obj = JSON.parse(raw) as Partial<SavedState>;
+    const merged: SavedState = {
+      remainMs: typeof obj.remainMs === "number" ? obj.remainMs : DEFAULT.remainMs,
+      running: !!obj.running,
+      anchorEpoch: obj.anchorEpoch,
+      presetMin: (obj as any).presetMin === 1 ? 1 : 5, // 後方互換（未保存なら5）
+    };
+
     // 復元
-    if (obj.running && obj.anchorEpoch) {
-      const delta = Date.now() - obj.anchorEpoch;
-      obj.remainMs = Math.max(0, obj.remainMs - delta);
-      if (obj.remainMs <= 0) {
-        obj.running = false;
-        obj.anchorEpoch = undefined;
+    if (merged.running && merged.anchorEpoch) {
+      const delta = Date.now() - merged.anchorEpoch;
+      merged.remainMs = Math.max(0, merged.remainMs - delta);
+      if (merged.remainMs <= 0) {
+        merged.running = false;
+        merged.anchorEpoch = undefined;
       } else {
-        obj.anchorEpoch = Date.now();
+        merged.anchorEpoch = Date.now();
       }
     }
-    if (obj.remainMs > DURATION_MS) obj.remainMs = DURATION_MS;
-    return obj;
+    // remain を上限（選択プリセット）に丸める
+    const cap = merged.presetMin === 1 ? ONE_MIN : FIVE_MIN;
+    if (merged.remainMs > cap) merged.remainMs = cap;
+
+    return merged;
   } catch {
     return DEFAULT;
   }
@@ -191,11 +207,11 @@ export default function StudyTimer() {
 
         const nextRemain = Math.max(0, prev.remainMs - delta);
         if (nextRemain <= 0) {
-          const next: SavedState = { remainMs: 0, running: false, anchorEpoch: undefined };
+          const next: SavedState = { ...prev, remainMs: 0, running: false, anchorEpoch: undefined };
           save(next);
           return next;
         }
-        const next: SavedState = { remainMs: nextRemain, running: true, anchorEpoch: now };
+        const next: SavedState = { ...prev, remainMs: nextRemain, running: true, anchorEpoch: now };
         save(next);
         return next;
       });
@@ -225,11 +241,14 @@ export default function StudyTimer() {
           return () => window.clearInterval(id);
         }, []);
 
+        const durationCap = snap.presetMin === 1 ? ONE_MIN : FIVE_MIN;
+
         const start = () =>
           setState((p) => {
             if (p.running) return p;
-            const base = p.remainMs <= 0 ? DURATION_MS : p.remainMs;
-            const next: SavedState = { remainMs: base, running: true, anchorEpoch: Date.now() };
+            const cap = p.presetMin === 1 ? ONE_MIN : FIVE_MIN;
+            const base = p.remainMs <= 0 || p.remainMs > cap ? cap : p.remainMs;
+            const next: SavedState = { ...p, remainMs: base, running: true, anchorEpoch: Date.now() };
             save(next);
             return next;
           });
@@ -239,27 +258,62 @@ export default function StudyTimer() {
             if (!p.running || !p.anchorEpoch) return p;
             const delta = Date.now() - p.anchorEpoch;
             const nextRemain = Math.max(0, p.remainMs - delta);
-            const next: SavedState = { remainMs: nextRemain, running: false, anchorEpoch: undefined };
+            const next: SavedState = { ...p, remainMs: nextRemain, running: false, anchorEpoch: undefined };
             save(next);
             return next;
           });
 
-        const reset = () => {
-          const next: SavedState = { remainMs: DURATION_MS, running: false, anchorEpoch: undefined };
-          save(next);
-          setState(next);
-        };
+        const reset = () =>
+          setState((p) => {
+            const cap = p.presetMin === 1 ? ONE_MIN : FIVE_MIN;
+            const next: SavedState = { ...p, remainMs: cap, running: false, anchorEpoch: undefined };
+            save(next);
+            return next;
+          });
+
+        // ★ プリセット切替（稼働中は変更不可、停止中は残り時間を即プリセットに合わせる）
+        const setPreset = (min: 1 | 5) =>
+          setState((p) => {
+            if (p.running) return p; // シンプル運用：走行中は切替不可
+            const cap = min === 1 ? ONE_MIN : FIVE_MIN;
+            const next: SavedState = { ...p, presetMin: min, remainMs: cap, running: false, anchorEpoch: undefined };
+            save(next);
+            return next;
+          });
 
         const display = useMemo(() => mmss(snap.remainMs), [snap.remainMs]);
         const done = snap.remainMs === 0;
 
         return (
           <div className={`timer ${done ? "done" : ""}`}>
-            <div className="timer-badge">{done ? "TIME UP" : "5:00 TIMER"}</div>
+            <div className="timer-badge">
+              {done ? "TIME UP" : `${snap.presetMin}:00 TIMER`}
+            </div>
+
+            {/* プリセット切替（停止中のみ有効） */}
+            <div className="seg" style={{ marginBottom: 6 }}>
+              <button
+                onClick={() => setPreset(1)}
+                aria-pressed={snap.presetMin === 1}
+                disabled={snap.running || snap.presetMin === 1}
+                title={snap.running ? "一時停止すると切替できます" : "1分タイマーに切替"}
+              >
+                1分
+              </button>
+              <button
+                onClick={() => setPreset(5)}
+                aria-pressed={snap.presetMin === 5}
+                disabled={snap.running || snap.presetMin === 5}
+                title={snap.running ? "一時停止すると切替できます" : "5分タイマーに切替"}
+              >
+                5分
+              </button>
+            </div>
+
             <div className="big" role="timer" aria-live="polite">{display}</div>
-            <div className="row">
+            <div className="row" style={{ marginTop: 6 }}>
               {!snap.running ? (
-                <button onClick={start}>{done ? "もう一度 5分" : "開始"}</button>
+                <button onClick={start}>{done ? `もう一度 ${snap.presetMin}分` : "開始"}</button>
               ) : (
                 <button onClick={pause}>一時停止</button>
               )}
@@ -282,7 +336,7 @@ export default function StudyTimer() {
       alert("この機能はPCのChromium系ブラウザでご利用ください。（Document Picture-in-Picture非対応）");
       return;
     }
-    await dock.ensureOpen({ width: 230, height: 170 });
+    await dock.ensureOpen({ width: 230, height: 190 });
     await dock.addPanel(getStudyPanel());
   };
 
@@ -306,9 +360,9 @@ export default function StudyTimer() {
       <button
         onClick={openPiPWithDock}
         className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
-        title="PC限定：最前面の小ウィンドウ（共有ドック）で5分タイマーを表示"
+        title="PC限定：最前面の小ウィンドウ（共有ドック）で学習タイマーを表示"
       >
-        ⏱ 5分タイマー
+        ⏱ 学習タイマー（1/5分）
       </button>
       <span className="hidden sm:inline text-xs text-gray-600">残り {minutesLeft}分</span>
     </div>
