@@ -5,31 +5,25 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as ReactDOM from "react-dom/client";
 
 /**
- * PC限定のフローティング学習タイマー（Document Picture-in-Picture）
- * - 小ウィンドウは常に最前面
- * - アプリ内のページ遷移中も持続（RootLayoutに常駐）
- * - 同期不要（localStorageのみ）
+ * PC限定 学習タイマー（Document Picture-in-Picture）
+ * - 5分固定のカウントダウンのみ
+ * - 無音（終了時は小ウィンドウ側の視覚演出で通知）
+ * - 同期なし（localStorageのみ）
+ * - どのページでも起動できる常駐ドック + study-timer:open イベントで起動
  */
 
-type Mode = "countdown" | "stopwatch";
-
-const STORAGE_KEY = "study_timer:v1";
+const DURATION_MS = 5 * 60 * 1000;
+const STORAGE_KEY = "study_timer:v2_simple5min";
 
 type SavedState = {
-  mode: Mode;
-  remainMs: number;     // countdown用：残りミリ秒
-  elapsedMs: number;    // stopwatch用：経過ミリ秒
+  remainMs: number;
   running: boolean;
-  anchorEpoch?: number; // running中の起点（performance.nowの代わりにDate.now基準）
-  label?: string;
+  anchorEpoch?: number;
 };
 
 const DEFAULT: SavedState = {
-  mode: "countdown",
-  remainMs: 25 * 60 * 1000,
-  elapsedMs: 0,
+  remainMs: DURATION_MS,
   running: false,
-  label: "Study",
 };
 
 const isMobile = () =>
@@ -48,7 +42,20 @@ function load(): SavedState {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return DEFAULT;
     const obj = JSON.parse(raw) as SavedState;
-    return { ...DEFAULT, ...obj };
+    // 再読み込み時の復元
+    if (obj.running && obj.anchorEpoch) {
+      const delta = Date.now() - obj.anchorEpoch;
+      obj.remainMs = Math.max(0, obj.remainMs - delta);
+      if (obj.remainMs <= 0) {
+        obj.running = false;
+        obj.anchorEpoch = undefined;
+      } else {
+        obj.anchorEpoch = Date.now();
+      }
+    }
+    // 5分固定に合わせる（古い保存値が長い場合も整合）
+    if (obj.remainMs > DURATION_MS) obj.remainMs = DURATION_MS;
+    return obj;
   } catch {
     return DEFAULT;
   }
@@ -72,8 +79,7 @@ type DocumentPiP = {
 export default function StudyTimer() {
   const dPiP: DocumentPiP | undefined =
     typeof window !== "undefined"
-      ? (window as unknown as { documentPictureInPicture?: DocumentPiP })
-          .documentPictureInPicture
+      ? (window as unknown as { documentPictureInPicture?: DocumentPiP }).documentPictureInPicture
       : undefined;
 
   const supported =
@@ -82,40 +88,13 @@ export default function StudyTimer() {
     !!dPiP &&
     typeof dPiP.requestWindow === "function";
 
-  const [state, setState] = useState<SavedState>(() => {
-    const s = load();
-    // running復元処理（ブラウザ再読込後）
-    if (s.running && s.anchorEpoch) {
-      const delta = Date.now() - s.anchorEpoch;
-      if (s.mode === "countdown") {
-        s.remainMs = Math.max(0, s.remainMs - delta);
-        if (s.remainMs <= 0) {
-          s.running = false;
-          s.anchorEpoch = undefined;
-        } else {
-          s.anchorEpoch = Date.now();
-        }
-      } else {
-        s.elapsedMs = Math.max(0, s.elapsedMs + delta);
-        s.anchorEpoch = Date.now();
-      }
-    }
-    return s;
-  });
+  const [state, setState] = useState<SavedState>(() => load());
 
   const pipRef = useRef<Window | null>(null);
   const rootRef = useRef<ReactDOM.Root | null>(null);
   const rafRef = useRef<number | null>(null);
 
-  // 音（終了ビープ）
-  const beepRef = useRef<HTMLAudioElement | null>(null);
-  useEffect(() => {
-    beepRef.current = new Audio(
-      "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA="
-    );
-  }, []);
-
-  // tick更新
+  // tick更新（rAF）
   useEffect(() => {
     const tick = () => {
       setState((prev) => {
@@ -123,40 +102,15 @@ export default function StudyTimer() {
         const now = Date.now();
         const delta = now - prev.anchorEpoch;
 
-        if (prev.mode === "countdown") {
-          const nextRemain = Math.max(0, prev.remainMs - delta);
-          if (nextRemain <= 0) {
-            // 終了
-            if (beepRef.current) {
-              try {
-                beepRef.current.play().catch(() => {});
-              } catch {}
-            }
-            const next: SavedState = {
-              ...prev,
-              remainMs: 0,
-              running: false,
-              anchorEpoch: undefined,
-            };
-            save(next);
-            return next;
-          }
-          const next: SavedState = {
-            ...prev,
-            remainMs: nextRemain,
-            anchorEpoch: now,
-          };
-          save(next);
-          return next;
-        } else {
-          const next: SavedState = {
-            ...prev,
-            elapsedMs: prev.elapsedMs + delta,
-            anchorEpoch: now,
-          };
+        const nextRemain = Math.max(0, prev.remainMs - delta);
+        if (nextRemain <= 0) {
+          const next: SavedState = { remainMs: 0, running: false, anchorEpoch: undefined };
           save(next);
           return next;
         }
+        const next: SavedState = { remainMs: nextRemain, running: true, anchorEpoch: now };
+        save(next);
+        return next;
       });
       rafRef.current = requestAnimationFrame(tick);
     };
@@ -175,33 +129,37 @@ export default function StudyTimer() {
     const container = doc.createElement("div");
     doc.body.appendChild(container);
 
-    // 最低限のスタイル
+    // 最低限のスタイル（終了時は背景点滅＆縁取りアニメで強調）
     const style = doc.createElement("style");
     style.textContent = `
       html,body { margin:0; padding:0; background:#111; color:#fff; font-family:system-ui, -apple-system, Segoe UI, Roboto, 'Helvetica Neue', Arial; }
-      .wrap { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; padding:12px; min-width:220px; }
-      .big { font-size:28px; line-height:1; letter-spacing:0.5px; }
-      .label { font-size:12px; color:#bbb; }
-      .row { display:flex; gap:6px; }
-      button { font-size:12px; padding:6px 10px; border-radius:10px; border:1px solid #333; background:#222; color:#fff; }
+      .wrap { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; padding:14px; min-width:220px; }
+      .big { font-size:32px; line-height:1; letter-spacing:0.5px; font-weight:700; }
+      .row { display:flex; gap:8px; }
+      button { font-size:12px; padding:6px 12px; border-radius:10px; border:1px solid #333; background:#222; color:#fff; }
       button:hover { background:#2a2a2a; }
-      input[type="text"] { width:120px; font-size:12px; padding:6px 8px; border-radius:10px; border:1px solid #333; background:#1a1a1a; color:#fff; }
-      select { font-size:12px; padding:6px 8px; border-radius:10px; border:1px solid #333; background:#1a1a1a; color:#fff; }
+      .done { animation: flash 1s infinite; box-shadow: 0 0 0 3px #ff5252 inset; }
+      .done .big { text-shadow: 0 0 8px #ff9a9a; }
+      .badge { font-size:11px; padding:2px 8px; border-radius:9999px; background:#333; }
+      .done .badge { background:#ff5252; color:#111; font-weight:700; }
+      @keyframes flash {
+        0%   { background:#111; }
+        50%  { background:#2a0000; }
+        100% { background:#111; }
+      }
     `;
     doc.head.appendChild(style);
 
     const PiPApp = () => {
       const [snap, setSnap] = useState<SavedState>(state);
-
-      // 親→子の状態同期
-      useEffect(() => {
-        setSnap(state);
-      }, [state]);
+      useEffect(() => setSnap(state), [state]);
 
       const start = () =>
         setState((p) => {
           if (p.running) return p;
-          const next = { ...p, running: true, anchorEpoch: Date.now() };
+          // 0秒なら5分に戻してから開始
+          const base = p.remainMs <= 0 ? DURATION_MS : p.remainMs;
+          const next: SavedState = { remainMs: base, running: true, anchorEpoch: Date.now() };
           save(next);
           return next;
         });
@@ -210,89 +168,33 @@ export default function StudyTimer() {
         setState((p) => {
           if (!p.running || !p.anchorEpoch) return p;
           const delta = Date.now() - p.anchorEpoch;
-          if (p.mode === "countdown") {
-            const nextRemain = Math.max(0, p.remainMs - delta);
-            const next = { ...p, running: false, anchorEpoch: undefined, remainMs: nextRemain };
-            save(next);
-            return next;
-          } else {
-            const next = { ...p, running: false, anchorEpoch: undefined, elapsedMs: p.elapsedMs + delta };
-            save(next);
-            return next;
-          }
-        });
-
-      const reset = () =>
-        setState((p) => {
-          const next: SavedState =
-            p.mode === "countdown"
-              ? { ...p, running: false, anchorEpoch: undefined, remainMs: 25 * 60 * 1000 }
-              : { ...p, running: false, anchorEpoch: undefined, elapsedMs: 0 };
+          const nextRemain = Math.max(0, p.remainMs - delta);
+          const next: SavedState = { remainMs: nextRemain, running: false, anchorEpoch: undefined };
           save(next);
           return next;
         });
 
-      const setPreset = (min: number) =>
-        setState((p) => {
-          const next = { ...p, mode: "countdown" as const, running: false, anchorEpoch: undefined, remainMs: min * 60 * 1000 };
-          save(next);
-          return next;
-        });
+      const reset = () => {
+        const next: SavedState = { remainMs: DURATION_MS, running: false, anchorEpoch: undefined };
+        save(next);
+        setState(next);
+      };
 
-      const switchMode = () =>
-        setState((p) => {
-          const next: SavedState =
-            p.mode === "countdown"
-              ? { ...p, mode: "stopwatch", running: false, anchorEpoch: undefined, elapsedMs: 0 }
-              : { ...p, mode: "countdown", running: false, anchorEpoch: undefined, remainMs: 25 * 60 * 1000 };
-          save(next);
-          return next;
-        });
+      const display = useMemo(() => mmss(snap.remainMs), [snap]);
 
-      const onChangeLabel = (v: string) =>
-        setState((p) => {
-          const next = { ...p, label: v.slice(0, 32) };
-          save(next);
-          return next;
-        });
-
-      const display = useMemo(() => {
-        return snap.mode === "countdown" ? mmss(snap.remainMs) : mmss(snap.elapsedMs);
-      }, [snap]);
+      const done = snap.remainMs === 0;
 
       return (
-        <div className="wrap">
-          <div className="label">{snap.label || "Study"}</div>
+        <div className={`wrap ${done ? "done" : ""}`}>
+          <div className="badge">{done ? "TIME UP" : "5:00 TIMER"}</div>
           <div className="big" role="timer" aria-live="polite">{display}</div>
           <div className="row">
             {!snap.running ? (
-              <button onClick={start}>開始</button>
+              <button onClick={start}>{done ? "もう一度 5分" : "開始"}</button>
             ) : (
               <button onClick={pause}>一時停止</button>
             )}
             <button onClick={reset}>リセット</button>
-            <button onClick={switchMode}>{snap.mode === "countdown" ? "→ ストップウォッチ" : "→ カウントダウン"}</button>
-          </div>
-          {snap.mode === "countdown" && (
-            <div className="row">
-              <select
-                onChange={(e) => setPreset(Number(e.target.value))}
-                value={-1}
-              >
-                <option value={-1} disabled>プリセット</option>
-                <option value={25}>25分</option>
-                <option value={50}>50分</option>
-                <option value={90}>90分</option>
-              </select>
-            </div>
-          )}
-          <div className="row">
-            <input
-              type="text"
-              placeholder="ラベル（任意）"
-              value={snap.label || ""}
-              onChange={(e) => onChangeLabel(e.target.value)}
-            />
           </div>
         </div>
       );
@@ -313,14 +215,14 @@ export default function StudyTimer() {
     }
     try {
       const pipWin = await dPiP!.requestWindow({
-        width: 280,
-        height: 180,
+        width: 260,
+        height: 160,
         disallowReturnToOpener: true,
       });
       pipRef.current = pipWin;
       renderPiP();
 
-      // 親が閉じる/遷移してもPiPは維持されるが、PiPを閉じたら参照を破棄
+      // PiPを閉じたら参照を破棄
       pipWin.addEventListener("pagehide", () => {
         rootRef.current?.unmount();
         rootRef.current = null;
@@ -342,8 +244,7 @@ export default function StudyTimer() {
   // 下部ドック（どの画面でも起動可能）
   if (!supported) return null;
 
-  const minutesLeft =
-    state.mode === "countdown" ? Math.ceil(state.remainMs / 60000) : Math.floor(state.elapsedMs / 60000);
+  const minutesLeft = Math.max(0, Math.ceil(state.remainMs / 60000));
 
   return (
     <div
@@ -353,12 +254,12 @@ export default function StudyTimer() {
       <button
         onClick={openPiP}
         className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
-        title="PC限定：最前面の小ウィンドウでタイマーを表示"
+        title="PC限定：最前面の小ウィンドウで5分タイマーを表示"
       >
-        ⏱ 学習タイマー
+        ⏱ 5分タイマー
       </button>
       <span className="hidden sm:inline text-xs text-gray-600">
-        {state.mode === "countdown" ? "残り" : "経過"} {minutesLeft}分
+        残り {minutesLeft}分
       </span>
     </div>
   );
