@@ -9,7 +9,7 @@ export default function DevPlanPage() {
       <header>
         <h1 className="text-2xl font-bold">開発計画</h1>
         <p className="text-gray-600 text-sm">
-          各フォルダーごとに機能ノートを作り、小ノート（課題点／計画など）を追加・編集できます。
+          フォルダーごとにノートを作成し、タイトルクリックで詳細ページへ移動します。
         </p>
       </header>
       <DevPlan />
