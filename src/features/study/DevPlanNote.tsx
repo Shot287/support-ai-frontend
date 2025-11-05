@@ -4,11 +4,13 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getDeviceId } from "@/lib/device";
-import { pullBatch, pushBatch } from "@/lib/sync";
+import {
+  pullBatch,
+  pushGeneric,
+  pickTableDiffs,
+} from "@/lib/sync";
+import type { GenericChangeRow } from "@/lib/sync";
 
-/* =========================
- * 同期テーブル / 型
- * ========================= */
 const TBL_NOTES = "devplan_notes";
 const TBL_SUBS = "devplan_subnotes";
 
@@ -17,7 +19,7 @@ type ID = string;
 type SyncBase = {
   id: ID;
   user_id: string;
-  updated_at: number; // ms
+  updated_at: number;
   updated_by: string;
   deleted_at: number | null;
 };
@@ -25,9 +27,6 @@ type SyncBase = {
 type NoteRow = SyncBase & { folder_id: ID; title: string };
 type SubRow = SyncBase & { note_id: ID; title: string; content: string };
 
-/* =========================
- * 共通ユーティリティ
- * ========================= */
 const uid = () =>
   (typeof crypto !== "undefined" && "randomUUID" in crypto)
     ? crypto.randomUUID()
@@ -45,25 +44,11 @@ function lwwMerge<T extends SyncBase>(dst: Map<ID, T>, incoming: T[]) {
   }
 }
 
-/** pullBatch 互換: since / rows 名称の違いを吸収 */
-function getSince(res: unknown): number {
-  const a = res as any;
-  return a?.since ?? a?.nextSince ?? a?.cursor ?? a?.next_cursor ?? 0;
-}
-function getTableRows<T = unknown>(res: unknown, table: string): T[] {
-  const a = res as any;
-  return a?.rows?.[table] ?? a?.tables?.[table] ?? a?.data?.[table] ?? a?.[table] ?? [];
-}
-
-/** 他タブへ合図 */
 function announceGlobalPull(userId: string, deviceId: string) {
   if (typeof window === "undefined") return;
   window.dispatchEvent(new CustomEvent("GLOBAL_SYNC_PULL", { detail: { userId, deviceId } }));
 }
 
-/* =========================
- * 本体
- * ========================= */
 export function DevPlanNoteDetail({ folderId, noteId }: { folderId: string; noteId: string }) {
   const userId = "demo"; // TODO: 認証導入時に置換
   const deviceId = getDeviceId();
@@ -74,7 +59,6 @@ export function DevPlanNoteDetail({ folderId, noteId }: { folderId: string; note
   const sinceRef = useRef<number>(0);
   const pullingRef = useRef(false);
 
-  /* ===== 初回・定期Pull ===== */
   useEffect(() => {
     const s = parseInt(localStorage.getItem(SINCE_KEY(userId)) || "0", 10) || 0;
     sinceRef.current = s;
@@ -94,11 +78,10 @@ export function DevPlanNoteDetail({ folderId, noteId }: { folderId: string; note
     if (pullingRef.current) return;
     pullingRef.current = true;
     try {
-      const res = await pullBatch(userId, sinceRef.current, [TBL_NOTES, TBL_SUBS]);
+      const resp = await pullBatch(userId, sinceRef.current, [TBL_NOTES, TBL_SUBS]);
 
-      const nextSince = getSince(res);
-      const rNotes = getTableRows<NoteRow>(res, TBL_NOTES);
-      const rSubs = getTableRows<SubRow>(res, TBL_SUBS);
+      const rNotes = pickTableDiffs<NoteRow>(resp.diffs, TBL_NOTES);
+      const rSubs = pickTableDiffs<SubRow>(resp.diffs, TBL_SUBS);
 
       setNotes((prev) => {
         const m = new Map(prev);
@@ -111,9 +94,9 @@ export function DevPlanNoteDetail({ folderId, noteId }: { folderId: string; note
         return m;
       });
 
-      if (nextSince > sinceRef.current) {
-        sinceRef.current = nextSince;
-        localStorage.setItem(SINCE_KEY(userId), String(nextSince));
+      if (resp.server_time_ms > sinceRef.current) {
+        sinceRef.current = resp.server_time_ms;
+        localStorage.setItem(SINCE_KEY(userId), String(resp.server_time_ms));
       }
     } finally {
       pullingRef.current = false;
@@ -127,20 +110,17 @@ export function DevPlanNoteDetail({ folderId, noteId }: { folderId: string; note
     deleted_at: null,
   });
 
-  /** push 一括送信 */
+  /** push（テーブルごと） */
   const pushRows = async (rowsByTable: Record<string, SyncBase[]>) => {
-    // 送信ペイロードを 1 引数API 形式に
-    const payload: Record<string, Record<string, unknown>[]> = {};
     for (const [table, rows] of Object.entries(rowsByTable)) {
-      if (!rows || rows.length === 0) continue;
-      payload[table] = rows as unknown as Record<string, unknown>[];
+      if (!rows?.length) continue;
+      const payloadRows = rows as unknown as GenericChangeRow[];
+      await pushGeneric({ table, userId, deviceId, rows: payloadRows });
     }
-    await pushBatch(payload);
-    announceGlobalPull(userId, deviceId);
+    // pushBatch 内で signalGlobalPull/markStickyPull 済み
     await doPull();
   };
 
-  /* ===== 表示対象 ===== */
   const note = useMemo(() => notes.get(noteId) ?? null, [notes, noteId]);
   const subList = useMemo(
     () =>
@@ -150,7 +130,6 @@ export function DevPlanNoteDetail({ folderId, noteId }: { folderId: string; note
     [subs, noteId]
   );
 
-  /* ===== 操作: ノート名／小ノート CRUD ===== */
   const renameNote = async () => {
     if (!note) return;
     const title = prompt("ノートのタイトルを変更", note.title);
@@ -167,7 +146,6 @@ export function DevPlanNoteDetail({ folderId, noteId }: { folderId: string; note
   };
 
   const addTemplate = async () => {
-    // 「課題点」「計画」を一括作成（空なら便利）
     const rows: SubRow[] = [
       { id: uid(), note_id: noteId, title: "課題点", content: "", ...nowBase() },
       { id: uid(), note_id: noteId, title: "計画", content: "", ...nowBase() },
@@ -204,7 +182,6 @@ export function DevPlanNoteDetail({ folderId, noteId }: { folderId: string; note
     await pushRows({ [TBL_SUBS]: [row] });
   };
 
-  /* ===== UI ===== */
   if (!note || note.folder_id !== folderId) {
     return (
       <div className="space-y-2">
@@ -239,7 +216,6 @@ export function DevPlanNoteDetail({ folderId, noteId }: { folderId: string; note
         </div>
       </div>
 
-      {/* 小ノートは常時展開 */}
       {subList.length === 0 ? (
         <p className="text-sm text-gray-500">
           小ノートがありません。「小ノート追加」または「テンプレ挿入」で作成してください。

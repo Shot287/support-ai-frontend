@@ -4,7 +4,12 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getDeviceId } from "@/lib/device";
-import { pullBatch, pushBatch } from "@/lib/sync"; // ← pushBatch に変更
+import {
+  pullBatch,
+  pushGeneric,
+  pickTableDiffs,
+} from "@/lib/sync";
+import type { GenericChangeRow } from "@/lib/sync";
 
 /* =========================
  * 同期テーブル / 型
@@ -17,9 +22,9 @@ type ID = string;
 type SyncBase = {
   id: ID;
   user_id: string;
-  updated_at: number; // ms
+  updated_at: number;
   updated_by: string;
-  deleted_at: number | null; // tombstone
+  deleted_at: number | null;
 };
 
 type FolderRow = SyncBase & { title: string };
@@ -35,7 +40,6 @@ const uid = () =>
 
 const SINCE_KEY = (userId: string) => `support-ai:sync:since:${userId}:devplan`;
 
-/** LWW（Last-Write-Wins）マージ */
 function lwwMerge<T extends SyncBase>(dst: Map<ID, T>, incoming: T[]) {
   for (const r of incoming) {
     const cur = dst.get(r.id);
@@ -44,30 +48,6 @@ function lwwMerge<T extends SyncBase>(dst: Map<ID, T>, incoming: T[]) {
       else dst.set(r.id, r);
     }
   }
-}
-
-/** pullBatch の戻り互換吸収（since/rows の名称違いに対応） */
-function getSince(res: unknown): number {
-  const anyRes = res as any;
-  return anyRes?.since ?? anyRes?.nextSince ?? anyRes?.cursor ?? anyRes?.next_cursor ?? 0;
-}
-function getTableRows<T = unknown>(res: unknown, table: string): T[] {
-  const anyRes = res as any;
-  return (
-    anyRes?.rows?.[table] ??
-    anyRes?.tables?.[table] ??
-    anyRes?.data?.[table] ??
-    anyRes?.[table] ??
-    []
-  );
-}
-
-/** 他タブへ「受信してね」を合図（ローカル実装） */
-function announceGlobalPull(userId: string, deviceId: string) {
-  if (typeof window === "undefined") return;
-  window.dispatchEvent(
-    new CustomEvent("GLOBAL_SYNC_PULL", { detail: { userId, deviceId } })
-  );
 }
 
 /* =========================
@@ -86,7 +66,6 @@ export function DevPlan() {
   const pullingRef = useRef(false);
   const seededRef = useRef(false);
 
-  /* ===== 初回・定期Pull ===== */
   useEffect(() => {
     const s = parseInt(localStorage.getItem(SINCE_KEY(userId)) || "0", 10) || 0;
     sinceRef.current = s;
@@ -107,15 +86,13 @@ export function DevPlan() {
       if (pullingRef.current) return;
       pullingRef.current = true;
       try {
-        // pullBatch(userId, since, [tables...])
-        const res = await pullBatch(userId, sinceRef.current, [
+        const resp = await pullBatch(userId, sinceRef.current, [
           TBL_FOLDERS,
           TBL_NOTES,
         ]);
 
-        const nextSince = getSince(res);
-        const rFolders = getTableRows<FolderRow>(res, TBL_FOLDERS);
-        const rNotes = getTableRows<NoteRow>(res, TBL_NOTES);
+        const rFolders = pickTableDiffs<FolderRow>(resp.diffs, TBL_FOLDERS);
+        const rNotes = pickTableDiffs<NoteRow>(resp.diffs, TBL_NOTES);
 
         setFolders((prev) => {
           const m = new Map(prev);
@@ -128,20 +105,26 @@ export function DevPlan() {
           return m;
         });
 
-        if (nextSince > sinceRef.current) {
-          sinceRef.current = nextSince;
-          localStorage.setItem(SINCE_KEY(userId), String(nextSince));
+        // since 更新
+        if (resp.server_time_ms > sinceRef.current) {
+          sinceRef.current = resp.server_time_ms;
+          localStorage.setItem(SINCE_KEY(userId), String(resp.server_time_ms));
         }
 
-        // 初回フォルダー選択
+        // 初期選択
         if (!currentFolderId) {
           const first =
             rFolders[0]?.id ?? Array.from(folders.values())[0]?.id ?? null;
           if (first) setCurrentFolderId(first);
         }
 
-        // まっさらな環境での初期フォルダー投入（1回だけ）
-        if (allowSeed && !seededRef.current && rFolders.length === 0 && folders.size === 0) {
+        // 初期シード（サーバが空のとき）
+        if (
+          allowSeed &&
+          !seededRef.current &&
+          rFolders.length === 0 &&
+          folders.size === 0
+        ) {
           seededRef.current = true;
           await seedInitialFolders();
         }
@@ -160,36 +143,17 @@ export function DevPlan() {
     deleted_at: null,
   });
 
-  /** push → 一括送信（pushBatch 1引数API）→ 各タブにPull合図 */
+  /** push（テーブルごと） */
   const pushRows = async (rowsByTable: Record<string, SyncBase[]>) => {
-    const REQUIRED: (keyof SyncBase)[] = ["id", "user_id", "updated_at", "updated_by"];
-
-    // 送信前バリデーション
     for (const [table, rows] of Object.entries(rowsByTable)) {
-      if (!rows || rows.length === 0) continue;
-      for (const r of rows) {
-        for (const k of REQUIRED) {
-          if ((r as Record<string, unknown>)[k] == null) {
-            console.error(`push skipped (missing '${String(k)}')`, { table, row: r });
-          }
-        }
-      }
+      if (!rows?.length) continue;
+      const payloadRows = rows as unknown as GenericChangeRow[];
+      await pushGeneric({ table, userId, deviceId, rows: payloadRows });
     }
-
-    // 型：Record<string, unknown>[] で安全に渡す
-    const payload: Record<string, Record<string, unknown>[]> = {};
-    for (const [table, rows] of Object.entries(rowsByTable)) {
-      if (!rows || rows.length === 0) continue;
-      payload[table] = rows as unknown as Record<string, unknown>[];
-    }
-
-    await pushBatch(payload); // ← 1引数だけ
-
-    announceGlobalPull(userId, deviceId);
+    // pushBatch 内で signalGlobalPull/markStickyPull は実行される
     await doPull();
   };
 
-  /* ===== 初期フォルダーのシード ===== */
   const seedInitialFolders = async () => {
     const base = ["先延ばし対策", "睡眠管理", "勉強", "Mental"].map((title) => ({
       id: uid(),
@@ -239,16 +203,11 @@ export function DevPlan() {
 
   const switchFolder = (id: ID) => setCurrentFolderId(id);
 
-  /* ===== ノート操作（一覧：親は閉じた表示） ===== */
+  /* ===== ノート操作 ===== */
   const addNote = async (folderId: ID) => {
     const title = prompt("ノートのタイトル（機能名など）", "新しいノート");
     if (!title) return;
-    const row: NoteRow = {
-      id: uid(),
-      folder_id: folderId,
-      title,
-      ...nowBase(),
-    };
+    const row: NoteRow = { id: uid(), folder_id: folderId, title, ...nowBase() };
     await pushRows({ [TBL_NOTES]: [row] });
   };
 
@@ -285,7 +244,10 @@ export function DevPlan() {
 
   /* ===== 表示用派生 ===== */
   const folderList = useMemo(
-    () => Array.from(folders.values()).sort((a, b) => a.title.localeCompare(b.title)),
+    () =>
+      Array.from(folders.values()).sort((a, b) =>
+        a.title.localeCompare(b.title)
+      ),
     [folders]
   );
 
@@ -360,7 +322,7 @@ export function DevPlan() {
           {currentFolderId && (
             <button
               onClick={() => addNote(currentFolderId)}
-              className="rounded-xl border px-3 py-1.5 textsm hover:bg-gray-50"
+              className="rounded-xl border px-3 py-1.5 text-sm hover:bg-gray-50"
             >
               ノート追加
             </button>
@@ -378,7 +340,6 @@ export function DevPlan() {
             {notesInCurrent.map((n) => (
               <li key={n.id} className="rounded-xl border p-3">
                 <div className="flex items-center justify-between">
-                  {/* タイトルクリックで詳細ページへ遷移 */}
                   <Link
                     href={`/study/dev-plan/${currentFolderId}/${n.id}`}
                     className="font-semibold underline-offset-2 hover:underline break-words"
