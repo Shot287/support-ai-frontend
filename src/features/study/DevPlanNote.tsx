@@ -35,11 +35,13 @@ export function DevPlanNoteDetail({ folderId, noteId }: { folderId: string; note
   const sinceRef = useRef<number>(0);
   const pullingRef = useRef(false);
 
-  /* 初回＆定期 pull */
+  /* 初回＆定期 pull（★ 初回はフルpullを強制） */
   useEffect(() => {
     const s = Number(localStorage.getItem(SINCE_KEY(userId)) || 0);
     sinceRef.current = Number.isFinite(s) ? s : 0;
-    void doPull(false);
+
+    // まずはフルpullで確実にノート本体と既存小ノートを取得
+    void doPull(true);
 
     const t = setInterval(() => doPull(false), 5000);
     return () => clearInterval(t);
@@ -78,12 +80,13 @@ export function DevPlanNoteDetail({ folderId, noteId }: { folderId: string; note
           });
         }
 
-        if (typeof resp?.server_time_ms === "number" && (!forceFull || resp.server_time_ms > sinceRef.current)) {
+        if (
+          typeof resp?.server_time_ms === "number" &&
+          (!forceFull || resp.server_time_ms > sinceRef.current)
+        ) {
           sinceRef.current = resp.server_time_ms;
           localStorage.setItem(SINCE_KEY(userId), String(resp.server_time_ms));
         }
-      } catch {
-        // console.warn("[devplan-note] pull error:", e);
       } finally {
         pullingRef.current = false;
       }
@@ -120,7 +123,7 @@ export function DevPlanNoteDetail({ folderId, noteId }: { folderId: string; note
 
     const id = (crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`) as ID;
 
-    // 楽観的反映
+    // 楽観的反映（即時に一覧へ見せる）
     setSubs((prev) => {
       const m = new Map(prev);
       m.set(id, {
@@ -142,7 +145,9 @@ export function DevPlanNoteDetail({ folderId, noteId }: { folderId: string; note
       deviceId,
       rows: [{ id, note_id: noteId, data: { title, content: "" } }],
     });
-    await doPull(true); // フルpull
+
+    // 追加直後はフルpullで取りこぼし防止
+    await doPull(true);
   };
 
   const renameSub = async (subId: ID) => {
@@ -216,15 +221,9 @@ export function DevPlanNoteDetail({ folderId, noteId }: { folderId: string; note
           <h1 className="text-xl font-semibold break-words">{note.title}</h1>
         </div>
         <div className="flex gap-2">
-          <button onClick={renameNote} className="rounded-lg border px-2 py-1 text-xs">
-            ノート名変更
-          </button>
-          <button onClick={addSubNote} className="rounded-lg border px-2 py-1 text-xs">
-            小ノート追加
-          </button>
-          <Link href={`/study/dev-plan`} className="rounded-lg border px-2 py-1 text-xs hover:bg-gray-50">
-            一覧へ
-          </Link>
+          <button onClick={renameNote} className="rounded-lg border px-2 py-1 text-xs">ノート名変更</button>
+          <button onClick={addSubNote} className="rounded-lg border px-2 py-1 text-xs">小ノート追加</button>
+          <Link href={`/study/dev-plan`} className="rounded-lg border px-2 py-1 text-xs hover:bg-gray-50">一覧へ</Link>
         </div>
       </div>
 
@@ -240,12 +239,8 @@ export function DevPlanNoteDetail({ folderId, noteId }: { folderId: string; note
                   <span className="text-xs text-gray-500">（編集可）</span>
                 </div>
                 <div className="flex gap-2">
-                  <button onClick={() => renameSub(sn.id)} className="rounded-lg border px-2 py-1 text-xs">
-                    名
-                  </button>
-                  <button onClick={() => deleteSub(sn.id)} className="rounded-lg border px-2 py-1 text-xs">
-                    削
-                  </button>
+                  <button onClick={() => renameSub(sn.id)} className="rounded-lg border px-2 py-1 text-xs">名</button>
+                  <button onClick={() => deleteSub(sn.id)} className="rounded-lg border px-2 py-1 text-xs">削</button>
                 </div>
               </div>
               <textarea

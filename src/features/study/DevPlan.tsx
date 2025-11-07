@@ -57,7 +57,7 @@ export function DevPlan() {
   useEffect(() => {
     const s = Number(localStorage.getItem(SINCE_KEY(userId)) || 0);
     sinceRef.current = Number.isFinite(s) ? s : 0;
-    void doPull(true, false); // 初回は通常pull
+    void doPull(true, false);
 
     const t = setInterval(() => doPull(false, false), 5000);
     return () => clearInterval(t);
@@ -108,20 +108,16 @@ export function DevPlan() {
           const baseTitles = ["先延ばし対策", "睡眠管理", "勉強", "Mental"];
           const rows = baseTitles.map((title) => ({ id: uid(), data: { title } }));
           await pushGeneric({ table: TBL_FOLDERS, userId, deviceId, rows });
-          // シード直後はフルpullで確実に反映
-          await doPull(false, true);
+          await doPull(false, true); // シード直後はフルpull
         }
 
         // 初期選択
         if (!currentFolderId) {
           const first =
             Array.from(folders.values()).find((f) => !f.deleted_at)?.id ??
-            rFolders?.find((f) => !f.deleted_at)?.id ??
-            null;
+            rFolders?.find((f) => !f.deleted_at)?.id ?? null;
           if (first) setCurrentFolderId(first);
         }
-      } catch (e) {
-        // console.warn("[devplan] pull error:", e);
       } finally {
         pullingRef.current = false;
       }
@@ -147,14 +143,8 @@ export function DevPlan() {
       } as FolderRow);
       return m;
     });
-    await pushGeneric({
-      table: TBL_FOLDERS,
-      userId,
-      deviceId,
-      rows: [{ id, data: { title } }],
-    });
-    // 追加直後はフルpull（since=0）
-    await doPull(false, true);
+    await pushGeneric({ table: TBL_FOLDERS, userId, deviceId, rows: [{ id, data: { title } }] });
+    await doPull(false, true); // 追加直後はフルpull
     setCurrentFolderId(id);
   };
 
@@ -163,23 +153,13 @@ export function DevPlan() {
     if (!f) return;
     const title = prompt("フォルダー名を変更", f.title);
     if (!title) return;
-    await pushGeneric({
-      table: TBL_FOLDERS,
-      userId,
-      deviceId,
-      rows: [{ id, data: { title } }],
-    });
+    await pushGeneric({ table: TBL_FOLDERS, userId, deviceId, rows: [{ id, data: { title } }] });
     await doPull(false, true);
   };
 
   const deleteFolder = async (id: ID) => {
     if (!confirm("このフォルダーを削除しますか？（配下のノートも論理削除）")) return;
-    await pushGeneric({
-      table: TBL_FOLDERS,
-      userId,
-      deviceId,
-      rows: [{ id, deleted_at: Date.now() }],
-    });
+    await pushGeneric({ table: TBL_FOLDERS, userId, deviceId, rows: [{ id, deleted_at: Date.now() }] });
     await doPull(false, true);
     setCurrentFolderId(null);
   };
@@ -192,7 +172,7 @@ export function DevPlan() {
     if (!title) return;
     const id = uid();
 
-    // 楽観的反映（すぐに一覧へ出す）
+    // 楽観的反映
     setNotes((prev) => {
       const m = new Map(prev);
       m.set(id, {
@@ -214,8 +194,7 @@ export function DevPlan() {
       rows: [{ id, folder_id: folderId, data: { title } }],
     });
 
-    // 追加直後はフルpullで確実に取得（クロックスキュー対策）
-    await doPull(false, true);
+    await doPull(false, true); // 追加直後はフルpull
   };
 
   const renameNote = async (folderId: ID, noteId: ID) => {
@@ -294,18 +273,8 @@ export function DevPlan() {
                     {f.title}
                   </button>
                   <div className="flex gap-1 shrink-0">
-                    <button
-                      onClick={() => renameFolder(f.id)}
-                      className="rounded-lg border px-2 py-1 text-xs"
-                    >
-                      名
-                    </button>
-                    <button
-                      onClick={() => deleteFolder(f.id)}
-                      className="rounded-lg border px-2 py-1 text-xs"
-                    >
-                      削
-                    </button>
+                    <button onClick={() => renameFolder(f.id)} className="rounded-lg border px-2 py-1 text-xs">名</button>
+                    <button onClick={() => deleteFolder(f.id)} className="rounded-lg border px-2 py-1 text-xs">削</button>
                   </div>
                 </div>
               </li>
@@ -317,14 +286,9 @@ export function DevPlan() {
       {/* 右：ノート一覧 */}
       <section className="rounded-2xl border p-4 shadow-sm">
         <div className="flex items-center justify-between mb-3">
-          <h2 className="font-semibold">
-            {currentFolderId ? "ノート" : "フォルダーを選択"}
-          </h2>
+          <h2 className="font-semibold">{currentFolderId ? "ノート" : "フォルダーを選択"}</h2>
           {currentFolderId && (
-            <button
-              onClick={() => addNote(currentFolderId)}
-              className="rounded-xl border px-3 py-1.5 text-sm hover:bg-gray-50"
-            >
+            <button onClick={() => addNote(currentFolderId)} className="rounded-xl border px-3 py-1.5 text-sm hover:bg-gray-50">
               ノート追加
             </button>
           )}
@@ -333,38 +297,21 @@ export function DevPlan() {
         {!currentFolderId ? (
           <p className="text-sm text-gray-500">フォルダーを選択してください。</p>
         ) : notesInCurrent.length === 0 ? (
-          <p className="text-sm text-gray-500">
-            ノートがありません。「ノート追加」で作成してください。
-          </p>
+          <p className="text-sm text-gray-500">ノートがありません。「ノート追加」で作成してください。</p>
         ) : (
           <ul className="space-y-2">
             {notesInCurrent.map((n) => (
               <li key={n.id} className="rounded-xl border p-3">
                 <div className="flex items-center justify-between">
-                  <Link
-                    href={`/study/dev-plan/${currentFolderId}/${n.id}`}
-                    className="font-semibold underline-offset-2 hover:underline break-words"
-                  >
+                  <Link href={`/study/dev-plan/${currentFolderId}/${n.id}`} className="font-semibold underline-offset-2 hover:underline break-words">
                     {n.title}
                   </Link>
                   <div className="flex gap-2">
-                    <button
-                      onClick={() => renameNote(currentFolderId, n.id)}
-                      className="rounded-lg border px-2 py-1 text-xs"
-                    >
-                      名
-                    </button>
-                    <button
-                      onClick={() => deleteNote(currentFolderId, n.id)}
-                      className="rounded-lg border px-2 py-1 text-xs"
-                    >
-                      削
-                    </button>
+                    <button onClick={() => renameNote(currentFolderId, n.id)} className="rounded-lg border px-2 py-1 text-xs">名</button>
+                    <button onClick={() => deleteNote(currentFolderId, n.id)} className="rounded-lg border px-2 py-1 text-xs">削</button>
                   </div>
                 </div>
-                <p className="mt-1 text-xs text-gray-500">
-                  ※ クリックで詳細ページへ。小ノートは詳細で常時展開されます。
-                </p>
+                <p className="mt-1 text-xs text-gray-500">※ クリックで詳細ページへ。小ノートは詳細で常時展開されます。</p>
               </li>
             ))}
           </ul>
