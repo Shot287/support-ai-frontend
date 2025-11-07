@@ -39,58 +39,64 @@ export function DevPlanNoteDetail({ folderId, noteId }: { folderId: string; note
   useEffect(() => {
     const s = Number(localStorage.getItem(SINCE_KEY(userId)) || 0);
     sinceRef.current = Number.isFinite(s) ? s : 0;
-    void doPull();
+    void doPull(false);
 
-    const t = setInterval(() => doPull(), 5000);
+    const t = setInterval(() => doPull(false), 5000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [folderId, noteId]);
 
-  const doPull = useCallback(async () => {
-    if (pullingRef.current) return;
-    pullingRef.current = true;
-    try {
-      const tables: TableName[] = [TBL_NOTES, TBL_SUBS];
-      const resp = await pullBatch(userId, sinceRef.current, tables);
-      const diffs = resp?.diffs ?? {};
+  const doPull = useCallback(
+    async (forceFull = false) => {
+      if (pullingRef.current) return;
+      pullingRef.current = true;
+      try {
+        const tables: TableName[] = [TBL_NOTES, TBL_SUBS];
+        const since = forceFull ? 0 : sinceRef.current;
+        const resp = await pullBatch(userId, since, tables);
+        const diffs = resp?.diffs ?? {};
 
-      const rNotes = (diffs as any)[TBL_NOTES] as NoteRow[] | undefined;
-      const rSubs  = (diffs as any)[TBL_SUBS]  as SubRow[]  | undefined;
+        const rNotes = (diffs as any)[TBL_NOTES] as NoteRow[] | undefined;
+        const rSubs  = (diffs as any)[TBL_SUBS]  as SubRow[]  | undefined;
 
-      if (rNotes?.length) {
-        const target = rNotes.find((n) => n.id === noteId && n.folder_id === folderId && !n.deleted_at);
-        if (target) setNote(target);
-      }
-      if (rSubs?.length) {
-        setSubs((prev) => {
-          const m = new Map(prev);
-          for (const r of rSubs) {
-            if (r.note_id !== noteId) continue;
-            const cur = m.get(r.id);
-            if (!cur || cur.updated_at <= r.updated_at) {
-              if (r.deleted_at) m.delete(r.id);
-              else m.set(r.id, r);
+        if (rNotes?.length) {
+          const target = rNotes.find((n) => n.id === noteId && n.folder_id === folderId && !n.deleted_at);
+          if (target) setNote(target);
+        }
+        if (rSubs?.length) {
+          setSubs((prev) => {
+            const m = new Map(prev);
+            for (const r of rSubs) {
+              if (r.note_id !== noteId) continue;
+              const cur = m.get(r.id);
+              if (!cur || cur.updated_at <= r.updated_at) {
+                if (r.deleted_at) m.delete(r.id);
+                else m.set(r.id, r);
+              }
             }
-          }
-          return m;
-        });
-      }
+            return m;
+          });
+        }
 
-      if (typeof resp?.server_time_ms === "number" && resp.server_time_ms > sinceRef.current) {
-        sinceRef.current = resp.server_time_ms;
-        localStorage.setItem(SINCE_KEY(userId), String(resp.server_time_ms));
+        if (typeof resp?.server_time_ms === "number" && (!forceFull || resp.server_time_ms > sinceRef.current)) {
+          sinceRef.current = resp.server_time_ms;
+          localStorage.setItem(SINCE_KEY(userId), String(resp.server_time_ms));
+        }
+      } catch {
+        // console.warn("[devplan-note] pull error:", e);
+      } finally {
+        pullingRef.current = false;
       }
-    } catch (e) {
-      // ビルドを止めないため console は控えめに
-      // console.warn("[devplan-note] pull error:", e);
-    } finally {
-      pullingRef.current = false;
-    }
-  }, [folderId, noteId, userId]); // ← deviceId は未使用なので依存から除外
+    },
+    [folderId, noteId, userId]
+  );
 
   /* ✅ Hooks は常にトップレベルで呼ぶ */
   const subList = useMemo(
-    () => Array.from(subs.values()).sort((a, b) => a.title.localeCompare(b.title)),
+    () =>
+      Array.from(subs.values())
+        .filter((s) => !s.deleted_at)
+        .sort((a, b) => a.title.localeCompare(b.title)),
     [subs]
   );
 
@@ -105,19 +111,38 @@ export function DevPlanNoteDetail({ folderId, noteId }: { folderId: string; note
       deviceId,
       rows: [{ id: note.id, folder_id: folderId, data: { title } }],
     });
-    await doPull();
+    await doPull(true); // フルpull
   };
 
   const addSubNote = async () => {
     const title = prompt("小ノートのタイトル", "小ノート");
     if (!title) return;
+
+    const id = (crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`) as ID;
+
+    // 楽観的反映
+    setSubs((prev) => {
+      const m = new Map(prev);
+      m.set(id, {
+        id,
+        note_id: noteId,
+        title,
+        content: "",
+        user_id: userId,
+        updated_at: Date.now(),
+        updated_by: deviceId,
+        deleted_at: null,
+      } as SubRow);
+      return m;
+    });
+
     await pushGeneric({
       table: TBL_SUBS,
       userId,
       deviceId,
-      rows: [{ id: crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`, note_id: noteId, data: { title, content: "" } }],
+      rows: [{ id, note_id: noteId, data: { title, content: "" } }],
     });
-    await doPull();
+    await doPull(true); // フルpull
   };
 
   const renameSub = async (subId: ID) => {
@@ -131,7 +156,7 @@ export function DevPlanNoteDetail({ folderId, noteId }: { folderId: string; note
       deviceId,
       rows: [{ id: subId, note_id: noteId, data: { title } }],
     });
-    await doPull();
+    await doPull(true);
   };
 
   const deleteSub = async (subId: ID) => {
@@ -142,7 +167,7 @@ export function DevPlanNoteDetail({ folderId, noteId }: { folderId: string; note
       deviceId,
       rows: [{ id: subId, note_id: noteId, deleted_at: Date.now() }],
     });
-    await doPull();
+    await doPull(true);
   };
 
   // 入力更新は軽くデバウンス
@@ -166,6 +191,8 @@ export function DevPlanNoteDetail({ folderId, noteId }: { folderId: string; note
         deviceId,
         rows: [{ id: subId, note_id: noteId, data: { content } }],
       });
+      // 内容は頻繁なので通常pullでOK
+      await doPull(false);
     }, 300);
   };
 

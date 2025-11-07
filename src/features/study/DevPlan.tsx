@@ -57,21 +57,21 @@ export function DevPlan() {
   useEffect(() => {
     const s = Number(localStorage.getItem(SINCE_KEY(userId)) || 0);
     sinceRef.current = Number.isFinite(s) ? s : 0;
-    void doPull(true);
+    void doPull(true, false); // 初回は通常pull
 
-    const t = setInterval(() => doPull(), 5000);
+    const t = setInterval(() => doPull(false, false), 5000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const doPull = useCallback(
-    async (allowSeed = false) => {
+    async (allowSeed = false, forceFull = false) => {
       if (pullingRef.current) return;
       pullingRef.current = true;
       try {
-        // pullBatch は { diffs: {table: rows}, server_time_ms } を返す
         const tables: TableName[] = [TBL_FOLDERS, TBL_NOTES];
-        const resp = await pullBatch(userId, sinceRef.current, tables);
+        const since = forceFull ? 0 : sinceRef.current;
+        const resp = await pullBatch(userId, since, tables);
         const diffs = resp?.diffs ?? {};
 
         const rFolders = (diffs as any)[TBL_FOLDERS] as FolderRow[] | undefined;
@@ -92,7 +92,7 @@ export function DevPlan() {
           });
         }
 
-        if (typeof resp?.server_time_ms === "number" && resp.server_time_ms > sinceRef.current) {
+        if (typeof resp?.server_time_ms === "number" && (!forceFull || resp.server_time_ms > sinceRef.current)) {
           sinceRef.current = resp.server_time_ms;
           localStorage.setItem(SINCE_KEY(userId), String(resp.server_time_ms));
         }
@@ -108,18 +108,20 @@ export function DevPlan() {
           const baseTitles = ["先延ばし対策", "睡眠管理", "勉強", "Mental"];
           const rows = baseTitles.map((title) => ({ id: uid(), data: { title } }));
           await pushGeneric({ table: TBL_FOLDERS, userId, deviceId, rows });
-          await doPull();
+          // シード直後はフルpullで確実に反映
+          await doPull(false, true);
         }
 
         // 初期選択
         if (!currentFolderId) {
-          const first = Array.from(folders.values())[0]?.id
-            ?? rFolders?.[0]?.id
-            ?? null;
+          const first =
+            Array.from(folders.values()).find((f) => !f.deleted_at)?.id ??
+            rFolders?.find((f) => !f.deleted_at)?.id ??
+            null;
           if (first) setCurrentFolderId(first);
         }
       } catch (e) {
-        console.warn("[devplan] pull error:", e);
+        // console.warn("[devplan] pull error:", e);
       } finally {
         pullingRef.current = false;
       }
@@ -127,25 +129,32 @@ export function DevPlan() {
     [currentFolderId, folders, userId, deviceId]
   );
 
-  const nowBase = (): Omit<SyncBase, "id"> => ({
-    user_id: userId,
-    updated_at: Date.now(),
-    updated_by: deviceId,
-    deleted_at: null,
-  });
-
   /* ===== フォルダー操作 ===== */
   const addFolder = async () => {
     const title = prompt("新しいフォルダー名", "新しいフォルダー");
     if (!title) return;
     const id = uid();
+    // 楽観的反映
+    setFolders((prev) => {
+      const m = new Map(prev);
+      m.set(id, {
+        id,
+        title,
+        user_id: userId,
+        updated_at: Date.now(),
+        updated_by: deviceId,
+        deleted_at: null,
+      } as FolderRow);
+      return m;
+    });
     await pushGeneric({
       table: TBL_FOLDERS,
       userId,
       deviceId,
       rows: [{ id, data: { title } }],
     });
-    await doPull();
+    // 追加直後はフルpull（since=0）
+    await doPull(false, true);
     setCurrentFolderId(id);
   };
 
@@ -160,7 +169,7 @@ export function DevPlan() {
       deviceId,
       rows: [{ id, data: { title } }],
     });
-    await doPull();
+    await doPull(false, true);
   };
 
   const deleteFolder = async (id: ID) => {
@@ -171,7 +180,7 @@ export function DevPlan() {
       deviceId,
       rows: [{ id, deleted_at: Date.now() }],
     });
-    await doPull();
+    await doPull(false, true);
     setCurrentFolderId(null);
   };
 
@@ -181,18 +190,37 @@ export function DevPlan() {
   const addNote = async (folderId: ID) => {
     const title = prompt("ノートのタイトル（機能名など）", "新しいノート");
     if (!title) return;
+    const id = uid();
+
+    // 楽観的反映（すぐに一覧へ出す）
+    setNotes((prev) => {
+      const m = new Map(prev);
+      m.set(id, {
+        id,
+        folder_id: folderId,
+        title,
+        user_id: userId,
+        updated_at: Date.now(),
+        updated_by: deviceId,
+        deleted_at: null,
+      } as NoteRow);
+      return m;
+    });
+
     await pushGeneric({
       table: TBL_NOTES,
       userId,
       deviceId,
-      rows: [{ id: uid(), folder_id: folderId, data: { title } }],
+      rows: [{ id, folder_id: folderId, data: { title } }],
     });
-    await doPull();
+
+    // 追加直後はフルpullで確実に取得（クロックスキュー対策）
+    await doPull(false, true);
   };
 
   const renameNote = async (folderId: ID, noteId: ID) => {
-    const n = Array.from(notes.values()).find((x) => x.id === noteId && x.folder_id === folderId);
-    if (!n) return;
+    const n = notes.get(noteId);
+    if (!n || n.folder_id !== folderId) return;
     const title = prompt("ノートのタイトルを変更", n.title);
     if (!title) return;
     await pushGeneric({
@@ -201,10 +229,12 @@ export function DevPlan() {
       deviceId,
       rows: [{ id: noteId, folder_id: folderId, data: { title } }],
     });
-    await doPull();
+    await doPull(false, true);
   };
 
   const deleteNote = async (folderId: ID, noteId: ID) => {
+    const n = notes.get(noteId);
+    if (!n || n.folder_id !== folderId) return;
     if (!confirm("このノートを削除しますか？（配下の小ノートも論理削除）")) return;
     await pushGeneric({
       table: TBL_NOTES,
@@ -212,19 +242,24 @@ export function DevPlan() {
       deviceId,
       rows: [{ id: noteId, folder_id: folderId, deleted_at: Date.now() }],
     });
-    await doPull();
+    await doPull(false, true);
   };
 
   /* ===== 派生ビュー ===== */
   const folderList = useMemo(
-    () => Array.from(folders.values()).sort((a, b) => a.title.localeCompare(b.title)),
+    () =>
+      Array.from(folders.values())
+        .filter((f) => !f.deleted_at)
+        .sort((a, b) => a.title.localeCompare(b.title)),
     [folders]
   );
 
   const notesInCurrent = useMemo(
     () =>
       currentFolderId
-        ? Array.from(notes.values()).filter((n) => n.folder_id === currentFolderId)
+        ? Array.from(notes.values())
+            .filter((n) => !n.deleted_at && n.folder_id === currentFolderId)
+            .sort((a, b) => a.title.localeCompare(b.title))
         : [],
     [notes, currentFolderId]
   );
