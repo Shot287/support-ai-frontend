@@ -81,11 +81,18 @@ export function DevPlanNoteDetail({ folderId, noteId }: { folderId: string; note
         localStorage.setItem(SINCE_KEY(userId), String(resp.server_time_ms));
       }
     } catch (e) {
-      console.warn("[devplan-note] pull error:", e);
+      // ビルドを止めないため console は控えめに
+      // console.warn("[devplan-note] pull error:", e);
     } finally {
       pullingRef.current = false;
     }
-  }, [folderId, noteId, userId, deviceId]);
+  }, [folderId, noteId, userId]); // ← deviceId は未使用なので依存から除外
+
+  /* ✅ Hooks は常にトップレベルで呼ぶ */
+  const subList = useMemo(
+    () => Array.from(subs.values()).sort((a, b) => a.title.localeCompare(b.title)),
+    [subs]
+  );
 
   /* ====== 操作：ノート名／小ノート CRUD ====== */
   const renameNote = async () => {
@@ -162,6 +169,7 @@ export function DevPlanNoteDetail({ folderId, noteId }: { folderId: string; note
     }, 300);
   };
 
+  /* ====== 表示 ====== */
   if (!note) {
     return (
       <div className="space-y-2">
@@ -172,11 +180,6 @@ export function DevPlanNoteDetail({ folderId, noteId }: { folderId: string; note
       </div>
     );
   }
-
-  const subList = useMemo(
-    () => Array.from(subs.values()).sort((a, b) => a.title.localeCompare(b.title)),
-    [subs]
-  );
 
   return (
     <div className="space-y-4">
