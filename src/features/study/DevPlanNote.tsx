@@ -1,4 +1,3 @@
-// src/features/study/DevPlanNote.tsx
 "use client";
 
 import Link from "next/link";
@@ -10,7 +9,7 @@ type ID = string;
 
 /* ====== 同期テーブル名 ====== */
 const TBL_NOTES = "devplan_notes";
-const TBL_SUBS  = "devplan_subnotes";
+const TBL_SUBS = "devplan_subnotes";
 
 /* ====== サーバ行型 ====== */
 type SyncBase = {
@@ -21,11 +20,17 @@ type SyncBase = {
   deleted_at: number | null;
 };
 type NoteRow = SyncBase & { folder_id: ID; title: string };
-type SubRow  = SyncBase & { note_id: ID; title: string; content: string };
+type SubRow = SyncBase & { note_id: ID; title: string; content: string };
 
 const SINCE_KEY = (userId: string) => `support-ai:sync:since:${userId}:devplan`;
 
-export function DevPlanNoteDetail({ folderId, noteId }: { folderId: string; noteId: string }) {
+export function DevPlanNoteDetail({
+  folderId,
+  noteId,
+}: {
+  folderId: string;
+  noteId: string;
+}) {
   const userId = "demo"; // 認証導入時に差し替え
   const deviceId = getDeviceId();
 
@@ -35,19 +40,7 @@ export function DevPlanNoteDetail({ folderId, noteId }: { folderId: string; note
   const sinceRef = useRef<number>(0);
   const pullingRef = useRef(false);
 
-  /* 初回＆定期 pull（★ 初回はフルpullを強制） */
-  useEffect(() => {
-    const s = Number(localStorage.getItem(SINCE_KEY(userId)) || 0);
-    sinceRef.current = Number.isFinite(s) ? s : 0;
-
-    // まずはフルpullで確実にノート本体と既存小ノートを取得
-    void doPull(true);
-
-    const t = setInterval(() => doPull(false), 5000);
-    return () => clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [folderId, noteId]);
-
+  /* ====== pull 本体 ====== */
   const doPull = useCallback(
     async (forceFull = false) => {
       if (pullingRef.current) return;
@@ -59,12 +52,23 @@ export function DevPlanNoteDetail({ folderId, noteId }: { folderId: string; note
         const diffs = resp?.diffs ?? {};
 
         const rNotes = (diffs as any)[TBL_NOTES] as NoteRow[] | undefined;
-        const rSubs  = (diffs as any)[TBL_SUBS]  as SubRow[]  | undefined;
+        const rSubs = (diffs as any)[TBL_SUBS] as SubRow[] | undefined;
 
+        // ノート本体をLWWで更新（この画面では 1 ノートだけ見たい）
         if (rNotes?.length) {
-          const target = rNotes.find((n) => n.id === noteId && n.folder_id === folderId && !n.deleted_at);
-          if (target) setNote(target);
+          // 同じ noteId の中で updated_at 最大のものを採用
+          const candidates = rNotes.filter(
+            (n) => n.id === noteId && n.folder_id === folderId && !n.deleted_at
+          );
+          if (candidates.length > 0) {
+            const latest = candidates.reduce((a, b) =>
+              a.updated_at >= b.updated_at ? a : b
+            );
+            setNote(latest);
+          }
         }
+
+        // 小ノートのLWWマージ
         if (rSubs?.length) {
           setSubs((prev) => {
             const m = new Map(prev);
@@ -87,6 +91,8 @@ export function DevPlanNoteDetail({ folderId, noteId }: { folderId: string; note
           sinceRef.current = resp.server_time_ms;
           localStorage.setItem(SINCE_KEY(userId), String(resp.server_time_ms));
         }
+      } catch {
+        // console.warn("[devplan-note] pull error:", e);
       } finally {
         pullingRef.current = false;
       }
@@ -94,7 +100,27 @@ export function DevPlanNoteDetail({ folderId, noteId }: { folderId: string; note
     [folderId, noteId, userId]
   );
 
-  /* ✅ Hooks は常にトップレベルで呼ぶ */
+  /* ====== 初回＆定期 pull ======
+   * ここが重要ポイント：
+   *   詳細画面を開いたときは必ず forceFull=true で since=0 にし、
+   *   「直前に作成したノート」も確実に取得する。
+   */
+  useEffect(() => {
+    const s = Number(localStorage.getItem(SINCE_KEY(userId)) || 0);
+    sinceRef.current = Number.isFinite(s) ? s : 0;
+
+    // 初回はフルpullで、対象ノートと小ノートを必ず取得する
+    void doPull(true);
+
+    // 以降は差分だけ
+    const t = setInterval(() => {
+      void doPull(false);
+    }, 5000);
+
+    return () => clearInterval(t);
+  }, [doPull, userId]);
+
+  /* ====== 派生ビュー（表示用） ====== */
   const subList = useMemo(
     () =>
       Array.from(subs.values())
@@ -114,16 +140,17 @@ export function DevPlanNoteDetail({ folderId, noteId }: { folderId: string; note
       deviceId,
       rows: [{ id: note.id, folder_id: folderId, data: { title } }],
     });
-    await doPull(true); // フルpull
+    await doPull(true); // フルpullで更新反映
   };
 
   const addSubNote = async () => {
     const title = prompt("小ノートのタイトル", "小ノート");
     if (!title) return;
 
-    const id = (crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`) as ID;
+    const id = (crypto.randomUUID?.() ??
+      `${Date.now()}-${Math.random()}`) as ID;
 
-    // 楽観的反映（即時に一覧へ見せる）
+    // 楽観的反映
     setSubs((prev) => {
       const m = new Map(prev);
       m.set(id, {
@@ -145,9 +172,7 @@ export function DevPlanNoteDetail({ folderId, noteId }: { folderId: string; note
       deviceId,
       rows: [{ id, note_id: noteId, data: { title, content: "" } }],
     });
-
-    // 追加直後はフルpullで取りこぼし防止
-    await doPull(true);
+    await doPull(true); // 追加直後はフルpull
   };
 
   const renameSub = async (subId: ID) => {
@@ -180,6 +205,7 @@ export function DevPlanNoteDetail({ folderId, noteId }: { folderId: string; note
   const updateContent = async (subId: ID, content: string) => {
     const now = Date.now();
     typingRef.current[subId] = now;
+
     // ローカル即時反映
     setSubs((prev) => {
       const m = new Map(prev);
@@ -187,6 +213,7 @@ export function DevPlanNoteDetail({ folderId, noteId }: { folderId: string; note
       if (cur) m.set(subId, { ...cur, content });
       return m;
     });
+
     // 300ms デバウンスで push
     setTimeout(async () => {
       if (typingRef.current[subId] !== now) return;
@@ -196,7 +223,7 @@ export function DevPlanNoteDetail({ folderId, noteId }: { folderId: string; note
         deviceId,
         rows: [{ id: subId, note_id: noteId, data: { content } }],
       });
-      // 内容は頻繁なので通常pullでOK
+      // 内容更新は差分pullで十分
       await doPull(false);
     }, 300);
   };
@@ -206,7 +233,10 @@ export function DevPlanNoteDetail({ folderId, noteId }: { folderId: string; note
     return (
       <div className="space-y-2">
         <p className="text-sm text-red-600">ノートが見つかりませんでした。</p>
-        <Link href="/study/dev-plan" className="text-blue-600 hover:underline text-sm">
+        <Link
+          href="/study/dev-plan"
+          className="text-blue-600 hover:underline text-sm"
+        >
           一覧に戻る
         </Link>
       </div>
@@ -221,14 +251,31 @@ export function DevPlanNoteDetail({ folderId, noteId }: { folderId: string; note
           <h1 className="text-xl font-semibold break-words">{note.title}</h1>
         </div>
         <div className="flex gap-2">
-          <button onClick={renameNote} className="rounded-lg border px-2 py-1 text-xs">ノート名変更</button>
-          <button onClick={addSubNote} className="rounded-lg border px-2 py-1 text-xs">小ノート追加</button>
-          <Link href={`/study/dev-plan`} className="rounded-lg border px-2 py-1 text-xs hover:bg-gray-50">一覧へ</Link>
+          <button
+            onClick={renameNote}
+            className="rounded-lg border px-2 py-1 text-xs"
+          >
+            ノート名変更
+          </button>
+          <button
+            onClick={addSubNote}
+            className="rounded-lg border px-2 py-1 text-xs"
+          >
+            小ノート追加
+          </button>
+          <Link
+            href={`/study/dev-plan`}
+            className="rounded-lg border px-2 py-1 text-xs hover:bg-gray-50"
+          >
+            一覧へ
+          </Link>
         </div>
       </div>
 
       {subList.length === 0 ? (
-        <p className="text-sm text-gray-500">小ノートがありません。「小ノート追加」で作成してください。</p>
+        <p className="text-sm text-gray-500">
+          小ノートがありません。「小ノート追加」で作成してください。
+        </p>
       ) : (
         <div className="space-y-3">
           {subList.map((sn) => (
@@ -239,8 +286,18 @@ export function DevPlanNoteDetail({ folderId, noteId }: { folderId: string; note
                   <span className="text-xs text-gray-500">（編集可）</span>
                 </div>
                 <div className="flex gap-2">
-                  <button onClick={() => renameSub(sn.id)} className="rounded-lg border px-2 py-1 text-xs">名</button>
-                  <button onClick={() => deleteSub(sn.id)} className="rounded-lg border px-2 py-1 text-xs">削</button>
+                  <button
+                    onClick={() => renameSub(sn.id)}
+                    className="rounded-lg border px-2 py-1 text-xs"
+                  >
+                    名
+                  </button>
+                  <button
+                    onClick={() => deleteSub(sn.id)}
+                    className="rounded-lg border px-2 py-1 text-xs"
+                  >
+                    削
+                  </button>
                 </div>
               </div>
               <textarea
