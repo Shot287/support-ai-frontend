@@ -1,7 +1,8 @@
+// src/features/study/DevPlanNote.tsx
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { loadUserDoc, saveUserDoc } from "@/lib/userDocStore";
 
 type ID = string;
@@ -18,41 +19,24 @@ type Store = {
 const KEY = "devplan_v1";
 
 const uid = () =>
-  (typeof crypto !== "undefined" && "randomUUID" in crypto)
+  typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
-/** 一応 DevPlan 側と合わせた初期データ。detail 単体で開くときの保険用 */
-function createInitialStore(): Store {
-  const baseFolders: Folder[] = [
-    { id: uid(), title: "先延ばし対策" },
-    { id: uid(), title: "睡眠管理" },
-    { id: uid(), title: "勉強" },
-    { id: uid(), title: "Mental" },
-  ];
-  const firstId = baseFolders[0]?.id;
-  return {
-    folders: baseFolders,
-    notesByFolder: Object.fromEntries(baseFolders.map((f) => [f.id, [] as Note[]])),
-    currentFolderId: firstId,
-    version: 1,
-  };
-}
-
-function loadLocal(): Store {
+function loadLocal(): Store | null {
+  if (typeof window === "undefined") return null;
   try {
-    const raw = typeof window !== "undefined" ? localStorage.getItem(KEY) : null;
-    return raw ? (JSON.parse(raw) as Store) : createInitialStore();
+    const raw = localStorage.getItem(KEY);
+    return raw ? (JSON.parse(raw) as Store) : null;
   } catch {
-    return { folders: [], notesByFolder: {}, version: 1 };
+    return null;
   }
 }
 
 function saveLocal(s: Store) {
+  if (typeof window === "undefined") return;
   try {
-    if (typeof window !== "undefined") {
-      localStorage.setItem(KEY, JSON.stringify(s));
-    }
+    localStorage.setItem(KEY, JSON.stringify(s));
   } catch {
     // noop
   }
@@ -65,37 +49,80 @@ export function DevPlanNoteDetail({
   folderId: string;
   noteId: string;
 }) {
-  const [store, setStore] = useState<Store>(() => loadLocal());
-  const storeRef = useRef(store);
+  const [store, setStore] = useState<Store | null>(null);
 
-  // 変更があるたびにローカル＋サーバへ保存
+  // 初期読み込み（一覧側と同じロジック）
   useEffect(() => {
-    storeRef.current = store;
+    let cancelled = false;
+
+    const init = async () => {
+      let base = loadLocal();
+
+      if (!base) {
+        // このページだけ直接開いた場合でも初期フォルダを用意
+        const baseFolders: Folder[] = [
+          { id: uid(), title: "先延ばし対策" },
+          { id: uid(), title: "睡眠管理" },
+          { id: uid(), title: "勉強" },
+          { id: uid(), title: "Mental" },
+        ];
+        const firstId = baseFolders[0]?.id;
+        base = {
+          folders: baseFolders,
+          notesByFolder: Object.fromEntries(baseFolders.map((f) => [f.id, [] as Note[]])),
+          currentFolderId: firstId,
+          version: 1,
+        };
+        saveLocal(base);
+      }
+
+      if (!cancelled) {
+        setStore(base);
+      }
+
+      try {
+        const remote = await loadUserDoc<Store>(KEY);
+        if (cancelled) return;
+
+        if (remote && remote.version === 1) {
+          setStore(remote);
+          saveLocal(remote);
+        } else if (!remote) {
+          await saveUserDoc<Store>(KEY, base);
+        }
+      } catch {
+        // サーバ不調時はローカルのみ
+      }
+    };
+
+    void init();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // store 変更時：保存
+  useEffect(() => {
+    if (!store) return;
     saveLocal(store);
     (async () => {
       try {
         await saveUserDoc<Store>(KEY, store);
       } catch {
-        // サーバ不調時は無視
+        // noop
       }
     })();
   }, [store]);
 
-  // マウント時にサーバから最新状態を取得
-  useEffect(() => {
-    (async () => {
-      try {
-        const remote = await loadUserDoc<Store>(KEY);
-        if (remote && remote.version === 1) {
-          setStore(remote);
-        } else if (!remote) {
-          await saveUserDoc<Store>(KEY, storeRef.current);
-        }
-      } catch {
-        // サーバ不調時はローカルのみ
-      }
-    })();
-  }, []);
+  // ローディング中
+  if (!store) {
+    return (
+      <div className="text-sm text-gray-500">
+        ノートを読み込み中です…
+      </div>
+    );
+  }
 
   const folder = useMemo(
     () => store.folders.find((f) => f.id === folderId),
@@ -106,103 +133,127 @@ export function DevPlanNoteDetail({
     [store.notesByFolder, folderId, noteId]
   );
 
-  // 操作：ノート名／小ノートCRUD
+  // 操作：ノート名／小ノート CRUD
   const renameNote = () => {
     if (!note) return;
     const title = prompt("ノートのタイトルを変更", note.title);
     if (!title) return;
-    setStore((s) => ({
-      ...s,
-      notesByFolder: {
-        ...s.notesByFolder,
-        [folderId]: (s.notesByFolder[folderId] || []).map((n) =>
-          n.id === noteId ? { ...n, title } : n
-        ),
-      },
-    }));
+    setStore((s) =>
+      s
+        ? {
+            ...s,
+            notesByFolder: {
+              ...s.notesByFolder,
+              [folderId]: (s.notesByFolder[folderId] || []).map((n) =>
+                n.id === noteId ? { ...n, title } : n
+              ),
+            },
+          }
+        : s
+    );
   };
 
   const addSubNote = () => {
     const title = prompt("小ノートのタイトル", "小ノート");
     if (!title) return;
-    setStore((s) => ({
-      ...s,
-      notesByFolder: {
-        ...s.notesByFolder,
-        [folderId]: (s.notesByFolder[folderId] || []).map((n) =>
-          n.id === noteId
-            ? { ...n, subnotes: [...n.subnotes, { id: uid(), title, content: "" }] }
-            : n
-        ),
-      },
-    }));
+    setStore((s) =>
+      s
+        ? {
+            ...s,
+            notesByFolder: {
+              ...s.notesByFolder,
+              [folderId]: (s.notesByFolder[folderId] || []).map((n) =>
+                n.id === noteId
+                  ? {
+                      ...n,
+                      subnotes: [...n.subnotes, { id: uid(), title, content: "" }],
+                    }
+                  : n
+              ),
+            },
+          }
+        : s
+    );
   };
 
   const renameSub = (subId: ID) => {
-    const target = note?.subnotes.find((x) => x.id === subId);
+    if (!note) return;
+    const target = note.subnotes.find((x) => x.id === subId);
     if (!target) return;
     const title = prompt("小ノートのタイトルを変更", target.title);
     if (!title) return;
-    setStore((s) => ({
-      ...s,
-      notesByFolder: {
-        ...s.notesByFolder,
-        [folderId]: (s.notesByFolder[folderId] || []).map((n) =>
-          n.id === noteId
-            ? {
-                ...n,
-                subnotes: n.subnotes.map((sn) =>
-                  sn.id === subId ? { ...sn, title } : sn
-                ),
-              }
-            : n
-        ),
-      },
-    }));
+    setStore((s) =>
+      s
+        ? {
+            ...s,
+            notesByFolder: {
+              ...s.notesByFolder,
+              [folderId]: (s.notesByFolder[folderId] || []).map((n) =>
+                n.id === noteId
+                  ? {
+                      ...n,
+                      subnotes: n.subnotes.map((sn) =>
+                        sn.id === subId ? { ...sn, title } : sn
+                      ),
+                    }
+                  : n
+              ),
+            },
+          }
+        : s
+    );
   };
 
   const deleteSub = (subId: ID) => {
     if (!confirm("この小ノートを削除しますか？")) return;
-    setStore((s) => ({
-      ...s,
-      notesByFolder: {
-        ...s.notesByFolder,
-        [folderId]: (s.notesByFolder[folderId] || []).map((n) =>
-          n.id === noteId
-            ? { ...n, subnotes: n.subnotes.filter((sn) => sn.id !== subId) }
-            : n
-        ),
-      },
-    }));
+    setStore((s) =>
+      s
+        ? {
+            ...s,
+            notesByFolder: {
+              ...s.notesByFolder,
+              [folderId]: (s.notesByFolder[folderId] || []).map((n) =>
+                n.id === noteId
+                  ? {
+                      ...n,
+                      subnotes: n.subnotes.filter((sn) => sn.id !== subId),
+                    }
+                  : n
+              ),
+            },
+          }
+        : s
+    );
   };
 
   const updateContent = (subId: ID, content: string) => {
-    setStore((s) => ({
-      ...s,
-      notesByFolder: {
-        ...s.notesByFolder,
-        [folderId]: (s.notesByFolder[folderId] || []).map((n) =>
-          n.id === noteId
-            ? {
-                ...n,
-                subnotes: n.subnotes.map((sn) =>
-                  sn.id === subId ? { ...sn, content } : sn
-                ),
-              }
-            : n
-        ),
-      },
-    }));
+    setStore((s) =>
+      s
+        ? {
+            ...s,
+            notesByFolder: {
+              ...s.notesByFolder,
+              [folderId]: (s.notesByFolder[folderId] || []).map((n) =>
+                n.id === noteId
+                  ? {
+                      ...n,
+                      subnotes: n.subnotes.map((sn) =>
+                        sn.id === subId ? { ...sn, content } : sn
+                      ),
+                    }
+                  : n
+              ),
+            },
+          }
+        : s
+    );
   };
 
   if (!folder || !note) {
     return (
       <div className="space-y-2">
         <p className="text-sm text-red-600">ノートが見つかりませんでした。</p>
-        <Link
-          href="/study/dev-plan"
-          className="text-blue-600 hover:underline text-sm"
-        >
+        <Link href="/study/dev-plan" className="text-blue-600 hover:underline text-sm">
           一覧に戻る
         </Link>
       </div>
@@ -211,7 +262,7 @@ export function DevPlanNoteDetail({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify_between">
         <div>
           <div className="text-xs text-gray-500">フォルダー：{folder.title}</div>
           <h1 className="text-xl font-semibold break-words">{note.title}</h1>
@@ -232,7 +283,6 @@ export function DevPlanNoteDetail({
         </div>
       </div>
 
-      {/* 小ノートは常時展開 */}
       {note.subnotes.length === 0 ? (
         <p className="text-sm text-gray-500">
           小ノートがありません。「小ノート追加」で作成してください。

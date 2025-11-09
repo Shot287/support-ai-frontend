@@ -1,7 +1,8 @@
+// src/features/study/DevPlan.tsx
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { loadUserDoc, saveUserDoc } from "@/lib/userDocStore";
 
 type ID = string;
@@ -19,96 +20,109 @@ type Store = {
 const KEY = "devplan_v1";
 
 const uid = () =>
-  (typeof crypto !== "undefined" && "randomUUID" in crypto)
+  typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
-/** 最初の一回だけ使う初期データ生成関数 */
-function createInitialStore(): Store {
-  const baseFolders: Folder[] = [
-    { id: uid(), title: "先延ばし対策" },
-    { id: uid(), title: "睡眠管理" },
-    { id: uid(), title: "勉強" },
-    { id: uid(), title: "Mental" },
-  ];
-  const firstId = baseFolders[0]?.id;
-  return {
-    folders: baseFolders,
-    notesByFolder: Object.fromEntries(baseFolders.map((f) => [f.id, [] as Note[]])),
-    currentFolderId: firstId,
-    version: 1,
-  };
-}
-
-function loadLocal(): Store {
+// ローカル → Store 読み込み（必ず useEffect から呼ぶ）
+function loadLocal(): Store | null {
+  if (typeof window === "undefined") return null;
   try {
-    const raw = typeof window !== "undefined" ? localStorage.getItem(KEY) : null;
-    if (!raw) {
-      // ローカルに何もなければデフォルトフォルダーを作成
-      return createInitialStore();
-    }
-    const parsed = JSON.parse(raw) as Store;
-    // ゆるい正規化
-    return {
-      folders: Array.isArray(parsed.folders) ? parsed.folders : [],
-      notesByFolder:
-        typeof parsed.notesByFolder === "object" && parsed.notesByFolder
-          ? parsed.notesByFolder
-          : {},
-      currentFolderId: parsed.currentFolderId,
-      version: 1,
-    };
+    const raw = localStorage.getItem(KEY);
+    return raw ? (JSON.parse(raw) as Store) : null;
   } catch {
-    return { folders: [], notesByFolder: {}, version: 1 };
+    return null;
   }
 }
 
 function saveLocal(s: Store) {
+  if (typeof window === "undefined") return;
   try {
-    if (typeof window !== "undefined") {
-      localStorage.setItem(KEY, JSON.stringify(s));
-    }
+    localStorage.setItem(KEY, JSON.stringify(s));
   } catch {
     // noop
   }
 }
 
 export function DevPlan() {
-  // 初期表示はローカルを使う（オフラインでも動く）
-  const [store, setStore] = useState<Store>(() => loadLocal());
-  const storeRef = useRef(store);
+  // 最初は null（＝読み込み中）にして SSR/CSR のズレをなくす
+  const [store, setStore] = useState<Store | null>(null);
 
-  // 変更があるたびにローカル＋サーバに保存
+  // 初回マウント時：localStorage → API の順にロード
   useEffect(() => {
-    storeRef.current = store;
-    // ローカル保存
-    saveLocal(store);
-    // サーバ側のドキュメントも更新（失敗しても無視）
-    (async () => {
-      try {
-        await saveUserDoc<Store>(KEY, store);
-      } catch {
-        // サーバ不調時は無視（ローカルは保持される）
+    let cancelled = false;
+
+    const init = async () => {
+      // 1) localStorage
+      let base = loadLocal();
+
+      if (!base) {
+        // ローカルにも何もない場合は初期フォルダを作成
+        const baseFolders: Folder[] = [
+          { id: uid(), title: "先延ばし対策" },
+          { id: uid(), title: "睡眠管理" },
+          { id: uid(), title: "勉強" },
+          { id: uid(), title: "Mental" },
+        ];
+        const firstId = baseFolders[0]?.id;
+        base = {
+          folders: baseFolders,
+          notesByFolder: Object.fromEntries(baseFolders.map((f) => [f.id, [] as Note[]])),
+          currentFolderId: firstId,
+          version: 1,
+        };
+        saveLocal(base);
       }
-    })();
-  }, [store]);
 
-  // マウント時にサーバから最新を取得
-  useEffect(() => {
-    (async () => {
+      if (!cancelled) {
+        setStore(base);
+      }
+
+      // 2) サーバ側 doc を取得して上書き
       try {
         const remote = await loadUserDoc<Store>(KEY);
+        if (cancelled) return;
+
         if (remote && remote.version === 1) {
           setStore(remote);
+          saveLocal(remote);
         } else if (!remote) {
-          // サーバ側にまだ何もない場合、現在のローカル状態を初期値として保存
-          await saveUserDoc<Store>(KEY, storeRef.current);
+          // サーバ側にまだない → 今の base を初期値として保存
+          await saveUserDoc<Store>(KEY, base);
         }
       } catch {
         // サーバ不調時はローカルのみで動作
       }
-    })();
+    };
+
+    void init();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
+
+  // store 変更時：ローカル＆サーバへ保存
+  useEffect(() => {
+    if (!store) return;
+    saveLocal(store);
+    (async () => {
+      try {
+        await saveUserDoc<Store>(KEY, store);
+      } catch {
+        // 失敗してもローカルは残る
+      }
+    })();
+  }, [store]);
+
+  // ローディング中表示
+  if (!store) {
+    return (
+      <div className="text-sm text-gray-500">
+        開発計画を読み込み中です…
+      </div>
+    );
+  }
 
   const folders = store.folders;
   const currentFolderId = store.currentFolderId ?? folders[0]?.id;
@@ -123,28 +137,37 @@ export function DevPlan() {
     const title = prompt("新しいフォルダー名", "新しいフォルダー");
     if (!title) return;
     const id = uid();
-    setStore((s) => ({
-      ...s,
-      folders: [...s.folders, { id, title }],
-      notesByFolder: { ...s.notesByFolder, [id]: [] },
-      currentFolderId: id,
-    }));
+    setStore((s) =>
+      s
+        ? {
+            ...s,
+            folders: [...s.folders, { id, title }],
+            notesByFolder: { ...s.notesByFolder, [id]: [] },
+            currentFolderId: id,
+          }
+        : s
+    );
   };
 
   const renameFolder = (id: ID) => {
-    const f = storeRef.current.folders.find((x) => x.id === id);
-    if (!f) return;
-    const title = prompt("フォルダー名を変更", f.title);
+    const target = store.folders.find((x) => x.id === id);
+    if (!target) return;
+    const title = prompt("フォルダー名を変更", target.title);
     if (!title) return;
-    setStore((s) => ({
-      ...s,
-      folders: s.folders.map((x) => (x.id === id ? { ...x, title } : x)),
-    }));
+    setStore((s) =>
+      s
+        ? {
+            ...s,
+            folders: s.folders.map((x) => (x.id === id ? { ...x, title } : x)),
+          }
+        : s
+    );
   };
 
   const deleteFolder = (id: ID) => {
     if (!confirm("このフォルダーを削除しますか？（配下のノートも削除）")) return;
     setStore((s) => {
+      if (!s) return s;
       const remain = s.folders.filter((x) => x.id !== id);
       const { [id]: _removed, ...notesByFolder } = s.notesByFolder;
       const nextCurrent = s.currentFolderId === id ? remain[0]?.id : s.currentFolderId;
@@ -153,10 +176,7 @@ export function DevPlan() {
   };
 
   const switchFolder = (id: ID) =>
-    setStore((s) => ({
-      ...s,
-      currentFolderId: id,
-    }));
+    setStore((s) => (s ? { ...s, currentFolderId: id } : s));
 
   /* ===== ノート操作（一覧側） ===== */
   const addNote = (folderId: ID) => {
@@ -165,46 +185,60 @@ export function DevPlan() {
     const note: Note = {
       id: uid(),
       title,
-      // 詳細ページ（開いた状態）で見せるため、初期で2枚用意
       subnotes: [
         { id: uid(), title: "課題点", content: "" },
         { id: uid(), title: "計画", content: "" },
       ],
     };
-    setStore((s) => ({
-      ...s,
-      notesByFolder: {
-        ...s.notesByFolder,
-        [folderId]: [...(s.notesByFolder[folderId] || []), note],
-      },
-    }));
+    setStore((s) =>
+      s
+        ? {
+            ...s,
+            notesByFolder: {
+              ...s.notesByFolder,
+              [folderId]: [...(s.notesByFolder[folderId] || []), note],
+            },
+          }
+        : s
+    );
   };
 
   const renameNote = (folderId: ID, noteId: ID) => {
-    const n = (storeRef.current.notesByFolder[folderId] || []).find((x) => x.id === noteId);
-    if (!n) return;
-    const title = prompt("ノートのタイトルを変更", n.title);
+    const curNotes = store.notesByFolder[folderId] || [];
+    const target = curNotes.find((n) => n.id === noteId);
+    if (!target) return;
+    const title = prompt("ノートのタイトルを変更", target.title);
     if (!title) return;
-    setStore((s) => ({
-      ...s,
-      notesByFolder: {
-        ...s.notesByFolder,
-        [folderId]: (s.notesByFolder[folderId] || []).map((x) =>
-          x.id === noteId ? { ...x, title } : x
-        ),
-      },
-    }));
+    setStore((s) =>
+      s
+        ? {
+            ...s,
+            notesByFolder: {
+              ...s.notesByFolder,
+              [folderId]: (s.notesByFolder[folderId] || []).map((n) =>
+                n.id === noteId ? { ...n, title } : n
+              ),
+            },
+          }
+        : s
+    );
   };
 
   const deleteNote = (folderId: ID, noteId: ID) => {
     if (!confirm("このノートを削除しますか？（配下の小ノートも削除）")) return;
-    setStore((s) => ({
-      ...s,
-      notesByFolder: {
-        ...s.notesByFolder,
-        [folderId]: (s.notesByFolder[folderId] || []).filter((x) => x.id !== noteId),
-      },
-    }));
+    setStore((s) =>
+      s
+        ? {
+            ...s,
+            notesByFolder: {
+              ...s.notesByFolder,
+              [folderId]: (s.notesByFolder[folderId] || []).filter(
+                (n) => n.id !== noteId
+              ),
+            },
+          }
+        : s
+    );
   };
 
   return (
@@ -259,7 +293,7 @@ export function DevPlan() {
         )}
       </section>
 
-      {/* 右：ノート（親は閉じた表示。タイトルで詳細へ） */}
+      {/* 右：ノート一覧 */}
       <section className="rounded-2xl border p-4 shadow-sm">
         <div className="flex items-center justify-between mb-3">
           <h2 className="font-semibold">
@@ -286,7 +320,6 @@ export function DevPlan() {
             {notes.map((n) => (
               <li key={n.id} className="rounded-xl border p-3">
                 <div className="flex items-center justify-between">
-                  {/* タイトルクリックで詳細ページへ遷移 */}
                   <Link
                     href={`/study/dev-plan/${currentFolderId}/${n.id}`}
                     className="font-semibold underline-offset-2 hover:underline break-words"
