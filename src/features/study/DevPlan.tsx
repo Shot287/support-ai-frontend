@@ -1,4 +1,3 @@
-// src/features/study/DevPlan.tsx
 "use client";
 
 import Link from "next/link";
@@ -24,23 +23,29 @@ const uid = () =>
     ? crypto.randomUUID()
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
+/** 最初の一回だけ使う初期データ生成関数 */
+function createInitialStore(): Store {
+  const baseFolders: Folder[] = [
+    { id: uid(), title: "先延ばし対策" },
+    { id: uid(), title: "睡眠管理" },
+    { id: uid(), title: "勉強" },
+    { id: uid(), title: "Mental" },
+  ];
+  const firstId = baseFolders[0]?.id;
+  return {
+    folders: baseFolders,
+    notesByFolder: Object.fromEntries(baseFolders.map((f) => [f.id, [] as Note[]])),
+    currentFolderId: firstId,
+    version: 1,
+  };
+}
+
 function loadLocal(): Store {
   try {
     const raw = typeof window !== "undefined" ? localStorage.getItem(KEY) : null;
     if (!raw) {
-      const baseFolders: Folder[] = [
-        { id: uid(), title: "先延ばし対策" },
-        { id: uid(), title: "睡眠管理" },
-        { id: uid(), title: "勉強" },
-        { id: uid(), title: "Mental" },
-      ];
-      const firstId = baseFolders[0]?.id;
-      return {
-        folders: baseFolders,
-        notesByFolder: Object.fromEntries(baseFolders.map((f) => [f.id, [] as Note[]])),
-        currentFolderId: firstId,
-        version: 1,
-      };
+      // ローカルに何もなければデフォルトフォルダーを作成
+      return createInitialStore();
     }
     const parsed = JSON.parse(raw) as Store;
     // ゆるい正規化
@@ -72,6 +77,8 @@ export function DevPlan() {
   // 初期表示はローカルを使う（オフラインでも動く）
   const [store, setStore] = useState<Store>(() => loadLocal());
   const storeRef = useRef(store);
+
+  // 変更があるたびにローカル＋サーバに保存
   useEffect(() => {
     storeRef.current = store;
     // ローカル保存
@@ -81,7 +88,7 @@ export function DevPlan() {
       try {
         await saveUserDoc<Store>(KEY, store);
       } catch {
-        // noop
+        // サーバ不調時は無視（ローカルは保持される）
       }
     })();
   }, [store]);
@@ -139,7 +146,7 @@ export function DevPlan() {
     if (!confirm("このフォルダーを削除しますか？（配下のノートも削除）")) return;
     setStore((s) => {
       const remain = s.folders.filter((x) => x.id !== id);
-      const { [id]: _, ...notesByFolder } = s.notesByFolder;
+      const { [id]: _removed, ...notesByFolder } = s.notesByFolder;
       const nextCurrent = s.currentFolderId === id ? remain[0]?.id : s.currentFolderId;
       return { ...s, folders: remain, notesByFolder, currentFolderId: nextCurrent };
     });

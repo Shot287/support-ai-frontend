@@ -1,4 +1,3 @@
-// src/features/study/DevPlanNote.tsx
 "use client";
 
 import Link from "next/link";
@@ -23,10 +22,27 @@ const uid = () =>
     ? crypto.randomUUID()
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
+/** 一応 DevPlan 側と合わせた初期データ。detail 単体で開くときの保険用 */
+function createInitialStore(): Store {
+  const baseFolders: Folder[] = [
+    { id: uid(), title: "先延ばし対策" },
+    { id: uid(), title: "睡眠管理" },
+    { id: uid(), title: "勉強" },
+    { id: uid(), title: "Mental" },
+  ];
+  const firstId = baseFolders[0]?.id;
+  return {
+    folders: baseFolders,
+    notesByFolder: Object.fromEntries(baseFolders.map((f) => [f.id, [] as Note[]])),
+    currentFolderId: firstId,
+    version: 1,
+  };
+}
+
 function loadLocal(): Store {
   try {
     const raw = typeof window !== "undefined" ? localStorage.getItem(KEY) : null;
-    return raw ? (JSON.parse(raw) as Store) : { folders: [], notesByFolder: {}, version: 1 };
+    return raw ? (JSON.parse(raw) as Store) : createInitialStore();
   } catch {
     return { folders: [], notesByFolder: {}, version: 1 };
   }
@@ -51,6 +67,8 @@ export function DevPlanNoteDetail({
 }) {
   const [store, setStore] = useState<Store>(() => loadLocal());
   const storeRef = useRef(store);
+
+  // 変更があるたびにローカル＋サーバへ保存
   useEffect(() => {
     storeRef.current = store;
     saveLocal(store);
@@ -58,7 +76,7 @@ export function DevPlanNoteDetail({
       try {
         await saveUserDoc<Store>(KEY, store);
       } catch {
-        // noop
+        // サーバ不調時は無視
       }
     })();
   }, [store]);
