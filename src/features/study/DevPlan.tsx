@@ -1,8 +1,7 @@
-// src/features/study/DevPlan.tsx
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { loadUserDoc, saveUserDoc } from "@/lib/userDocStore";
 
 type ID = string;
@@ -45,7 +44,7 @@ function saveLocal(s: Store) {
 }
 
 export function DevPlan() {
-  // 最初は null（＝読み込み中）にして SSR/CSR のズレをなくす
+  // 最初は null（読み込み中）にして SSR/CSR のズレをなくす
   const [store, setStore] = useState<Store | null>(null);
 
   // 初回マウント時：localStorage → API の順にロード
@@ -117,20 +116,13 @@ export function DevPlan() {
 
   // ローディング中表示
   if (!store) {
-    return (
-      <div className="text-sm text-gray-500">
-        開発計画を読み込み中です…
-      </div>
-    );
+    return <div className="text-sm text-gray-500">開発計画を読み込み中です…</div>;
   }
 
   const folders = store.folders;
   const currentFolderId = store.currentFolderId ?? folders[0]?.id;
   const currentFolder = folders.find((f) => f.id === currentFolderId);
-  const notes = useMemo<Note[]>(
-    () => (currentFolderId ? store.notesByFolder[currentFolderId] || [] : []),
-    [store.notesByFolder, currentFolderId]
-  );
+  const notes: Note[] = currentFolderId ? store.notesByFolder[currentFolderId] || [] : [];
 
   /* ===== フォルダー操作 ===== */
   const addFolder = () => {
@@ -169,7 +161,10 @@ export function DevPlan() {
     setStore((s) => {
       if (!s) return s;
       const remain = s.folders.filter((x) => x.id !== id);
-      const { [id]: _removed, ...notesByFolder } = s.notesByFolder;
+
+      const notesByFolder = { ...s.notesByFolder };
+      delete notesByFolder[id];
+
       const nextCurrent = s.currentFolderId === id ? remain[0]?.id : s.currentFolderId;
       return { ...s, folders: remain, notesByFolder, currentFolderId: nextCurrent };
     });

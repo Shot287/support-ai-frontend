@@ -1,8 +1,7 @@
-// src/features/study/DevPlanNote.tsx
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { loadUserDoc, saveUserDoc } from "@/lib/userDocStore";
 
 type ID = string;
@@ -117,21 +116,11 @@ export function DevPlanNoteDetail({
 
   // ローディング中
   if (!store) {
-    return (
-      <div className="text-sm text-gray-500">
-        ノートを読み込み中です…
-      </div>
-    );
+    return <div className="text-sm text-gray-500">ノートを読み込み中です…</div>;
   }
 
-  const folder = useMemo(
-    () => store.folders.find((f) => f.id === folderId),
-    [store.folders, folderId]
-  );
-  const note = useMemo(
-    () => (store.notesByFolder[folderId] || []).find((n) => n.id === noteId),
-    [store.notesByFolder, folderId, noteId]
-  );
+  const folder = store.folders.find((f) => f.id === folderId);
+  const note = (store.notesByFolder[folderId] || []).find((n) => n.id === noteId);
 
   // 操作：ノート名／小ノート CRUD
   const renameNote = () => {
@@ -253,7 +242,10 @@ export function DevPlanNoteDetail({
     return (
       <div className="space-y-2">
         <p className="text-sm text-red-600">ノートが見つかりませんでした。</p>
-        <Link href="/study/dev-plan" className="text-blue-600 hover:underline text-sm">
+        <Link
+          href="/study/dev-plan"
+          className="text-blue-600 hover:underline text-sm"
+        >
           一覧に戻る
         </Link>
       </div>
@@ -262,7 +254,7 @@ export function DevPlanNoteDetail({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify_between">
+      <div className="flex items-center justify-between">
         <div>
           <div className="text-xs text-gray-500">フォルダー：{folder.title}</div>
           <h1 className="text-xl font-semibold break-words">{note.title}</h1>
