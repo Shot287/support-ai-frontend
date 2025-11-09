@@ -1,83 +1,74 @@
 // frontend/src/lib/userDocStore.ts
+//
+// 「1ユーザー1ドキュメント」の簡易同期ユーティリティ。
+// バックエンド main.py の /api/docs/{doc_key} を、
+// Next.js のプロキシ /api/b/... 経由で叩きます。
 
-export type UserId = string;
+const USER_ID = "demo"; // ここを変えない限り、PC/スマホ/iPad で同じ文書を共有
 
-/** バックエンドから返ってくる想定の型 */
-export type UserDocRecord<T> = {
-  user_id: UserId;
-  doc_key: string;
-  data: T;
-  updated_at: number; // UNIX ms
-};
-
-/** 共通エラー型 */
-export class UserDocError extends Error {
-  status?: number;
-  constructor(message: string, status?: number) {
-    super(message);
-    this.name = "UserDocError";
-    this.status = status;
-  }
+// backend 側のエンドポイントは /api/docs/{doc_key}
+// → Next.js 側では /api/b/api/docs/{doc_key}?user_id=demo になる
+function buildUrl(docKey: string): string {
+  const basePath = `/api/b/api/docs/${encodeURIComponent(docKey)}`;
+  const qs = `user_id=${encodeURIComponent(USER_ID)}`;
+  return `${basePath}?${qs}`;
 }
 
 /**
- * ドキュメントを読み込む
- * 存在しない場合は null を返す
+ * サーバからドキュメントを読み込む。
+ * 見つからない場合は null を返す。
  */
-export async function loadUserDoc<T>(
-  docKey: string,
-  userId: UserId = "demo"
-): Promise<T | null> {
-  const url = `/api/b/user-docs/${encodeURIComponent(docKey)}?user_id=${encodeURIComponent(userId)}`;
+export async function loadUserDoc<T>(docKey: string): Promise<T | null> {
+  // SSR 中は何もしない（クライアントだけで実行）
+  if (typeof window === "undefined") return null;
 
-  const res = await fetch(url, {
+  const res = await fetch(buildUrl(docKey), {
     method: "GET",
-    headers: { Accept: "application/json" },
-    cache: "no-store",
+    headers: {
+      accept: "application/json",
+    },
+    cache: "no-store", // 常に最新を取りに行く
   });
 
-  if (res.status === 404) return null;
-  if (!res.ok) throw new UserDocError(`Failed to load doc "${docKey}"`, res.status);
-
-  const json = await res.json();
-  if (typeof json === "object" && json && "data" in json) {
-    return (json as { data: T }).data;
+  if (!res.ok) {
+    // 404などはここで気づける
+    throw new Error(`loadUserDoc failed: ${res.status} ${res.statusText}`);
   }
-  return null;
+
+  const json = (await res.json()) as {
+    ok: boolean;
+    data: T | null;
+    updated_at: number | null;
+  };
+
+  if (!json.ok) {
+    throw new Error("loadUserDoc: backend returned ok=false");
+  }
+
+  return json.data;
 }
 
 /**
- * ドキュメントを保存（上書き）
+ * サーバにドキュメントを保存する（Last-Write-Wins）。
  */
-export async function saveUserDoc<T>(
-  docKey: string,
-  data: T,
-  userId: UserId = "demo"
-): Promise<void> {
-  const url = `/api/b/user-docs/${encodeURIComponent(docKey)}?user_id=${encodeURIComponent(userId)}`;
+export async function saveUserDoc<T>(docKey: string, doc: T): Promise<void> {
+  if (typeof window === "undefined") return;
 
-  const res = await fetch(url, {
+  const res = await fetch(buildUrl(docKey), {
     method: "PUT",
     headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
+      "content-type": "application/json",
+      accept: "application/json",
     },
-    body: JSON.stringify({ data }),
+    body: JSON.stringify(doc),
   });
 
-  if (!res.ok) throw new UserDocError(`Failed to save doc "${docKey}"`, res.status);
-}
+  if (!res.ok) {
+    throw new Error(`saveUserDoc failed: ${res.status} ${res.statusText}`);
+  }
 
-/**
- * 現在のドキュメントを読み込んでから部分更新する
- */
-export async function updateUserDoc<T>(
-  docKey: string,
-  updater: (current: T | null) => T,
-  userId: UserId = "demo"
-): Promise<T> {
-  const current = await loadUserDoc<T>(docKey, userId);
-  const next = updater(current);
-  await saveUserDoc<T>(docKey, next, userId);
-  return next;
+  const json = (await res.json()) as { ok: boolean; updated_at?: number };
+  if (!json.ok) {
+    throw new Error("saveUserDoc: backend returned ok=false");
+  }
 }
