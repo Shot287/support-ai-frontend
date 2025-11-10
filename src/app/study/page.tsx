@@ -35,6 +35,14 @@ export default function StudyPage() {
       type: "link" as const,
     },
     {
+      id: "instagram-follow-manager",
+      title: "Instagram相互フォロー管理",
+      description:
+        "フォロー中のユーザーを登録し、相互フォロー状況や片側フォローを整理。",
+      href: "/study/instagram-follow-manager",
+      type: "link" as const,
+    },
+    {
       id: "timer",
       title: "タイマー（PC限定）",
       description:
