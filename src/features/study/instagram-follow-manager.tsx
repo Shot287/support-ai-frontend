@@ -221,11 +221,6 @@ export default function InstagramFollowManager() {
       {/* 左側：フォローリストの編集 */}
       <section className="rounded-2xl border p-4 shadow-sm">
         <h1 className="text-xl font-bold mb-4">Instagram相互フォロー管理</h1>
-        <p className="text-sm text-gray-600 mb-4">
-          フォローしているアカウントだけを登録しておき、
-          各行の「フォロワー」ボタンで「相手も自分をフォローしている」かを記録します。
-          差分リストを見ながら、Instagram 上でフォロー解除していく想定です。
-        </p>
 
         {/* 追加フォーム */}
         <div className="mb-4 flex flex-wrap items-center gap-2">
