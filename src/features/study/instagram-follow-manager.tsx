@@ -6,7 +6,7 @@ import { loadUserDoc, saveUserDoc } from "@/lib/userDocStore";
 
 type ID = string;
 
-// v2: 1ユーザー = 1行（フォロー中）＋「フォロワーかどうか」のフラグ
+// 1ユーザー = 1行（フォロー中）＋「フォロワーかどうか」のフラグ
 type FollowEntry = {
   id: ID;
   username: string;      // 表示用（入力された文字）
@@ -182,7 +182,7 @@ export default function InstagramFollowManager() {
             await saveUserDoc<StoreV2>(DOC_KEY, migrated);
           }
         } else {
-          // サーバが空 → 現在のローカル状態をアップロード
+          // サーバが空 → 現在のローカル状態を初期値としてアップロード
           await saveUserDoc<StoreV2>(DOC_KEY, storeRef.current);
         }
       } catch (e) {
@@ -350,9 +350,12 @@ export default function InstagramFollowManager() {
 
         {/* JSONインポート */}
         <div className="mb-4 border-t pt-3">
-          <h3 className="text-sm font-semibold mb-1">JSONインポート（フォロー中ユーザーをまとめて追加）</h3>
+          <h3 className="text-sm font-semibold mb-1">
+            JSONインポート（フォロー中ユーザーをまとめて追加）
+          </h3>
           <p className="text-xs text-gray-500 mb-2">
-            例）メモ帳で <code>["user_a","user_b"]</code>{" "}
+            例）メモ帳で{" "}
+            <code>["user_a","user_b"]</code>{" "}
             または{" "}
             <code>[{"{ \"username\": \"user_a\" }"}, ...]</code>{" "}
             のような JSON を作成して保存し、そのファイルを選択してください。
