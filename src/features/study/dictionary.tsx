@@ -3,16 +3,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toSearchKey } from "@/features/study/kana";
-
-// ▼ 同期ユーティリティ（辞書APIを“必ず”経由）
-import {
-  pullBatch,
-  upsertDictionaryEntry,
-  deleteDictionaryEntry,
-  type PullResponse,
-} from "@/lib/sync";
-import { subscribeGlobalPush } from "@/lib/sync-bus";
-import { getDeviceId } from "@/lib/device";
+import { loadUserDoc, saveUserDoc } from "@/lib/userDocStore";
 
 /* ========= 型 ========= */
 type ID = string;
@@ -40,29 +31,16 @@ type StoreV1 = { entries: EntryV1[]; version: 1 };
 type StoreAny = StoreV2 | StoreV1;
 
 /* ========= 定数 / ユーティリティ ========= */
-const KEY = "dictionary_v1";
 
-// ★ 同期関連（簡易版）
-const USER_ID = "demo"; // 認証導入までは固定
-// ✅ チェックリストとSINCEを共有しないよう辞書専用キーにする
-const SINCE_KEY = `support-ai:sync:since:${USER_ID}:dictionary`;
+// ローカル保存用キー（新方式用）＋旧キー
+const LOCAL_KEY_V2 = "dictionary_v2";
+const LOCAL_KEY_V1 = "dictionary_v1";
 
-const STICKY_KEY = "support-ai:sync:pull:sticky";
-const touchSticky = () => {
-  try {
-    localStorage.setItem(STICKY_KEY, String(Date.now()));
-  } catch {}
-};
-const getSince = () => {
-  const v = typeof window !== "undefined" ? localStorage.getItem(SINCE_KEY) : null;
-  return v ? Number(v) : 0;
-};
-const setSince = (ms: number) => {
-  if (typeof window !== "undefined") localStorage.setItem(SINCE_KEY, String(ms));
-};
+// user_docs 用の doc_key（この機能専用／将来の移行を考えて _v1 を付与）
+const DOC_KEY = "study_dictionary_v1";
 
 const uid = () =>
-  (typeof crypto !== "undefined" && "randomUUID" in crypto)
+  typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
@@ -83,28 +61,78 @@ function migrate(raw: StoreAny | null | undefined): StoreV2 {
   return { entries, version: 2 };
 }
 
-function load(): StoreV2 {
+// ローカル（localStorage）から読み込み
+function loadLocal(): StoreV2 {
   try {
-    const raw = typeof window !== "undefined" ? localStorage.getItem(KEY) : null;
-    const parsed = raw ? (JSON.parse(raw) as StoreAny) : null;
+    if (typeof window === "undefined") {
+      return { entries: [], version: 2 };
+    }
+
+    // まず新キー（v2）を試す
+    const rawV2 = localStorage.getItem(LOCAL_KEY_V2);
+    if (rawV2) {
+      const parsed = JSON.parse(rawV2) as StoreAny;
+      return migrate(parsed);
+    }
+
+    // なければ旧キー（v1）から読み込んで migrate
+    const rawV1 = localStorage.getItem(LOCAL_KEY_V1);
+    const parsed = rawV1 ? (JSON.parse(rawV1) as StoreAny) : null;
     return migrate(parsed);
   } catch {
     return { entries: [], version: 2 };
   }
 }
 
-function save(s: StoreV2) {
-  if (typeof window !== "undefined") localStorage.setItem(KEY, JSON.stringify(s));
+// ローカル（localStorage）に保存
+function saveLocal(s: StoreV2) {
+  try {
+    if (typeof window !== "undefined") {
+      localStorage.setItem(LOCAL_KEY_V2, JSON.stringify(s));
+    }
+  } catch {
+    // 失敗しても無視（容量制限・プライベートモード等）
+  }
 }
 
 /* ========= 本体 ========= */
 export default function Dictionary() {
-  const [store, setStore] = useState<StoreV2>(() => load());
+  const [store, setStore] = useState<StoreV2>(() => loadLocal());
   const storeRef = useRef(store);
-  useEffect(() => save(store), [store]);
+
+  // 変更のたびにローカル＋サーバへ保存
   useEffect(() => {
     storeRef.current = store;
+    // ローカル
+    saveLocal(store);
+    // サーバ（user_docs）
+    (async () => {
+      try {
+        await saveUserDoc<StoreV2>(DOC_KEY, store);
+      } catch (e) {
+        console.warn("[dictionary] saveUserDoc failed:", e);
+      }
+    })();
   }, [store]);
+
+  // マウント時にサーバから「最新版」を取得
+  useEffect(() => {
+    (async () => {
+      try {
+        const remote = await loadUserDoc<StoreV2>(DOC_KEY);
+        if (remote && remote.version === 2) {
+          // サーバにデータがあればそちらを優先
+          setStore(remote);
+          saveLocal(remote);
+        } else if (!remote) {
+          // サーバが空なら、現在のローカル状態を初期値としてアップロード
+          await saveUserDoc<StoreV2>(DOC_KEY, storeRef.current);
+        }
+      } catch (e) {
+        console.warn("[dictionary] loadUserDoc failed:", e);
+      }
+    })();
+  }, []);
 
   // 追加フォーム
   const [term, setTerm] = useState("");
@@ -152,222 +180,7 @@ export default function Dictionary() {
     return hit;
   }, [store.entries, q, sortKey, sortAsc]);
 
-  /* ========= 同期：受信（PULL） ========= */
-
-  // サーバ差分をローカルへ反映（serverは data(JSONB) を展開して返す）
-  const applyEntryDiffs = (rows: Array<{
-    id: string;
-    user_id: string;
-    term?: string | null;
-    yomi?: string | null;
-    meaning?: string | null;
-    updated_at: number;
-    updated_by?: string | null;
-    deleted_at?: number | null;
-  }>) => {
-    if (!rows || rows.length === 0) return;
-
-    setStore((prev) => {
-      const idx = new Map(prev.entries.map((e, i) => [e.id, i] as const));
-      const entries = prev.entries.slice();
-
-      for (const r of rows) {
-        const term = r.term ?? null;
-        const yomi = r.yomi ?? null;
-        const meaning = r.meaning ?? null;
-
-        if (r.deleted_at) {
-          const i = idx.get(r.id);
-          if (i !== undefined) {
-            entries.splice(i, 1);
-            idx.clear();
-            entries.forEach((e, k) => idx.set(e.id, k));
-          }
-          continue;
-        }
-
-        const i = idx.get(r.id);
-        if (i === undefined) {
-          entries.unshift({
-            id: r.id,
-            term: String(term ?? ""),
-            yomi: yomi ?? "",
-            meaning: String(meaning ?? ""),
-            createdAt: r.updated_at ?? Date.now(), // createdAt不明の場合はupdated_atで代用
-            updatedAt: r.updated_at ?? Date.now(),
-          });
-          idx.set(r.id, 0);
-        } else {
-          const cur = entries[i];
-          entries[i] = {
-            ...cur,
-            term: term != null ? String(term) : cur.term,
-            yomi: yomi != null ? String(yomi) : (cur.yomi ?? ""),
-            meaning: meaning != null ? String(meaning) : cur.meaning,
-            updatedAt: r.updated_at ?? cur.updatedAt,
-          };
-        }
-      }
-
-      return { ...prev, entries };
-    });
-  };
-
-  // 受信本体
-  const doPullAll = async () => {
-    try {
-      const json = await pullBatch(USER_ID, getSince(), ["dictionary_entries"]);
-      const rows = (json.diffs?.dictionary_entries ?? []) as any[];
-      applyEntryDiffs(rows);
-      setSince(json.server_time_ms);
-    } catch (e) {
-      console.warn("[dictionary] pull-batch failed:", e);
-    }
-  };
-
-  // 初回マウントでPULL＋粘着フラグ対応
-  useEffect(() => {
-    // 1) 初回PULL
-    void doPullAll();
-
-    // 2) 粘着フラグ → 直近5分なら自動PULL
-    try {
-      const sticky = localStorage.getItem(STICKY_KEY);
-      if (sticky && Date.now() - Number(sticky) <= 5 * 60 * 1000) {
-        void doPullAll();
-      }
-    } catch {}
-
-    // 3) フォーカス/可視化復帰で再チェック
-    const onFocusLike = () => {
-      try {
-        const sticky = localStorage.getItem(STICKY_KEY);
-        if (sticky && Date.now() - Number(sticky) <= 5 * 60 * 1000) {
-          void doPullAll();
-        }
-      } catch {}
-    };
-    window.addEventListener("focus", onFocusLike);
-    document.addEventListener("visibilitychange", onFocusLike);
-    return () => {
-      window.removeEventListener("focus", onFocusLike);
-      document.removeEventListener("visibilitychange", onFocusLike);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // ホームの「🔄 同期（受信）」/「RESET」の合図を購読
-  useEffect(() => {
-    const handler = (payload: any) => {
-      if (!payload) return;
-      if (payload.type === "GLOBAL_SYNC_PULL") {
-        void doPullAll();
-      } else if (payload.type === "GLOBAL_SYNC_RESET") {
-        try { localStorage.setItem(SINCE_KEY, "0"); } catch {}
-        setStore((s) => ({ ...s, entries: [] }));
-        void doPullAll();
-      }
-    };
-
-    // BroadcastChannel
-    let bc: BroadcastChannel | undefined;
-    try {
-      if ("BroadcastChannel" in window) {
-        bc = new BroadcastChannel("support-ai-sync");
-        bc.onmessage = (e) => handler(e.data);
-      }
-    } catch {}
-
-    // postMessage
-    const onPostMessage = (e: MessageEvent) => handler(e.data);
-    window.addEventListener("message", onPostMessage);
-
-    // storage（他タブ由来）
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === "support-ai:sync:pull:req" && e.newValue) {
-        try { handler(JSON.parse(e.newValue)); } catch {}
-      }
-      if (e.key === "support-ai:sync:reset:req" && e.newValue) {
-        try { handler(JSON.parse(e.newValue)); } catch {}
-      }
-    };
-    window.addEventListener("storage", onStorage);
-
-    return () => {
-      try { bc?.close(); } catch {}
-      window.removeEventListener("message", onPostMessage);
-      window.removeEventListener("storage", onStorage);
-    };
-  }, []);
-
-  /* ========= 同期：送信（PUSH） ========= */
-
-  // PUSH成功後の共通処理：粘着フラグ→直後PULL
-  const afterSuccessfulPush = async () => {
-    touchSticky();
-    await doPullAll();
-  };
-
-  // 単発アップサート（追加／編集／削除）
-  const pushOne = async (e: Entry, deleted = false) => {
-    try {
-      const deviceId = getDeviceId();
-      if (deleted) {
-        await deleteDictionaryEntry({ userId: USER_ID, deviceId, id: e.id }); // ライブラリ関数に統一
-      } else {
-        await upsertDictionaryEntry({
-          userId: USER_ID,
-          deviceId,
-          id: e.id,
-          term: e.term,
-          yomi: e.yomi ?? "",
-          meaning: e.meaning,
-          deleted_at: null,
-        });
-      }
-      await afterSuccessfulPush();
-    } catch (err) {
-      console.warn("[dictionary] pushOne failed:", err);
-    }
-  };
-
-  // 全量アップロード（ホームの「☁ 手動アップロード」合図に反応）
-  const manualPushAll = async () => {
-    try {
-      const snapshot = storeRef.current;
-      const deviceId = getDeviceId();
-
-      // まとめて upsert
-      for (const e of snapshot.entries) {
-        await upsertDictionaryEntry({
-          userId: USER_ID,
-          deviceId,
-          id: e.id,
-          term: e.term,
-          yomi: e.yomi ?? "",
-          meaning: e.meaning,
-          deleted_at: null,
-        });
-      }
-
-      await afterSuccessfulPush();
-    } catch (e) {
-      console.warn("[dictionary] manualPushAll failed:", e);
-    }
-  };
-
-  // グローバルPush購読（ホームの「☁ 手動アップロード」）
-  useEffect(() => {
-    const unSub = subscribeGlobalPush((p) => {
-      if (!p || p.userId !== USER_ID) return;
-      void manualPushAll();
-    });
-    return () => {
-      try { unSub(); } catch {}
-    };
-  }, []);
-
-  /* ========= CRUD（ローカル更新＋即時PUSH） ========= */
+  /* ========= CRUD ========= */
 
   // 追加
   const add = () => {
@@ -386,8 +199,6 @@ export default function Dictionary() {
     setMeaning("");
     setYomi("");
     termRef.current?.focus();
-
-    void pushOne(e, false);
   };
 
   // 編集開始
@@ -412,38 +223,29 @@ export default function Dictionary() {
     }
     const now = Date.now();
 
-    let changed: Entry | null = null;
     setStore((s) => {
       const entries = s.entries.map((x) =>
-        x.id === editingId ? (changed = { ...x, term: t, meaning: m, yomi: y, updatedAt: now }) : x
+        x.id === editingId
+          ? ({ ...x, term: t, meaning: m, yomi: y, updatedAt: now } as Entry)
+          : x
       ) as Entry[];
       return { ...s, entries };
     });
     setEditingId(null);
-
-    if (changed) void pushOne(changed, false);
   };
 
   // 削除
   const remove = (id: ID) => {
-    const target = store.entries.find((e) => e.id === id);
     setStore((s) => ({ ...s, entries: s.entries.filter((x) => x.id !== id) }));
-    if (target) void pushOne(target, true);
   };
 
-  // 全削除（※同期テーブルごと一掃はしない）
+  // 全削除
   const clearAll = () => {
     if (!confirm("全件削除します。よろしいですか？")) return;
-    const entries = storeRef.current.entries.slice();
-    (async () => {
-      for (const e of entries) {
-        await pushOne(e, true);
-      }
-    })();
     setStore({ entries: [], version: 2 });
   };
 
-  // JSON 入出力（ローカルのみ。必要なら全量PUSHボタンで反映可能）
+  // JSON 入出力（setStore すればローカル＋サーバ両方に反映）
   const exportJson = () => {
     const blob = new Blob([JSON.stringify(store, null, 2)], {
       type: "application/json;charset=utf-8",
@@ -463,7 +265,7 @@ export default function Dictionary() {
       try {
         const parsed = migrate(JSON.parse(String(reader.result)) as StoreAny);
         setStore(parsed);
-        alert("インポートしました。必要ならホームの『☁ 手動アップロード』でクラウドへ反映してください。");
+        alert("インポートしました（ローカルとクラウドの両方に反映されます）。");
       } catch {
         alert("JSONの読み込みに失敗しました。");
       }
