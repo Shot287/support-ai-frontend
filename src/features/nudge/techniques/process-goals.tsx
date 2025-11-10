@@ -1,4 +1,4 @@
-// src/features/nudge/process-goals.tsx
+// src/features/nudge/techniques/process-goals.tsx
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -17,12 +17,27 @@ type DayNote = {
   note: string;
 };
 
-type Store = {
+// v2: 月ごとに「大きめノート(summary)」＋日別notes
+type MonthRecordV2 = {
+  summary: string;
+  days: Record<string, DayNote>;
+};
+
+type StoreV2 = {
   goals: Goal[];
-  // records[goalId][yearMonth]["YYYY-MM-DD"] = DayNote
+  // records[goalId][yearMonth] = MonthRecordV2
+  records: Record<ID, Record<string, MonthRecordV2>>;
+  version: 2;
+};
+
+// v1: 旧版（summaryなし・日別のみ）
+type StoreV1 = {
+  goals: Goal[];
   records: Record<ID, Record<string, Record<string, DayNote>>>;
   version: 1;
 };
+
+type StoreAny = StoreV1 | StoreV2;
 
 const LOCAL_KEY = "process_goals_v1";
 const DOC_KEY = "process_goals_v1";
@@ -33,31 +48,61 @@ const uid = () =>
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
 // デフォルト状態（初期ゴール: 勉強時間 / 睡眠時間）
-function createDefaultStore(): Store {
+function createDefaultStoreV2(): StoreV2 {
   const now = Date.now();
   const g1: Goal = { id: uid(), name: "勉強時間", createdAt: now };
   const g2: Goal = { id: uid(), name: "睡眠時間", createdAt: now + 1 };
   return {
     goals: [g1, g2],
     records: {},
-    version: 1,
+    version: 2,
   };
 }
 
-function loadLocal(): Store {
+// v1 → v2 変換
+function migrate(raw: StoreAny | null | undefined): StoreV2 {
+  if (!raw) return createDefaultStoreV2();
+
+  if ((raw as StoreV2).version === 2) {
+    const v2 = raw as StoreV2;
+    // 念のため version を 2 に固定
+    return { ...v2, version: 2 };
+  }
+
+  const v1 = raw as StoreV1;
+  const records: StoreV2["records"] = {};
+
+  for (const [goalId, byMonth] of Object.entries(v1.records ?? {})) {
+    const monthMap: Record<string, MonthRecordV2> = {};
+    for (const [ym, dayMap] of Object.entries(byMonth ?? {})) {
+      monthMap[ym] = {
+        summary: "",
+        days: dayMap ?? {},
+      };
+    }
+    records[goalId] = monthMap;
+  }
+
+  return {
+    goals: v1.goals ?? [],
+    records,
+    version: 2,
+  };
+}
+
+function loadLocal(): StoreV2 {
   try {
-    if (typeof window === "undefined") return createDefaultStore();
+    if (typeof window === "undefined") return createDefaultStoreV2();
     const raw = localStorage.getItem(LOCAL_KEY);
-    if (!raw) return createDefaultStore();
-    const parsed = JSON.parse(raw) as Store;
-    // version 将来用
-    return { ...parsed, version: 1 };
+    if (!raw) return createDefaultStoreV2();
+    const parsed = JSON.parse(raw) as StoreAny;
+    return migrate(parsed);
   } catch {
-    return createDefaultStore();
+    return createDefaultStoreV2();
   }
 }
 
-function saveLocal(store: Store) {
+function saveLocal(store: StoreV2) {
   try {
     if (typeof window !== "undefined") {
       localStorage.setItem(LOCAL_KEY, JSON.stringify(store));
@@ -81,13 +126,12 @@ function getDaysInMonth(year: number, month: number): number {
 const weekdayJa = ["日", "月", "火", "水", "木", "金", "土"];
 
 export default function ProcessGoals() {
-  const [store, setStore] = useState<Store>(() => loadLocal());
+  const [store, setStore] = useState<StoreV2>(() => loadLocal());
   const storeRef = useRef(store);
 
   const [selectedGoalId, setSelectedGoalId] = useState<ID | null>(null);
   const [yearMonth, setYearMonth] = useState<string>(() => getTodayYearMonth());
   const [newGoalName, setNewGoalName] = useState("");
-  const [openDates, setOpenDates] = useState<Record<string, boolean>>({}); // 展開状態
 
   // store 変更 → ローカル + サーバ保存
   useEffect(() => {
@@ -95,7 +139,7 @@ export default function ProcessGoals() {
     saveLocal(store);
     (async () => {
       try {
-        await saveUserDoc<Store>(DOC_KEY, store);
+        await saveUserDoc<StoreV2>(DOC_KEY, store);
       } catch (e) {
         console.warn("[process-goals] saveUserDoc failed:", e);
       }
@@ -106,13 +150,20 @@ export default function ProcessGoals() {
   useEffect(() => {
     (async () => {
       try {
-        const remote = await loadUserDoc<Store>(DOC_KEY);
-        if (remote && remote.version === 1) {
-          setStore(remote);
-          saveLocal(remote);
+        const remote = await loadUserDoc<StoreV2>(DOC_KEY);
+        if (remote && remote.version === 2) {
+          const migrated = migrate(remote);
+          setStore(migrated);
+          saveLocal(migrated);
         } else if (!remote) {
           // サーバが空ならローカル状態をアップロード
-          await saveUserDoc<Store>(DOC_KEY, storeRef.current);
+          await saveUserDoc<StoreV2>(DOC_KEY, storeRef.current);
+        } else {
+          // version 1 など、念のため migrate
+          const migrated = migrate(remote as StoreAny);
+          setStore(migrated);
+          saveLocal(migrated);
+          await saveUserDoc<StoreV2>(DOC_KEY, migrated);
         }
       } catch (e) {
         console.warn("[process-goals] loadUserDoc failed:", e);
@@ -148,12 +199,37 @@ export default function ProcessGoals() {
     return arr;
   }, [yearMonth]);
 
+  // 月の summary 取得
+  const getSummary = (goalId: ID | null): string => {
+    if (!goalId) return "";
+    return store.records[goalId]?.[yearMonth]?.summary ?? "";
+  };
+
+  // 月の summary 更新
+  const updateSummary = (goalId: ID | null, summary: string) => {
+    if (!goalId) return;
+    setStore((s) => {
+      const records = { ...s.records };
+      const goalRecords = { ...(records[goalId] ?? {}) };
+      const monthRec: MonthRecordV2 = goalRecords[yearMonth] ?? {
+        summary: "",
+        days: {},
+      };
+
+      goalRecords[yearMonth] = {
+        ...monthRec,
+        summary,
+      };
+      records[goalId] = goalRecords;
+
+      return { ...s, records };
+    });
+  };
+
   // ある日付のノート取得
   const getNote = (goalId: ID | null, dateKey: string): string => {
     if (!goalId) return "";
-    return (
-      store.records[goalId]?.[yearMonth]?.[dateKey]?.note ?? ""
-    );
+    return store.records[goalId]?.[yearMonth]?.days?.[dateKey]?.note ?? "";
   };
 
   // ノート更新
@@ -162,10 +238,17 @@ export default function ProcessGoals() {
     setStore((s) => {
       const records = { ...s.records };
       const goalRecords = { ...(records[goalId] ?? {}) };
-      const monthRecords = { ...(goalRecords[yearMonth] ?? {}) };
+      const monthRec: MonthRecordV2 = goalRecords[yearMonth] ?? {
+        summary: "",
+        days: {},
+      };
+      const days = { ...(monthRec.days ?? {}) };
 
-      monthRecords[dateKey] = { date: dateKey, note };
-      goalRecords[yearMonth] = monthRecords;
+      days[dateKey] = { date: dateKey, note };
+      goalRecords[yearMonth] = {
+        ...monthRec,
+        days,
+      };
       records[goalId] = goalRecords;
 
       return { ...s, records };
@@ -198,10 +281,7 @@ export default function ProcessGoals() {
     }
   };
 
-  // 展開状態の切り替え
-  const toggleOpen = (dateKey: string) => {
-    setOpenDates((prev) => ({ ...prev, [dateKey]: !prev[dateKey] }));
-  };
+  const currentSummary = getSummary(selectedGoal?.id ?? null);
 
   return (
     <div className="grid gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
@@ -284,52 +364,54 @@ export default function ProcessGoals() {
             左のリストからプロセスの目標（項目）を選択してください。
           </p>
         ) : (
-          <div className="space-y-2">
-            {daysList.map(({ dateKey, day, weekday }) => {
-              const isOpen = !!openDates[dateKey];
-              const note = getNote(selectedGoal.id, dateKey);
+          <div className="space-y-4">
+            {/* 月のまとめ用・大きめノート（常に展開） */}
+            <div className="rounded-2xl border px-4 py-3 bg-gray-50">
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-sm font-semibold">
+                  月間サマリー（最高記録・平均記録などをメモ）
+                </h3>
+                <span className="text-xs text-gray-500">{yearMonth}</span>
+              </div>
+              <textarea
+                value={currentSummary}
+                onChange={(e) => updateSummary(selectedGoal.id, e.target.value)}
+                rows={3}
+                className="w-full rounded-lg border px-3 py-2 text-sm bg-white"
+                placeholder="この月の合計時間・最高記録・平均記録・一言メモなどを書いてください。"
+              />
+            </div>
 
-              return (
-                <div
-                  key={dateKey}
-                  className="rounded-xl border px-3 py-2 text-sm bg-white"
-                >
-                  <button
-                    type="button"
-                    onClick={() => toggleOpen(dateKey)}
-                    className="flex w-full items-center justify-between gap-2"
+            {/* 日別ノート（常に展開状態） */}
+            <div className="space-y-2">
+              {daysList.map(({ dateKey, day, weekday }) => {
+                const note = getNote(selectedGoal.id, dateKey);
+                return (
+                  <div
+                    key={dateKey}
+                    className="rounded-xl border px-3 py-2 text-sm bg-white"
                   >
-                    <div className="flex items-center gap-3">
-                      <span className="font-medium">
-                        {day}日（{weekday}）
-                      </span>
-                      {note && !isOpen && (
-                        <span className="text-xs text-gray-500 truncate max-w-[200px]">
-                          {note}
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="flex items-center gap-3">
+                        <span className="font-medium">
+                          {day}日（{weekday}）
                         </span>
-                      )}
+                      </div>
+                      <span className="text-xs text-gray-400">{dateKey}</span>
                     </div>
-                    <span className="text-xs text-gray-500">
-                      {isOpen ? "閉じる" : "展開"}
-                    </span>
-                  </button>
-
-                  {isOpen && (
-                    <div className="mt-2">
-                      <textarea
-                        value={note}
-                        onChange={(e) =>
-                          updateNote(selectedGoal.id, dateKey, e.target.value)
-                        }
-                        rows={2}
-                        className="w-full rounded-lg border px-3 py-2 text-sm"
-                        placeholder="この日の記録（例：勉強3時間、集中度、寝た時間 など）"
-                      />
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+                    <textarea
+                      value={note}
+                      onChange={(e) =>
+                        updateNote(selectedGoal.id, dateKey, e.target.value)
+                      }
+                      rows={2}
+                      className="w-full rounded-lg border px-3 py-2 text-sm"
+                      placeholder="この日の記録（例：勉強3時間、睡眠7.5時間、できたこと・反省点など）"
+                    />
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
       </section>
