@@ -355,9 +355,11 @@ export default function InstagramFollowManager() {
           </h3>
           <p className="text-xs text-gray-500 mb-2">
             例）メモ帳で{" "}
-            <code>["user_a","user_b"]</code>{" "}
+            <code>[&quot;user_a&quot;,&quot;user_b&quot;]</code>{" "}
             または{" "}
-            <code>[{"{ \"username\": \"user_a\" }"}, ...]</code>{" "}
+            <code>
+              [&#123; &quot;username&quot;: &quot;user_a&quot; &#125;, ...]
+            </code>{" "}
             のような JSON を作成して保存し、そのファイルを選択してください。
           </p>
           <label className="inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs cursor-pointer hover:bg-gray-50">
@@ -453,7 +455,7 @@ export default function InstagramFollowManager() {
         </div>
 
         <div className="mb-4">
-          <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center justify_between mb-2">
             <h3 className="text-sm font-semibold">
               こちらがフォローしているのにフォローされていないユーザー
             </h3>
