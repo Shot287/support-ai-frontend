@@ -50,6 +50,14 @@ export default function StudyPage() {
       href: "#open-timer",
       type: "button" as const,
     },
+    {
+      id: "code-reading",
+      title: "コードリーディング",
+      description:
+        "フォルダ階層ごとにコード、自分の解釈、AIの添削をセットで管理して復習。",
+      href: "/study/code-reading",
+      type: "link" as const,
+    },
   ] as const;
 
   useEffect(() => {
