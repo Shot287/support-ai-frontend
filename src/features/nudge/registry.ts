@@ -68,4 +68,10 @@ export const techniques: Technique[] = [
     description: "勉強時間・睡眠時間などを項目別に1ヶ月分記録・管理",
     href: "/nudge/process-goals",
   },
+  {
+    id: "reflection-note",
+    title: "反省ノート",
+    description: "カレンダーで日付を選んで、その日の反省を1枚のノートに書き出す",
+    href: "/nudge/reflection-note",
+  },
 ];
