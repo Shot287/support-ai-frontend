@@ -9,9 +9,9 @@ type ID = string;
 // v2: 1ユーザー = 1行（フォロー中）＋「フォロワーかどうか」のフラグ
 type FollowEntry = {
   id: ID;
-  username: string;       // 表示用（入力された文字）
-  usernameLower: string;  // 比較用（小文字）
-  isFollower: boolean;    // 相手もこちらをフォローしているか
+  username: string;      // 表示用（入力された文字）
+  usernameLower: string; // 比較用（小文字）
+  isFollower: boolean;   // 相手もこちらをフォローしているか
   createdAt: number;
 };
 
@@ -42,7 +42,7 @@ function createDefaultStoreV2(): StoreV2 {
 function parseUserList(text: string): string[] {
   return text
     .split(/\r?\n/)
-   .map((v) => v.trim())
+    .map((v) => v.trim())
     .filter((v) => v.length > 0);
 }
 
@@ -104,6 +104,49 @@ function saveLocal(store: StoreV2) {
   }
 }
 
+// JSONインポート用の候補型
+type ImportCandidate = {
+  username: string;
+  isFollower?: boolean;
+};
+
+// JSONの中身を柔らかく解釈して ImportCandidate[] にする
+function parseImportedJson(data: unknown): ImportCandidate[] {
+  let arr: unknown[] | null = null;
+
+  if (Array.isArray(data)) {
+    arr = data;
+  } else if (data && typeof data === "object") {
+    const obj = data as any;
+    if (Array.isArray(obj.users)) arr = obj.users;
+    else if (Array.isArray(obj.following)) arr = obj.following;
+  }
+
+  if (!arr) return [];
+
+  const candidates: ImportCandidate[] = [];
+
+  for (const item of arr) {
+    if (typeof item === "string") {
+      const name = item.trim();
+      if (name) {
+        candidates.push({ username: name });
+      }
+    } else if (item && typeof item === "object") {
+      const o = item as any;
+      const rawName =
+        o.username ?? o.name ?? o.user ?? o.handle ?? "";
+      const name = String(rawName).trim();
+      if (!name) continue;
+      const isFollower =
+        !!o.isFollower || !!o.follower || !!o.mutual || !!o.is_following_back;
+      candidates.push({ username: name, isFollower });
+    }
+  }
+
+  return candidates;
+}
+
 export default function InstagramFollowManager() {
   const [store, setStore] = useState<StoreV2>(() => loadLocal());
   const storeRef = useRef(store);
@@ -148,12 +191,9 @@ export default function InstagramFollowManager() {
     })();
   }, []);
 
-  // 表示用：作成順に並べる（必要ならあとでアルファベット順に変更可）
+  // 表示用：作成順に並べる
   const entries = useMemo(
-    () =>
-      [...store.entries].sort(
-        (a, b) => a.createdAt - b.createdAt
-      ),
+    () => [...store.entries].sort((a, b) => a.createdAt - b.createdAt),
     [store.entries]
   );
 
@@ -200,6 +240,64 @@ export default function InstagramFollowManager() {
     }));
   };
 
+  // JSONインポート本体
+  const importFromCandidates = (candidates: ImportCandidate[]) => {
+    if (!candidates.length) {
+      alert("有効なユーザーがJSONから見つかりませんでした。形式を確認してください。");
+      return;
+    }
+
+    const prev = storeRef.current;
+    const existing = new Set(prev.entries.map((e) => e.usernameLower));
+    const newEntries = [...prev.entries];
+    let added = 0;
+
+    const nowBase = Date.now();
+
+    for (const c of candidates) {
+      const name = c.username.trim();
+      if (!name) continue;
+      const lower = name.toLowerCase();
+      if (existing.has(lower)) continue;
+      existing.add(lower);
+
+      const entry: FollowEntry = {
+        id: `${nowBase}-${Math.random().toString(36).slice(2)}`,
+        username: name,
+        usernameLower: lower,
+        isFollower: !!c.isFollower,
+        createdAt: nowBase + added,
+      };
+      newEntries.push(entry);
+      added++;
+    }
+
+    if (added === 0) {
+      alert("すべて既存のユーザーと重複していたため、新規追加はありませんでした。");
+      return;
+    }
+
+    setStore({ ...prev, entries: newEntries });
+    alert(`${added}件のユーザーをフォローリストに追加しました。`);
+  };
+
+  const handleImportFile = (file: File | null) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const raw = String(reader.result ?? "");
+        const json = JSON.parse(raw);
+        const candidates = parseImportedJson(json);
+        importFromCandidates(candidates);
+      } catch (e) {
+        console.warn("[insta-follow-manager] import json parse error:", e);
+        alert("JSONの読み込みに失敗しました。ファイルの形式を確認してください。");
+      }
+    };
+    reader.readAsText(file);
+  };
+
   const copyNotFollowedBack = () => {
     const text = notFollowedBack.map((e) => e.username).join("\n");
     if (!text) {
@@ -221,6 +319,11 @@ export default function InstagramFollowManager() {
       {/* 左側：フォローリストの編集 */}
       <section className="rounded-2xl border p-4 shadow-sm">
         <h1 className="text-xl font-bold mb-4">Instagram相互フォロー管理</h1>
+        <p className="text-sm text-gray-600 mb-4">
+          フォローしているアカウントだけを登録しておき、
+          各行の「フォロワー」ボタンで「相手も自分をフォローしている」かを記録します。
+          差分リストを見ながら、Instagram 上でフォロー解除していく想定です。
+        </p>
 
         {/* 追加フォーム */}
         <div className="mb-4 flex flex-wrap items-center gap-2">
@@ -245,6 +348,26 @@ export default function InstagramFollowManager() {
           </button>
         </div>
 
+        {/* JSONインポート */}
+        <div className="mb-4 border-t pt-3">
+          <h3 className="text-sm font-semibold mb-1">JSONインポート（フォロー中ユーザーをまとめて追加）</h3>
+          <p className="text-xs text-gray-500 mb-2">
+            例）メモ帳で <code>["user_a","user_b"]</code>{" "}
+            または{" "}
+            <code>[{"{ \"username\": \"user_a\" }"}, ...]</code>{" "}
+            のような JSON を作成して保存し、そのファイルを選択してください。
+          </p>
+          <label className="inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs cursor-pointer hover:bg-gray-50">
+            JSONファイルを選択
+            <input
+              type="file"
+              accept="application/json,.json"
+              className="hidden"
+              onChange={(e) => handleImportFile(e.target.files?.[0] ?? null)}
+            />
+          </label>
+        </div>
+
         {/* 集計情報 */}
         <div className="mb-3 text-sm text-gray-700 space-y-1">
           <p>
@@ -256,11 +379,7 @@ export default function InstagramFollowManager() {
           </p>
           <p>
             「片側フォロー（こちら→相手のみ）」:
-            <span className="font-semibold">
-              {" "}
-              {notFollowedBack.length}
-            </span>{" "}
-            件
+            <span className="font-semibold"> {notFollowedBack.length}</span> 件
           </p>
         </div>
 
@@ -268,7 +387,7 @@ export default function InstagramFollowManager() {
         {entries.length === 0 ? (
           <p className="text-sm text-gray-500 mt-2">
             まだフォローリストが登録されていません。
-            上の入力欄にユーザーネームを入れて「追加」を押してください。
+            上の入力欄にユーザーネームを入れて「追加」するか、JSONインポートを試してください。
           </p>
         ) : (
           <div className="max-h-[420px] overflow-y-auto border rounded-2xl mt-2">
@@ -283,9 +402,7 @@ export default function InstagramFollowManager() {
               <tbody>
                 {entries.map((e) => (
                   <tr key={e.id} className="border-t">
-                    <td className="px-3 py-2 font-mono break-all">
-                      {e.username}
-                    </td>
+                    <td className="px-3 py-2 font-mono break-all">{e.username}</td>
                     <td className="px-3 py-2">
                       <button
                         type="button"
@@ -324,19 +441,11 @@ export default function InstagramFollowManager() {
         <div className="mb-4 text-sm text-gray-700 space-y-1">
           <p>
             相互フォロー:
-            <span className="font-semibold">
-              {" "}
-              {totalFollowers}
-            </span>{" "}
-            件
+            <span className="font-semibold"> {totalFollowers}</span> 件
           </p>
           <p>
             「こちらがフォローしているのにフォローされていない」:
-            <span className="font-semibold">
-              {" "}
-              {notFollowedBack.length}
-            </span>{" "}
-            件
+            <span className="font-semibold"> {notFollowedBack.length}</span> 件
           </p>
         </div>
 
