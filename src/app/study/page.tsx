@@ -30,8 +30,17 @@ export default function StudyPage() {
     {
       id: "dev-plan",
       title: "開発計画",
-      description: "フォルダー→ノート→小ノート（課題点／計画など）を作成・編集",
+      description:
+        "フォルダー→ノート→小ノート（課題点／計画など）を作成・編集",
       href: "/study/dev-plan",
+      type: "link" as const,
+    },
+    {
+      id: "output-productivity",
+      title: "アウトプット生産量",
+      description:
+        "レポート・演習・ノート整理などのアウトプット量を、月ごと・日ごとに記録します。",
+      href: "/study/output-productivity",
       type: "link" as const,
     },
     {
