@@ -64,9 +64,7 @@ function normalizeMathText(raw: string): string {
   // 1) 日本語環境で紛れ込みがちな「¥」をバックスラッシュに変換
   text = text.replace(/¥/g, "\\");
 
-  // 2) $$ ... $$ ブロックを
-  //    任意の位置 → 前後改行付きの独立ブロックに整形
-  //    例）"...$$式$$Step2..." → "\n$$\n式\n$$\nStep2..."
+  // 2) $$ ... $$ ブロックを前後改行付きの独立ブロックに整形
   text = text.replace(/\$\$([\s\S]*?)\$\$/g, (_match, inner) => {
     const trimmed = String(inner).trim();
     return `\n$$\n${trimmed}\n$$\n`;
@@ -172,9 +170,13 @@ export default function MathLogicExpansion() {
   };
   const [editMap, setEditMap] = useState<Record<ID, EditState>>({});
 
-  const currentFolder = store.currentFolderId
-    ? store.nodes[store.currentFolderId]
-    : null;
+  // 左側：フォルダ／ファイル作成用
+  const [newFolderName, setNewFolderName] = useState("");
+  const [newFileName, setNewFileName] = useState("");
+
+  // 画像拡大用
+  const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
+
   const currentFile = store.currentFileId
     ? store.files[store.currentFileId] ?? null
     : null;
@@ -224,71 +226,109 @@ export default function MathLogicExpansion() {
     })();
   }, []);
 
-  // ツリー用ヘルパー
-  const rootNodes = useMemo(
-    () => Object.values(store.nodes).filter((n) => n.parentId === null),
-    [store.nodes]
-  );
+  // ========= フォルダ／ファイル（code-reading と同じ構造） =========
+  const nodes = store.nodes;
+  const currentFolderId = store.currentFolderId;
+  const currentFileId = store.currentFileId;
 
-  const childrenOf = (parentId: ID) =>
-    Object.values(store.nodes).filter((n) => n.parentId === parentId);
+  const currentFolder = currentFolderId ? nodes[currentFolderId] ?? null : null;
 
-  const selectFolder = (id: ID) => {
+  // カレントフォルダ直下の children（フォルダ→ファイルの順）
+  const children = useMemo(() => {
+    const list = Object.values(nodes).filter(
+      (n) => n.parentId === currentFolderId
+    );
+    return list.sort((a, b) => {
+      if (a.kind !== b.kind) {
+        return a.kind === "folder" ? -1 : 1;
+      }
+      return a.name.localeCompare(b.name, "ja");
+    });
+  }, [nodes, currentFolderId]);
+
+  // パンくず
+  const breadcrumb = useMemo(() => {
+    const items: Node[] = [];
+    let curId = currentFolderId;
+    while (curId) {
+      const n = nodes[curId];
+      if (!n) break;
+      items.push(n);
+      curId = n.parentId;
+    }
+    return items.reverse();
+  }, [nodes, currentFolderId]);
+
+  const addFolder = () => {
+    const name = newFolderName.trim();
+    if (!name) return;
+    setStore((s) => {
+      const id = uid();
+      const node: Node = {
+        id,
+        name,
+        parentId: s.currentFolderId,
+        kind: "folder",
+      };
+      return {
+        ...s,
+        nodes: { ...s.nodes, [id]: node },
+      };
+    });
+    setNewFolderName("");
+  };
+
+  const addFile = () => {
+    const name = newFileName.trim();
+    if (!name) return;
+    setStore((s) => {
+      const id = uid();
+      const node: Node = {
+        id,
+        name,
+        parentId: s.currentFolderId,
+        kind: "file",
+      };
+      const fileData: FileData = {
+        id,
+        sets: [],
+      };
+      return {
+        ...s,
+        nodes: { ...s.nodes, [id]: node },
+        files: { ...s.files, [id]: fileData },
+        currentFileId: id,
+      };
+    });
+    setNewFileName("");
+  };
+
+  const openFolder = (id: ID) => {
     setStore((s) => ({
       ...s,
       currentFolderId: id,
+      currentFileId:
+        s.currentFileId && s.nodes[s.currentFileId]?.parentId === id
+          ? s.currentFileId
+          : null,
     }));
   };
 
-  const selectFile = (id: ID) => {
+  const openFile = (id: ID) => {
     setStore((s) => ({
       ...s,
       currentFileId: id,
     }));
   };
 
-  const addFolder = () => {
-    if (!store.currentFolderId) return;
-    const id = uid();
-    const node: Node = {
-      id,
-      name: "新しいフォルダ",
-      parentId: store.currentFolderId,
-      kind: "folder",
-    };
+  const goUpFolder = () => {
+    if (!currentFolderId) return;
+    const cur = nodes[currentFolderId];
+    if (!cur) return;
     setStore((s) => ({
       ...s,
-      nodes: {
-        ...s.nodes,
-        [id]: node,
-      },
-    }));
-  };
-
-  const addFile = () => {
-    if (!store.currentFolderId) return;
-    const fileNodeId = uid();
-    const fileNode: Node = {
-      id: fileNodeId,
-      name: "新しいファイル",
-      parentId: store.currentFolderId,
-      kind: "file",
-    };
-    const fileData: FileData = {
-      id: fileNodeId,
-      sets: [],
-    };
-    setStore((s) => ({
-      ...s,
-      nodes: {
-        ...s.nodes,
-        [fileNodeId]: fileNode,
-      },
-      files: {
-        ...s.files,
-        [fileNodeId]: fileData,
-      },
-      currentFileId: fileNodeId,
+      currentFolderId: cur.parentId,
+      currentFileId: null,
     }));
   };
 
@@ -306,60 +346,67 @@ export default function MathLogicExpansion() {
     }));
   };
 
-  const deleteNode = (id: ID) => {
-    const node = store.nodes[id];
-    if (!node) return;
-    if (
-      !confirm(
-        `「${node.name}」を削除します。配下のファイル／フォルダも削除されます。よろしいですか？`
-      )
-    ) {
-      return;
-    }
+  // フォルダ削除（中身も再帰的に削除）
+  const deleteFolder = (id: ID) => {
+    if (!confirm("このフォルダと中身をすべて削除します。よろしいですか？")) return;
 
     setStore((s) => {
-      const nodes = { ...s.nodes };
-      const files = { ...s.files };
+      const toDelete = new Set<ID>();
+      const queue: ID[] = [id];
 
-      const removeRecursively = (targetId: ID) => {
-        const n = nodes[targetId];
-        if (!n) return;
-        // 子を再帰的に削除
-        for (const child of Object.values(nodes)) {
-          if (child.parentId === targetId) {
-            removeRecursively(child.id);
-          }
+      while (queue.length > 0) {
+        const cur = queue.shift()!;
+        toDelete.add(cur);
+        for (const n of Object.values(s.nodes)) {
+          if (n.parentId === cur) queue.push(n.id);
         }
-        // ファイルなら files も削除
-        if (n.kind === "file") {
-          delete files[targetId];
-        }
-        delete nodes[targetId];
-      };
-
-      removeRecursively(id);
-
-      let currentFolderId = s.currentFolderId;
-      let currentFileId = s.currentFileId;
-
-      if (currentFolderId && !nodes[currentFolderId]) {
-        currentFolderId =
-          Object.values(nodes).find((n) => n.parentId === null)?.id ?? null;
       }
-      if (currentFileId && !files[currentFileId]) {
-        currentFileId = null;
+
+      const nextNodes: Record<ID, Node> = {};
+      const nextFiles: Record<ID, FileData> = {};
+
+      for (const [nid, node] of Object.entries(s.nodes)) {
+        if (!toDelete.has(nid)) nextNodes[nid] = node;
       }
+      for (const [fid, file] of Object.entries(s.files)) {
+        if (!toDelete.has(fid)) nextFiles[fid] = file;
+      }
+
+      const currentFolderIdNew = toDelete.has(s.currentFolderId ?? "")
+        ? null
+        : s.currentFolderId;
+      const currentFileIdNew = toDelete.has(s.currentFileId ?? "")
+        ? null
+        : s.currentFileId;
 
       return {
         ...s,
-        nodes,
-        files,
-        currentFolderId,
-        currentFileId,
+        nodes: nextNodes,
+        files: nextFiles,
+        currentFolderId: currentFolderIdNew,
+        currentFileId: currentFileIdNew,
       };
     });
   };
 
+  const deleteFile = (id: ID) => {
+    if (!confirm("このファイルを削除します。よろしいですか？")) return;
+    setStore((s) => {
+      const nextNodes = { ...s.nodes };
+      const nextFiles = { ...s.files };
+      delete nextNodes[id];
+      delete nextFiles[id];
+      const currentFileIdNew = s.currentFileId === id ? null : s.currentFileId;
+      return {
+        ...s,
+        nodes: nextNodes,
+        files: nextFiles,
+        currentFileId: currentFileIdNew,
+      };
+    });
+  };
+
+  // ========= セット操作 =========
   const addSet = () => {
     if (!currentFile) return;
     const newSet: MathSet = {
@@ -499,394 +546,447 @@ export default function MathLogicExpansion() {
     }
   };
 
-  // パンくずリスト
-  const breadcrumb = useMemo(() => {
-    if (!currentFolder) return [];
-    const path: Node[] = [];
-    let cur: Node | undefined | null = currentFolder;
-    while (cur) {
-      path.unshift(cur);
-      cur = cur.parentId ? store.nodes[cur.parentId] : undefined;
-    }
-    return path;
-  }, [currentFolder, store.nodes]);
-
-  // ツリー描画
-  const renderTree = (node: Node, depth: number) => {
-    const indentClass = `pl-${Math.min(depth * 4, 12)}`;
-    const children = childrenOf(node.id);
-    return (
-      <div key={node.id}>
-        <div className={`flex items-center gap-1 py-0.5 ${indentClass}`}>
-          {node.kind === "folder" ? (
-            <>
-              <button
-                type="button"
-                onClick={() => selectFolder(node.id)}
-                className={
-                  "rounded-lg px-2 py-1 text-sm flex-1 text-left " +
-                  (store.currentFolderId === node.id
-                    ? "bg-black text-white"
-                    : "hover:bg-gray-100")
-                }
-              >
-                📂 {node.name}
-              </button>
-              <button
-                type="button"
-                className="text-xs text-gray-500 hover:underline"
-                onClick={() => renameNode(node.id)}
-              >
-                名称変更
-              </button>
-              {node.parentId !== null && (
-                <button
-                  type="button"
-                  className="text-xs text-red-500 hover:underline"
-                  onClick={() => deleteNode(node.id)}
-                >
-                  削除
-                </button>
-              )}
-            </>
-          ) : (
-            <>
-              <button
-                type="button"
-                onClick={() => selectFile(node.id)}
-                className={
-                  "rounded-lg px-2 py-1 text-sm flex-1 text-left " +
-                  (store.currentFileId === node.id
-                    ? "bg-blue-600 text-white"
-                    : "hover:bg-gray-100")
-                }
-              >
-                📄 {node.name}
-              </button>
-              <button
-                type="button"
-                className="text-xs text-gray-500 hover:underline"
-                onClick={() => renameNode(node.id)}
-              >
-                名称変更
-              </button>
-              <button
-                type="button"
-                className="text-xs text-red-500 hover:underline"
-                onClick={() => deleteNode(node.id)}
-              >
-                削除
-              </button>
-            </>
-          )}
-        </div>
-        {children.map((child) => renderTree(child, depth + 1))}
-      </div>
-    );
-  };
-
   return (
-    <div className="grid gap-6 lg:grid-cols-[280px_minmax(0,1fr)]">
-      {/* 左：フォルダ／ファイルツリー */}
-      <section className="rounded-2xl border p-4 shadow-sm">
-        <h2 className="font-semibold mb-3">数学論理展開 フォルダー</h2>
+    <>
+      <div className="grid gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
+        {/* 左：フォルダ＆ファイルツリー（code-reading と同じUIベース） */}
+        <section className="rounded-2xl border p-4 shadow-sm">
+          <h2 className="font-semibold mb-3">数学論理展開</h2>
 
-        {/* パンくず */}
-        <div className="mb-3 text-xs text-gray-500 flex flex-wrap gap-1">
-          {breadcrumb.map((node, idx) => (
-            <span key={node.id} className="flex items-center gap-1">
-              {idx > 0 && <span>/</span>}
+          <div className="mb-3 text-xs text-gray-600">
+            <div className="mb-1 font-medium">現在のフォルダ</div>
+            <div className="flex flex-wrap items-center gap-1">
               <button
                 type="button"
-                className={
-                  "hover:underline " +
-                  (idx === breadcrumb.length - 1 ? "font-semibold" : "")
-                }
                 onClick={() =>
-                  node.kind === "folder" ? selectFolder(node.id) : selectFile(node.id)
+                  setStore((s) => ({
+                    ...s,
+                    currentFolderId: null,
+                    currentFileId: null,
+                  }))
+                }
+                className={
+                  "text-xs rounded-lg px-2 py-1 " +
+                  (currentFolderId === null
+                    ? "bg-black text-white"
+                    : "bg-gray-100 hover:bg-gray-200")
                 }
               >
-                {node.name}
+                ルート
               </button>
-            </span>
-          ))}
-        </div>
-
-        {/* ツリー */}
-        <div className="mb-4 max-h-[360px] overflow-auto text-sm">
-          {rootNodes.map((n) => renderTree(n, 0))}
-        </div>
-
-        {/* 操作ボタン */}
-        <div className="space-y-2 border-t pt-3 mt-3">
-          <button
-            type="button"
-            onClick={addFolder}
-            className="w-full rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
-          >
-            ＋ フォルダを追加
-          </button>
-          <button
-            type="button"
-            onClick={addFile}
-            className="w-full rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
-          >
-            ＋ ファイルを追加
-          </button>
-        </div>
-      </section>
-
-      {/* 右：ファイル内のセット一覧 */}
-      <section className="rounded-2xl border p-4 shadow-sm min-h-[200px]">
-        {!currentFile ? (
-          <p className="text-sm text-gray-500">
-            左のツリーからファイルを選択してください。
-          </p>
-        ) : (
-          <>
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="font-semibold">
-                ファイル：「
-                {store.nodes[currentFile.id]?.name ?? "（名称未設定）"}」
-              </h2>
-              <button
-                type="button"
-                onClick={addSet}
-                className="rounded-xl bg-black px-3 py-2 text-sm text-white"
-              >
-                ＋ セットを追加
-              </button>
+              {breadcrumb.map((b) => (
+                <span key={b.id} className="flex items-center gap-1">
+                  <span className="text-gray-400">/</span>
+                  <button
+                    type="button"
+                    onClick={() => openFolder(b.id)}
+                    className={
+                      "text-xs rounded-lg px-2 py-1 " +
+                      (currentFolderId === b.id
+                        ? "bg-black text-white"
+                        : "bg-gray-100 hover:bg-gray-200")
+                    }
+                  >
+                    {b.name}
+                  </button>
+                </span>
+              ))}
             </div>
+          </div>
 
-            {currentFile.sets.length === 0 ? (
-              <p className="text-sm text-gray-500">
-                まだセットがありません。「＋ セットを追加」から、問題画像＋解釈ノートを追加してください。
+          {currentFolderId !== null && (
+            <button
+              type="button"
+              onClick={goUpFolder}
+              className="mb-3 text-xs text-gray-600 underline"
+            >
+              上のフォルダに戻る
+            </button>
+          )}
+
+          <div className="mb-3">
+            {children.length === 0 ? (
+              <p className="text-xs text-gray-500">
+                このフォルダには、まだ何もありません。
               </p>
             ) : (
-              <div className="space-y-4">
-                {currentFile.sets.map((set, idx) => {
-                  const rev = revealMap[set.id] ?? {
-                    my: false,
-                    ai: false,
-                    steps: false,
-                  };
-                  const edit = editMap[set.id] ?? {
-                    my: false,
-                    ai: false,
-                    steps: false,
-                  };
-
-                  return (
-                    <div
-                      key={set.id}
-                      className="rounded-2xl border px-4 py-3 bg-white space-y-3"
+              <ul className="space-y-1 text-sm">
+                {children.map((n) => (
+                  <li
+                    key={n.id}
+                    className="flex items-center justify-between gap-2"
+                  >
+                    <button
+                      type="button"
+                      onClick={() =>
+                        n.kind === "folder" ? openFolder(n.id) : openFile(n.id)
+                      }
+                      className={
+                        "flex-1 text-left rounded-xl px-3 py-1.5 border " +
+                        (currentFileId === n.id
+                          ? "bg-blue-600 text-white"
+                          : "bg-white hover:bg-gray-50")
+                      }
                     >
-                      <div className="flex items-center justify-between">
-                        <h3 className="text-sm font-semibold">
-                          セット {idx + 1}
-                        </h3>
-                        <button
-                          type="button"
-                          onClick={() => deleteSet(set.id)}
-                          className="text-xs text-red-500 hover:underline"
-                        >
-                          セット削除
-                        </button>
-                      </div>
+                      <span className="mr-2 text-xs text-gray-400">
+                        {n.kind === "folder" ? "📁" : "📄"}
+                      </span>
+                      {n.name}
+                    </button>
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => renameNode(n.id)}
+                        className="text-xs rounded-lg border px-2 py-1 text-gray-600 hover:bg-gray-50"
+                      >
+                        名称変更
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          n.kind === "folder"
+                            ? deleteFolder(n.id)
+                            : deleteFile(n.id)
+                        }
+                        className="text-xs rounded-lg border px-2 py-1 text-gray-600 hover:bg-gray-50"
+                      >
+                        削除
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
 
-                      {/* 問題画像：ペースト対応 */}
-                      <div className="space-y-1">
-                        <label className="text-xs font-semibold text-gray-700">
-                          問題画像
-                        </label>
-                        <div
-                          className="w-full rounded-lg border px-3 py-2 text-xs bg-white cursor-text"
-                          tabIndex={0}
-                          onPaste={(e) => handleImagePaste(set.id, e)}
-                        >
-                          <p className="text-[11px] text-gray-500">
-                            ここをクリックしてから Ctrl+V で問題画像を貼り付け
-                            （画像そのもの or 画像URL）
-                          </p>
+          <div className="border-t pt-3 mt-3 space-y-3">
+            <div>
+              <h3 className="text-xs font-semibold mb-1">フォルダを追加</h3>
+              <div className="flex gap-2">
+                <input
+                  value={newFolderName}
+                  onChange={(e) => setNewFolderName(e.target.value)}
+                  className="flex-1 rounded-xl border px-3 py-2 text-xs"
+                  placeholder="例: 章1 / 数II / 過去問 など"
+                />
+                <button
+                  type="button"
+                  onClick={addFolder}
+                  className="rounded-xl bg-black px-3 py-2 text-xs text-white"
+                >
+                  追加
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <h3 className="text-xs font-semibold mb-1">ファイルを追加</h3>
+              <div className="flex gap-2">
+                <input
+                  value={newFileName}
+                  onChange={(e) => setNewFileName(e.target.value)}
+                  className="flex-1 rounded-xl border px-3 py-2 text-xs"
+                  placeholder="例: 2023年第3問 / 練習問題1 など"
+                />
+                <button
+                  type="button"
+                  onClick={addFile}
+                  className="rounded-xl bg-black px-3 py-2 text-xs text-white"
+                >
+                  追加
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* 右：ファイル内のセット一覧 */}
+        <section className="rounded-2xl border p-4 shadow-sm min-h-[200px]">
+          {!currentFile ? (
+            <p className="text-sm text-gray-500">
+              左のフォルダからファイルを選択するか、新しいファイルを作成してください。
+            </p>
+          ) : (
+            <>
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="font-semibold">
+                  ファイル：「
+                  {nodes[currentFile.id]?.name ?? "（名称未設定）"}」
+                </h2>
+                <button
+                  type="button"
+                  onClick={addSet}
+                  className="rounded-xl bg-black px-3 py-2 text-sm text-white"
+                >
+                  ＋ セットを追加
+                </button>
+              </div>
+
+              {currentFile.sets.length === 0 ? (
+                <p className="text-sm text-gray-500">
+                  まだセットがありません。「＋ セットを追加」から、問題画像＋解釈ノートを追加してください。
+                </p>
+              ) : (
+                <div className="space-y-4">
+                  {currentFile.sets.map((set, idx) => {
+                    const rev = revealMap[set.id] ?? {
+                      my: false,
+                      ai: false,
+                      steps: false,
+                    };
+                    const edit = editMap[set.id] ?? {
+                      my: false,
+                      ai: false,
+                      steps: false,
+                    };
+
+                    return (
+                      <div
+                        key={set.id}
+                        className="rounded-2xl border px-4 py-3 bg-white space-y-3"
+                      >
+                        <div className="flex items-center justify-between">
+                          <h3 className="text-sm font-semibold">
+                            セット {idx + 1}
+                          </h3>
+                          <button
+                            type="button"
+                            onClick={() => deleteSet(set.id)}
+                            className="text-xs text-red-500 hover:underline"
+                          >
+                            セット削除
+                          </button>
                         </div>
-                        {set.imageUrl && (
-                          <div className="mt-2 border rounded-lg overflow-hidden max-h-64 flex flex-col items-center justify-center bg-gray-50 gap-1">
-                            {/* eslint-disable-next-line @next/next/no-img-element */}
-                            <img
-                              src={set.imageUrl}
-                              alt="問題画像プレビュー"
-                              className="max-h-64 max-w-full object-contain"
-                            />
-                            <button
-                              type="button"
-                              className="mb-2 text-[11px] text-gray-500 hover:underline"
-                              onClick={() =>
+
+                        {/* 問題画像：ペースト対応 + クリック拡大 */}
+                        <div className="space-y-1">
+                          <label className="text-xs font-semibold text-gray-700">
+                            問題画像
+                          </label>
+                          <div
+                            className="w-full rounded-lg border px-3 py-2 text-xs bg-white cursor-text"
+                            tabIndex={0}
+                            onPaste={(e) => handleImagePaste(set.id, e)}
+                          >
+                            <p className="text-[11px] text-gray-500">
+                              ここをクリックしてから Ctrl+V で問題画像を貼り付け
+                              （画像そのもの or 画像URL）
+                            </p>
+                          </div>
+                          {set.imageUrl && (
+                            <div className="mt-2 border rounded-lg overflow-hidden max-h-64 flex flex-col items-center justify-center bg-gray-50 gap-1">
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img
+                                src={set.imageUrl}
+                                alt="問題画像プレビュー"
+                                className="max-h-64 max-w-full object-contain cursor-zoom-in"
+                                onClick={() =>
+                                  setPreviewImageUrl(set.imageUrl || null)
+                                }
+                              />
+                              <div className="mb-2 flex gap-2 text-[11px]">
+                                <span className="text-gray-500">
+                                  画像をクリックすると拡大表示できます。
+                                </span>
+                                <button
+                                  type="button"
+                                  className="text-gray-500 hover:underline"
+                                  onClick={() =>
+                                    updateSet(set.id, (prev) => ({
+                                      ...prev,
+                                      imageUrl: "",
+                                    }))
+                                  }
+                                >
+                                  画像を削除する
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* 自分の解釈ノート */}
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-xs font-semibold text-gray-700">
+                              自分の解釈ノート
+                            </span>
+                            <div className="flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => toggleEdit(set.id, "my")}
+                                className="text-xs rounded-lg border px-2 py-1 hover:bg-gray-50"
+                              >
+                                {edit.my ? "入力を隠す" : "入力を開く"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => toggleReveal(set.id, "my")}
+                                className="text-xs rounded-lg border px-2 py-1 hover:bg-gray-50"
+                              >
+                                {rev.my ? "隠す" : "めくる"}
+                              </button>
+                            </div>
+                          </div>
+                          {edit.my && (
+                            <textarea
+                              value={set.myNote}
+                              onChange={(e) =>
                                 updateSet(set.id, (prev) => ({
                                   ...prev,
-                                  imageUrl: "",
+                                  myNote: e.target.value,
                                 }))
                               }
-                            >
-                              画像を削除する
-                            </button>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* 自分の解釈ノート */}
-                      <div className="space-y-1">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-xs font-semibold text-gray-700">
-                            自分の解釈ノート
-                          </span>
-                          <div className="flex items-center gap-1">
-                            <button
-                              type="button"
-                              onClick={() => toggleEdit(set.id, "my")}
-                              className="text-xs rounded-lg border px-2 py-1 hover:bg-gray-50"
-                            >
-                              {edit.my ? "入力を隠す" : "入力を開く"}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => toggleReveal(set.id, "my")}
-                              className="text-xs rounded-lg border px-2 py-1 hover:bg-gray-50"
-                            >
-                              {rev.my ? "隠す" : "めくる"}
-                            </button>
-                          </div>
-                        </div>
-                        {/* 編集エリア（トグル表示） */}
-                        {edit.my && (
-                          <textarea
-                            value={set.myNote}
-                            onChange={(e) =>
-                              updateSet(set.id, (prev) => ({
-                                ...prev,
-                                myNote: e.target.value,
-                              }))
-                            }
-                            rows={3}
-                            className="w-full rounded-lg border px-3 py-2 text-xs font-mono"
-                            placeholder="ここに自分の解釈を書きます。LaTeXもOK：例）$y'' + \frac{9}{4}y = 0$ や $$\lambda^2 + \frac{9}{4} = 0$$"
-                          />
-                        )}
-                        {/* 裏向き表示（復習用） */}
-                        <div className="mt-2 rounded-xl border px-3 py-2 bg-gray-50">
-                          {rev.my ? (
-                            <MathMarkdown text={set.myNote} />
-                          ) : (
-                            <p className="text-xs text-gray-400">
-                              （裏面）「めくる」を押すと、MathMarkdown + KaTeX
-                              で表示されます。
-                            </p>
+                              rows={3}
+                              className="w-full rounded-lg border px-3 py-2 text-xs font-mono"
+                              placeholder="ここに自分の解釈を書きます。LaTeXもOK：例）$y'' + \frac{9}{4}y = 0$ や $$\lambda^2 + \frac{9}{4} = 0$$"
+                            />
                           )}
-                        </div>
-                      </div>
-
-                      {/* AIの添削ノート */}
-                      <div className="space-y-1">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-xs font-semibold text-gray-700">
-                            AIの添削ノート
-                          </span>
-                          <div className="flex items-center gap-1">
-                            <button
-                              type="button"
-                              onClick={() => toggleEdit(set.id, "ai")}
-                              className="text-xs rounded-lg border px-2 py-1 hover:bg-gray-50"
-                            >
-                              {edit.ai ? "入力を隠す" : "入力を開く"}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => toggleReveal(set.id, "ai")}
-                              className="text-xs rounded-lg border px-2 py-1 hover:bg-gray-50"
-                            >
-                              {rev.ai ? "隠す" : "めくる"}
-                            </button>
+                          <div className="mt-2 rounded-xl border px-3 py-2 bg-gray-50">
+                            {rev.my ? (
+                              <MathMarkdown text={set.myNote} />
+                            ) : (
+                              <p className="text-xs text-gray-400">
+                                （裏面）「めくる」を押すと、MathMarkdown + KaTeX
+                                で表示されます。
+                              </p>
+                            )}
                           </div>
                         </div>
-                        {edit.ai && (
-                          <textarea
-                            value={set.aiNote}
-                            onChange={(e) =>
-                              updateSet(set.id, (prev) => ({
-                                ...prev,
-                                aiNote: e.target.value,
-                              }))
-                            }
-                            rows={3}
-                            className="w-full rounded-lg border px-3 py-2 text-xs font-mono"
-                            placeholder="GeminiやChatGPTの添削を貼り付けてください。LaTeX もそのままOK。"
-                          />
-                        )}
-                        <div className="mt-2 rounded-xl border px-3 py-2 bg-gray-50">
-                          {rev.ai ? (
-                            <MathMarkdown text={set.aiNote} />
-                          ) : (
-                            <p className="text-xs text-gray-400">
-                              （裏面）「めくる」でAIの添削を表示します。
-                            </p>
-                          )}
-                        </div>
-                      </div>
 
-                      {/* 過程式ノート */}
-                      <div className="space-y-1">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-xs font-semibold text-gray-700">
-                            過程式ノート
-                          </span>
-                          <div className="flex items-center gap-1">
-                            <button
-                              type="button"
-                              onClick={() => toggleEdit(set.id, "steps")}
-                              className="text-xs rounded-lg border px-2 py-1 hover:bg-gray-50"
-                            >
-                              {edit.steps ? "入力を隠す" : "入力を開く"}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => toggleReveal(set.id, "steps")}
-                              className="text-xs rounded-lg border px-2 py-1 hover:bg-gray-50"
-                            >
-                              {rev.steps ? "隠す" : "めくる"}
-                            </button>
+                        {/* AIの添削ノート */}
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-xs font-semibold text-gray-700">
+                              AIの添削ノート
+                            </span>
+                            <div className="flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => toggleEdit(set.id, "ai")}
+                                className="text-xs rounded-lg border px-2 py-1 hover:bg-gray-50"
+                              >
+                                {edit.ai ? "入力を隠す" : "入力を開く"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => toggleReveal(set.id, "ai")}
+                                className="text-xs rounded-lg border px-2 py-1 hover:bg-gray-50"
+                              >
+                                {rev.ai ? "隠す" : "めくる"}
+                              </button>
+                            </div>
+                          </div>
+                          {edit.ai && (
+                            <textarea
+                              value={set.aiNote}
+                              onChange={(e) =>
+                                updateSet(set.id, (prev) => ({
+                                  ...prev,
+                                  aiNote: e.target.value,
+                                }))
+                              }
+                              rows={3}
+                              className="w-full rounded-lg border px-3 py-2 text-xs font-mono"
+                              placeholder="GeminiやChatGPTの添削を貼り付けてください。LaTeX もそのままOK。"
+                            />
+                          )}
+                          <div className="mt-2 rounded-xl border px-3 py-2 bg-gray-50">
+                            {rev.ai ? (
+                              <MathMarkdown text={set.aiNote} />
+                            ) : (
+                              <p className="text-xs text-gray-400">
+                                （裏面）「めくる」でAIの添削を表示します。
+                              </p>
+                            )}
                           </div>
                         </div>
-                        {edit.steps && (
-                          <textarea
-                            value={set.stepsNote}
-                            onChange={(e) =>
-                              updateSet(set.id, (prev) => ({
-                                ...prev,
-                                stepsNote: e.target.value,
-                              }))
-                            }
-                            rows={4}
-                            className="w-full rounded-lg border px-3 py-2 text-xs font-mono"
-                            placeholder="解答の途中式を詳細に書いてください。LaTeX もそのまま貼れます。"
-                          />
-                        )}
-                        <div className="mt-2 rounded-xl border px-3 py-2 bg-gray-50">
-                          {rev.steps ? (
-                            <MathMarkdown text={set.stepsNote} />
-                          ) : (
-                            <p className="text-xs text-gray-400">
-                              （裏面）「めくる」で途中式を表示します。
-                            </p>
+
+                        {/* 過程式ノート */}
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-xs font-semibold text-gray-700">
+                              過程式ノート
+                            </span>
+                            <div className="flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => toggleEdit(set.id, "steps")}
+                                className="text-xs rounded-lg border px-2 py-1 hover:bg-gray-50"
+                              >
+                                {edit.steps ? "入力を隠す" : "入力を開く"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => toggleReveal(set.id, "steps")}
+                                className="text-xs rounded-lg border px-2 py-1 hover:bg-gray-50"
+                              >
+                                {rev.steps ? "隠す" : "めくる"}
+                              </button>
+                            </div>
+                          </div>
+                          {edit.steps && (
+                            <textarea
+                              value={set.stepsNote}
+                              onChange={(e) =>
+                                updateSet(set.id, (prev) => ({
+                                  ...prev,
+                                  stepsNote: e.target.value,
+                                }))
+                              }
+                              rows={4}
+                              className="w-full rounded-lg border px-3 py-2 text-xs font-mono"
+                              placeholder="解答の途中式を詳細に書いてください。LaTeX もそのまま貼れます。"
+                            />
                           )}
+                          <div className="mt-2 rounded-xl border px-3 py-2 bg-gray-50">
+                            {rev.steps ? (
+                              <MathMarkdown text={set.stepsNote} />
+                            ) : (
+                              <p className="text-xs text-gray-400">
+                                （裏面）「めくる」で途中式を表示します。
+                              </p>
+                            )}
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </>
-        )}
-      </section>
-    </div>
+                    );
+                  })}
+                </div>
+              )}
+            </>
+          )}
+        </section>
+      </div>
+
+      {/* 画像拡大オーバーレイ */}
+      {previewImageUrl && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70"
+          onClick={() => setPreviewImageUrl(null)}
+        >
+          <div
+            className="max-w-[min(100vw-2rem,920px)] max-h-[min(100vh-4rem,720px)]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={previewImageUrl}
+              alt="拡大画像"
+              className="max-w-full max-h-[calc(100vh-6rem)] object-contain rounded-xl bg-black"
+            />
+            <div className="mt-2 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setPreviewImageUrl(null)}
+                className="rounded-lg bg-white/90 px-3 py-1 text-xs shadow"
+              >
+                閉じる
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
