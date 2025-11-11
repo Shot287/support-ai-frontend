@@ -2,6 +2,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { ClipboardEvent } from "react";
 import { loadUserDoc, saveUserDoc } from "@/lib/userDocStore";
 
 import ReactMarkdown from "react-markdown";
@@ -23,7 +24,7 @@ type Node = {
 
 type MathSet = {
   id: ID;
-  imageUrl: string;
+  imageUrl: string; // data URL or http(s) URL
   myNote: string;
   aiNote: string;
   stepsNote: string;
@@ -162,6 +163,14 @@ export default function MathLogicExpansion() {
     steps: boolean;
   };
   const [revealMap, setRevealMap] = useState<Record<ID, RevealState>>({});
+
+  // セットごとの「入力エリアを開く/隠す」状態
+  type EditState = {
+    my: boolean;
+    ai: boolean;
+    steps: boolean;
+  };
+  const [editMap, setEditMap] = useState<Record<ID, EditState>>({});
 
   const currentFolder = store.currentFolderId
     ? store.nodes[store.currentFolderId]
@@ -410,6 +419,11 @@ export default function MathLogicExpansion() {
       delete copy[setId];
       return copy;
     });
+    setEditMap((prev) => {
+      const copy = { ...prev };
+      delete copy[setId];
+      return copy;
+    });
   };
 
   const toggleReveal = (setId: ID, key: keyof RevealState) => {
@@ -423,6 +437,66 @@ export default function MathLogicExpansion() {
         },
       };
     });
+  };
+
+  const toggleEdit = (setId: ID, key: keyof EditState) => {
+    setEditMap((prev) => {
+      const st = prev[setId] ?? { my: false, ai: false, steps: false };
+      return {
+        ...prev,
+        [setId]: {
+          ...st,
+          [key]: !st[key],
+        },
+      };
+    });
+  };
+
+  // 画像ペーストハンドラ（画像 or URL）
+  const handleImagePaste = (setId: ID, e: ClipboardEvent<HTMLDivElement>) => {
+    const clipboard = e.clipboardData;
+    if (!clipboard) return;
+
+    let handled = false;
+
+    // 1) 画像データがあれば data URL として保存
+    const items = clipboard.items;
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.type.startsWith("image/")) {
+        const file = item.getAsFile();
+        if (file) {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const result = reader.result;
+            if (typeof result === "string") {
+              updateSet(setId, (prev) => ({
+                ...prev,
+                imageUrl: result, // data URL
+              }));
+            }
+          };
+          reader.readAsDataURL(file);
+          handled = true;
+        }
+      }
+    }
+
+    // 2) 画像が無ければ、テキストを URL として扱う
+    if (!handled) {
+      const text = clipboard.getData("text");
+      if (text && text.trim()) {
+        updateSet(setId, (prev) => ({
+          ...prev,
+          imageUrl: text.trim(),
+        }));
+        handled = true;
+      }
+    }
+
+    if (handled) {
+      e.preventDefault();
+    }
   };
 
   // パンくずリスト
@@ -596,6 +670,12 @@ export default function MathLogicExpansion() {
                     ai: false,
                     steps: false,
                   };
+                  const edit = editMap[set.id] ?? {
+                    my: false,
+                    ai: false,
+                    steps: false,
+                  };
+
                   return (
                     <div
                       key={set.id}
@@ -614,68 +694,91 @@ export default function MathLogicExpansion() {
                         </button>
                       </div>
 
-                      {/* 問題画像URL */}
+                      {/* 問題画像：ペースト対応 */}
                       <div className="space-y-1">
                         <label className="text-xs font-semibold text-gray-700">
-                          問題画像のURL
+                          問題画像
                         </label>
-                        <input
-                          value={set.imageUrl}
-                          onChange={(e) =>
-                            updateSet(set.id, (prev) => ({
-                              ...prev,
-                              imageUrl: e.target.value,
-                            }))
-                          }
-                          placeholder="例：https://.../problem.png"
-                          className="w-full rounded-lg border px-3 py-2 text-xs"
-                        />
+                        <div
+                          className="w-full rounded-lg border px-3 py-2 text-xs bg-white cursor-text"
+                          tabIndex={0}
+                          onPaste={(e) => handleImagePaste(set.id, e)}
+                        >
+                          <p className="text-[11px] text-gray-500">
+                            ここをクリックしてから Ctrl+V で問題画像を貼り付け
+                            （画像そのもの or 画像URL）
+                          </p>
+                        </div>
                         {set.imageUrl && (
-                          <div className="mt-2 border rounded-lg overflow-hidden max-h-64 flex items-center justify-center bg-gray-50">
+                          <div className="mt-2 border rounded-lg overflow-hidden max-h-64 flex flex-col items-center justify-center bg-gray-50 gap-1">
                             {/* eslint-disable-next-line @next/next/no-img-element */}
                             <img
                               src={set.imageUrl}
                               alt="問題画像プレビュー"
                               className="max-h-64 max-w-full object-contain"
                             />
+                            <button
+                              type="button"
+                              className="mb-2 text-[11px] text-gray-500 hover:underline"
+                              onClick={() =>
+                                updateSet(set.id, (prev) => ({
+                                  ...prev,
+                                  imageUrl: "",
+                                }))
+                              }
+                            >
+                              画像を削除する
+                            </button>
                           </div>
                         )}
                       </div>
 
                       {/* 自分の解釈ノート */}
                       <div className="space-y-1">
-                        <div className="flex items-center justify-between">
+                        <div className="flex items-center justify-between gap-2">
                           <span className="text-xs font-semibold text-gray-700">
                             自分の解釈ノート
                           </span>
-                          <button
-                            type="button"
-                            onClick={() => toggleReveal(set.id, "my")}
-                            className="text-xs rounded-lg border px-2 py-1 hover:bg-gray-50"
-                          >
-                            {rev.my ? "隠す" : "めくる"}
-                          </button>
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => toggleEdit(set.id, "my")}
+                              className="text-xs rounded-lg border px-2 py-1 hover:bg-gray-50"
+                            >
+                              {edit.my ? "入力を隠す" : "入力を開く"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => toggleReveal(set.id, "my")}
+                              className="text-xs rounded-lg border px-2 py-1 hover:bg-gray-50"
+                            >
+                              {rev.my ? "隠す" : "めくる"}
+                            </button>
+                          </div>
                         </div>
-                        {/* 編集エリア */}
-                        <textarea
-                          value={set.myNote}
-                          onChange={(e) =>
-                            updateSet(set.id, (prev) => ({
-                              ...prev,
-                              myNote: e.target.value,
-                            }))
-                          }
-                          rows={3}
-                          className="w-full rounded-lg border px-3 py-2 text-xs font-mono"
-                          placeholder="ここに自分の解釈を書きます。LaTeXもOK：例）$y'' + \frac{9}{4}y = 0$ や $$\lambda^2 + \frac{9}{4} = 0$$"
-                        />
+                        {/* 編集エリア（トグル表示） */}
+                        {edit.my && (
+                          <textarea
+                            value={set.myNote}
+                            onChange={(e) =>
+                              updateSet(set.id, (prev) => ({
+                                ...prev,
+                                myNote: e.target.value,
+                              }))
+                            }
+                            rows={3}
+                            className="w-full rounded-lg border px-3 py-2 text-xs font-mono"
+                            placeholder="ここに自分の解釈を書きます。LaTeXもOK：例）$y'' + \frac{9}{4}y = 0$ や $$\lambda^2 + \frac{9}{4} = 0$$"
+                          />
+                        )}
                         {/* 裏向き表示（復習用） */}
                         <div className="mt-2 rounded-xl border px-3 py-2 bg-gray-50">
                           {rev.my ? (
                             <MathMarkdown text={set.myNote} />
                           ) : (
                             <p className="text-xs text-gray-400">
-                              （裏面）「めくる」を押すと、MathMarkdown + KaTeX で表示されます。
+                              （裏面）「めくる」を押すと、MathMarkdown + KaTeX
+                              で表示されます。
                             </p>
                           )}
                         </div>
@@ -683,30 +786,41 @@ export default function MathLogicExpansion() {
 
                       {/* AIの添削ノート */}
                       <div className="space-y-1">
-                        <div className="flex items-center justify-between">
+                        <div className="flex items-center justify-between gap-2">
                           <span className="text-xs font-semibold text-gray-700">
                             AIの添削ノート
                           </span>
-                          <button
-                            type="button"
-                            onClick={() => toggleReveal(set.id, "ai")}
-                            className="text-xs rounded-lg border px-2 py-1 hover:bg-gray-50"
-                          >
-                            {rev.ai ? "隠す" : "めくる"}
-                          </button>
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => toggleEdit(set.id, "ai")}
+                              className="text-xs rounded-lg border px-2 py-1 hover:bg-gray-50"
+                            >
+                              {edit.ai ? "入力を隠す" : "入力を開く"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => toggleReveal(set.id, "ai")}
+                              className="text-xs rounded-lg border px-2 py-1 hover:bg-gray-50"
+                            >
+                              {rev.ai ? "隠す" : "めくる"}
+                            </button>
+                          </div>
                         </div>
-                        <textarea
-                          value={set.aiNote}
-                          onChange={(e) =>
-                            updateSet(set.id, (prev) => ({
-                              ...prev,
-                              aiNote: e.target.value,
-                            }))
-                          }
-                          rows={3}
-                          className="w-full rounded-lg border px-3 py-2 text-xs font-mono"
-                          placeholder="GeminiやChatGPTの添削を貼り付けてください。LaTeX もそのままOK。"
-                        />
+                        {edit.ai && (
+                          <textarea
+                            value={set.aiNote}
+                            onChange={(e) =>
+                              updateSet(set.id, (prev) => ({
+                                ...prev,
+                                aiNote: e.target.value,
+                              }))
+                            }
+                            rows={3}
+                            className="w-full rounded-lg border px-3 py-2 text-xs font-mono"
+                            placeholder="GeminiやChatGPTの添削を貼り付けてください。LaTeX もそのままOK。"
+                          />
+                        )}
                         <div className="mt-2 rounded-xl border px-3 py-2 bg-gray-50">
                           {rev.ai ? (
                             <MathMarkdown text={set.aiNote} />
@@ -720,30 +834,41 @@ export default function MathLogicExpansion() {
 
                       {/* 過程式ノート */}
                       <div className="space-y-1">
-                        <div className="flex items-center justify-between">
+                        <div className="flex items-center justify-between gap-2">
                           <span className="text-xs font-semibold text-gray-700">
                             過程式ノート
                           </span>
-                          <button
-                            type="button"
-                            onClick={() => toggleReveal(set.id, "steps")}
-                            className="text-xs rounded-lg border px-2 py-1 hover:bg-gray-50"
-                          >
-                            {rev.steps ? "隠す" : "めくる"}
-                          </button>
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => toggleEdit(set.id, "steps")}
+                              className="text-xs rounded-lg border px-2 py-1 hover:bg-gray-50"
+                            >
+                              {edit.steps ? "入力を隠す" : "入力を開く"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => toggleReveal(set.id, "steps")}
+                              className="text-xs rounded-lg border px-2 py-1 hover:bg-gray-50"
+                            >
+                              {rev.steps ? "隠す" : "めくる"}
+                            </button>
+                          </div>
                         </div>
-                        <textarea
-                          value={set.stepsNote}
-                          onChange={(e) =>
-                            updateSet(set.id, (prev) => ({
-                              ...prev,
-                              stepsNote: e.target.value,
-                            }))
-                          }
-                          rows={4}
-                          className="w-full rounded-lg border px-3 py-2 text-xs font-mono"
-                          placeholder="解答の途中式を詳細に書いてください。LaTeX もそのまま貼れます。"
-                        />
+                        {edit.steps && (
+                          <textarea
+                            value={set.stepsNote}
+                            onChange={(e) =>
+                              updateSet(set.id, (prev) => ({
+                                ...prev,
+                                stepsNote: e.target.value,
+                              }))
+                            }
+                            rows={4}
+                            className="w-full rounded-lg border px-3 py-2 text-xs font-mono"
+                            placeholder="解答の途中式を詳細に書いてください。LaTeX もそのまま貼れます。"
+                          />
+                        )}
                         <div className="mt-2 rounded-xl border px-3 py-2 bg-gray-50">
                           {rev.steps ? (
                             <MathMarkdown text={set.stepsNote} />
