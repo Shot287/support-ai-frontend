@@ -67,6 +67,14 @@ export default function StudyPage() {
       href: "/study/code-reading",
       type: "link" as const,
     },
+    {
+      id: "math-logic-expansion",
+      title: "数学論理展開",
+      description:
+        "数学の問題画像と、自分の解釈・AI添削・途中式をセットで管理（LaTeX対応）。",
+      href: "/study/math-logic-expansion",
+      type: "link" as const,
+    },
   ] as const;
 
   useEffect(() => {

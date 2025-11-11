@@ -1,5 +1,7 @@
 // src/app/layout.tsx
 import "./globals.css";
+import "katex/dist/katex.min.css";  // ★ ここを追加
+
 import type { ReactNode } from "react";
 import PushBootstrap from "@/features/push/PushBootstrap";
 
