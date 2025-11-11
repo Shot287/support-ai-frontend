@@ -52,9 +52,33 @@ const uid = () =>
         .toString(36)
         .slice(2, 10)}`;
 
+// ------ LaTeX テキスト自動補正 ------
+// 1) ¥ (U+00A5) を \ に変換
+// 2) $$ ... $$ を前後改行付きのブロック形式に整える
+function normalizeMathText(raw: string): string {
+  if (!raw) return "";
+
+  let text = raw;
+
+  // 1) 日本語環境で紛れ込みがちな「¥」をバックスラッシュに変換
+  text = text.replace(/¥/g, "\\");
+
+  // 2) $$ ... $$ ブロックを
+  //    任意の位置 → 前後改行付きの独立ブロックに整形
+  //    例）"...$$式$$Step2..." → "\n$$\n式\n$$\nStep2..."
+  text = text.replace(/\$\$([\s\S]*?)\$\$/g, (_match, inner) => {
+    const trimmed = String(inner).trim();
+    return `\n$$\n${trimmed}\n$$\n`;
+  });
+
+  return text;
+}
+
 // -------- MathMarkdown コンポーネント（KaTeX対応） --------
 function MathMarkdown({ text }: { text: string }) {
-  if (!text.trim()) {
+  const normalized = normalizeMathText(text);
+
+  if (!normalized.trim()) {
     return (
       <p className="text-xs text-gray-400 italic">
         まだ内容がありません。上のテキストを編集して保存してください。
@@ -68,7 +92,7 @@ function MathMarkdown({ text }: { text: string }) {
         remarkPlugins={[remarkMath]}
         rehypePlugins={[rehypeKatex]}
       >
-        {text}
+        {normalized}
       </ReactMarkdown>
     </div>
   );
