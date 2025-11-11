@@ -4,6 +4,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { loadUserDoc, saveUserDoc } from "@/lib/userDocStore";
 
+import CodeMirror from "@uiw/react-codemirror";
+import { vscodeDark } from "@uiw/codemirror-theme-vscode";
+import { python } from "@codemirror/lang-python";
+import { javascript } from "@codemirror/lang-javascript";
+import { cpp } from "@codemirror/lang-cpp";
+import type { Extension } from "@codemirror/state";
+
 type ID = string;
 
 type NodeKind = "folder" | "file";
@@ -15,6 +22,8 @@ type Node = {
   kind: NodeKind;
 };
 
+type CodeLanguage = "python" | "typescript" | "cpp" | "text";
+
 type ReadingSet = {
   id: ID;
   code: string;
@@ -25,6 +34,8 @@ type ReadingSet = {
 type FileData = {
   id: ID;
   sets: ReadingSet[];
+  // 各ファイルごとのコード言語
+  language?: CodeLanguage;
 };
 
 type Store = {
@@ -101,6 +112,14 @@ function saveLocal(store: Store) {
   } catch {
     // 失敗しても無視
   }
+}
+
+// 言語ごとの CodeMirror 拡張
+function getExtensionsForLanguage(lang: CodeLanguage | undefined): Extension[] {
+  if (lang === "python") return [python()];
+  if (lang === "typescript") return [javascript({ typescript: true })];
+  if (lang === "cpp") return [cpp()];
+  return [];
 }
 
 export default function CodeReading() {
@@ -225,6 +244,7 @@ export default function CodeReading() {
       const fileData: FileData = {
         id,
         sets: [firstSet],
+        language: "python", // デフォルトはPython
       };
       return {
         ...s,
@@ -388,6 +408,23 @@ export default function CodeReading() {
     });
   };
 
+  const setFileLanguage = (fileId: ID, lang: CodeLanguage) => {
+    setStore((s) => {
+      const file = s.files[fileId];
+      if (!file) return s;
+      return {
+        ...s,
+        files: {
+          ...s.files,
+          [fileId]: {
+            ...file,
+            language: lang,
+          },
+        },
+      };
+    });
+  };
+
   return (
     <div className="grid gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
       {/* 左：フォルダ＆ファイルツリー */}
@@ -538,14 +575,33 @@ export default function CodeReading() {
           </div>
         ) : (
           <div className="space-y-4">
-            <div className="flex items-center gap-3 mb-2">
+            <div className="flex flex-wrap items-center gap-3 mb-2">
               <h2 className="font-semibold text-base">
                 ファイル: {nodes[currentFile.id]?.name ?? ""}
               </h2>
+              {/* 言語選択 */}
+              <div className="ml-auto flex items-center gap-2 text-xs">
+                <span className="text-gray-600">言語:</span>
+                <select
+                  value={currentFile.language ?? "python"}
+                  onChange={(e) =>
+                    setFileLanguage(
+                      currentFile.id,
+                      e.target.value as CodeLanguage
+                    )
+                  }
+                  className="rounded-lg border px-2 py-1 text-xs"
+                >
+                  <option value="python">Python</option>
+                  <option value="typescript">TypeScript</option>
+                  <option value="cpp">C++</option>
+                  <option value="text">テキスト</option>
+                </select>
+              </div>
               <button
                 type="button"
                 onClick={addSetToCurrentFile}
-                className="ml-auto rounded-xl border px-3 py-1.5 text-xs hover:bg-gray-50"
+                className="rounded-xl border px-3 py-1.5 text-xs hover:bg-gray-50"
               >
                 セットを追加
               </button>
@@ -562,6 +618,7 @@ export default function CodeReading() {
                     showMy: false,
                     showAi: false,
                   };
+                  const lang = currentFile.language ?? "python";
                   return (
                     <div
                       key={s.id}
@@ -573,25 +630,32 @@ export default function CodeReading() {
                         </h3>
                       </div>
 
-                      {/* コード板 */}
+                      {/* コード板（CodeMirror） */}
                       <div>
                         <div className="text-xs font-semibold mb-1 text-gray-700">
                           コード
                         </div>
-                        <textarea
-                          value={s.code}
-                          onChange={(e) =>
-                            updateSetField(
-                              currentFile.id,
-                              s.id,
-                              "code",
-                              e.target.value
-                            )
-                          }
-                          rows={6}
-                          className="w-full rounded-xl border px-3 py-2 text-xs font-mono leading-relaxed bg-white"
-                          placeholder="ここに読みたいコードを書いてください。"
-                        />
+                        <div className="rounded-xl border overflow-hidden bg-black">
+                          <CodeMirror
+                            value={s.code}
+                            height="220px"
+                            theme={vscodeDark}
+                            extensions={getExtensionsForLanguage(lang)}
+                            onChange={(value) =>
+                              updateSetField(
+                                currentFile.id,
+                                s.id,
+                                "code",
+                                value
+                              )
+                            }
+                            basicSetup={{
+                              lineNumbers: true,
+                              highlightActiveLine: true,
+                              foldGutter: true,
+                            }}
+                          />
+                        </div>
                       </div>
 
                       {/* 自分の解釈（裏向き → めくる） */}
