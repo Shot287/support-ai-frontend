@@ -4,6 +4,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toSearchKey } from "@/features/study/kana";
 import { loadUserDoc, saveUserDoc } from "@/lib/userDocStore";
+import { registerManualSync } from "@/lib/manual-sync";
 
 /* ========= 型 ========= */
 type ID = string;
@@ -16,9 +17,11 @@ type Entry = {
   updatedAt: number;
 };
 type StoreV2 = { entries: Entry[]; version: 2 };
+
 // v1 既存データ用（yomi なし）
 type EntryV1 = { id: ID; term: string; meaning: string; createdAt: number; updatedAt: number };
 type StoreV1 = { entries: EntryV1[]; version: 1 };
+
 type StoreAny = StoreV2 | StoreV1;
 
 /* ========= 定数 / ユーティリティ ========= */
@@ -28,14 +31,6 @@ const LOCAL_KEY_V1 = "dictionary_v1";
 
 // user_docs 用の doc_key
 const DOC_KEY = "study_dictionary_v1";
-
-// 手動同期の合図（ホーム画面と同じ）
-const SYNC_CHANNEL = "support-ai-sync";
-// ホームがフルリセット時に使うキー（辞書側では since を使わないが、念のため購読だけする）
-const STORAGE_KEY_RESET_REQ = "support-ai:sync:reset:req";
-
-// ホーム直書きのローカル反映通知（ホーム側で送る可能性あり）
-const LOCAL_APPLIED_TYPE = "LOCAL_DOC_APPLIED";
 
 const uid = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -94,92 +89,35 @@ export default function Dictionary() {
     saveLocal(store);
   }, [store]);
 
-  // 手動同期の合図を購読：PULL/PUSH/RESET + localStorage 変更検知
+  // ---- 手動同期の合図を購読（manual-sync.ts に一本化） ----
   useEffect(() => {
-    if (typeof window === "undefined") return;
-
-    const doPull = async () => {
-      try {
-        const remote = await loadUserDoc<StoreV2>(DOC_KEY);
-        if (remote && remote.version === 2) {
-          setStore(remote);
-          saveLocal(remote);
-        }
-      } catch (e) {
-        console.warn("[dictionary] manual PULL failed:", e);
-      }
-    };
-
-    const doPush = async () => {
-      try {
-        await saveUserDoc<StoreV2>(DOC_KEY, storeRef.current);
-      } catch (e) {
-        console.warn("[dictionary] manual PUSH failed:", e);
-      }
-    };
-
-    // BroadcastChannel
-    let bc: BroadcastChannel | null = null;
-    try {
-      if ("BroadcastChannel" in window) {
-        bc = new BroadcastChannel(SYNC_CHANNEL);
-        bc.onmessage = (ev) => {
-          const msg = ev?.data;
-          if (!msg || typeof msg.type !== "string") return;
-          const t = msg.type.toUpperCase();
-          if (t.includes("PULL")) doPull();
-          else if (t.includes("PUSH")) doPush();
-          else if (t.includes("RESET")) {
-            // since は未使用。ホーム側の直後の PULL で最新化される想定。
-          } else if (t === LOCAL_APPLIED_TYPE && msg.docKey === DOC_KEY) {
-            // ホームが直接 localStorage に書いた場合の合図
-            setStore(loadLocal());
+    const unsubscribe = registerManualSync({
+      // 📥 取得（クラウド→ローカル）
+      pull: async () => {
+        try {
+          const remote = await loadUserDoc<StoreV2>(DOC_KEY);
+          if (remote && remote.version === 2) {
+            setStore(remote);
+            saveLocal(remote);
           }
-        };
-      }
-    } catch {
-      // noop
-    }
-
-    // 同タブ postMessage
-    const onWinMsg = (ev: MessageEvent) => {
-      const msg = ev?.data;
-      if (!msg || typeof msg.type !== "string") return;
-      const t = msg.type.toUpperCase();
-      if (t.includes("PULL")) doPull();
-      else if (t.includes("PUSH")) doPush();
-      else if (t === LOCAL_APPLIED_TYPE && msg.docKey === DOC_KEY) {
-        setStore(loadLocal());
-      }
-    };
-    window.addEventListener("message", onWinMsg);
-
-    // 他タブ storage
-    const onStorage = (ev: StorageEvent) => {
-      if (!ev.key) return;
-      // ホームがローカルへ反映したときは localStorage の中身が変わるので拾う
-      if (ev.key === LOCAL_KEY_V2 && ev.newValue) {
-        try {
-          setStore(migrate(JSON.parse(ev.newValue)));
-        } catch {
-          // noop
+        } catch (e) {
+          console.warn("[dictionary] manual PULL failed:", e);
         }
-      }
-      if (ev.key === STORAGE_KEY_RESET_REQ) {
-        // RESET 自体は何もしない（直後に PULL のはず）
-      }
-    };
-    window.addEventListener("storage", onStorage);
-
-    return () => {
-      if (bc) {
+      },
+      // ☁ アップロード（ローカル→クラウド）
+      push: async () => {
         try {
-          bc.close();
-        } catch {}
-      }
-      window.removeEventListener("message", onWinMsg);
-      window.removeEventListener("storage", onStorage);
-    };
+          await saveUserDoc<StoreV2>(DOC_KEY, storeRef.current);
+        } catch (e) {
+          console.warn("[dictionary] manual PUSH failed:", e);
+        }
+      },
+      // ⚠（任意）RESET: 辞書は since 未使用なので特別な処理は不要
+      reset: async () => {
+        /* no-op */
+      },
+    });
+    return unsubscribe;
   }, []);
 
   // 追加フォーム
@@ -299,7 +237,7 @@ export default function Dictionary() {
     reader.onload = () => {
       try {
         const parsed = migrate(JSON.parse(String(reader.result)) as StoreAny);
-        setStore(parsed); // ローカル更新。サーバ反映はホームで手動アップロード
+        setStore(parsed); // ローカルに反映。サーバ反映はホームの「アップロード」
         alert("インポートしました（ローカルに反映。サーバへは『アップロード』で同期）。");
       } catch {
         alert("JSONの読み込みに失敗しました。");
@@ -418,7 +356,6 @@ export default function Dictionary() {
                   minute: "2-digit",
                   hour12: false,
                 }).format(new Date(t));
-
               return (
                 <li key={e.id} className="rounded-xl border p-3 grid gap-2 sm:grid-cols-[1fr_auto] sm:items-center">
                   {!isEditing ? (
@@ -427,7 +364,9 @@ export default function Dictionary() {
                         <div className="font-medium break-words">{e.term}</div>
                         {e.yomi && <div className="text-xs text-gray-500 mt-0.5">よみ: {e.yomi}</div>}
                         <div className="text-sm text-gray-700 break-words">{e.meaning}</div>
-                        <div className="text-xs text-gray-500 mt-1">作成: {fmt(e.createdAt)} ／ 更新: {fmt(e.updatedAt)}</div>
+                        <div className="text-xs text-gray-500 mt-1">
+                          作成: {fmt(e.createdAt)} ／ 更新: {fmt(e.updatedAt)}
+                        </div>
                       </div>
                       <div className="flex flex-wrap gap-2">
                         <button onClick={() => startEdit(e.id)} className="rounded-lg border px-3 py-2 text-sm hover:bg-gray-50">
