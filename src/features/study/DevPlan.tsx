@@ -7,7 +7,6 @@ import { loadUserDoc, saveUserDoc } from "@/lib/userDocStore";
 import { registerManualSync } from "@/lib/manual-sync";
 
 type ID = string;
-
 type SubNote = { id: ID; title: string; content: string };
 type Note = { id: ID; title: string; subnotes: SubNote[] };
 type Folder = { id: ID; title: string };
@@ -18,8 +17,11 @@ type Store = {
   version: 1;
 };
 
-const KEY = "devplan_v1";
-const LOCAL_KEY = KEY; // localStorage のキー=doc_key と同一で運用
+// ==== 新方式 手動同期と整合させるための定数 ====
+const DOC_KEY = "devplan_v1";          // クラウドのdoc_key
+const LOCAL_KEY = "devplan_v1";        // localStorageのキー（doc_keyと同一運用）
+const SYNC_CHANNEL = "support-ai-sync";
+const LOCAL_APPLIED_TYPE = "LOCAL_DOC_APPLIED"; // ホームがローカルへ適用後に飛ばす合図（任意）
 
 const uid = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -72,17 +74,19 @@ export function DevPlan() {
     return init;
   });
   const storeRef = useRef(store);
+
+  // ② 変更はローカルへ即時保存（サーバへは手動☁時のみ）
   useEffect(() => {
     storeRef.current = store;
-    if (store) saveLocal(store); // ② 変更はローカルへ即時保存（サーバへは手動☁時のみ）
+    if (store) saveLocal(store);
   }, [store]);
 
-  // ③ 手動同期の合図（ホームの 📥／☁）に反応
+  // ③ 手動同期の合図に反応（📥/☁/RESET）
   useEffect(() => {
     const unsubscribe = registerManualSync({
       pull: async () => {
         try {
-          const remote = await loadUserDoc<Store>(KEY);
+          const remote = await loadUserDoc<Store>(DOC_KEY);
           if (remote && remote.version === 1) {
             setStore(remote);
             saveLocal(remote);
@@ -94,19 +98,74 @@ export function DevPlan() {
       push: async () => {
         try {
           const cur = storeRef.current ?? loadLocal() ?? createInitialStore();
-          await saveUserDoc<Store>(KEY, cur);
+          await saveUserDoc<Store>(DOC_KEY, cur);
         } catch (e) {
           console.warn("[DevPlan] manual PUSH failed:", e);
         }
       },
       reset: async () => {
-        /* DevPlan は since 未使用のため特別処理なし */
+        /* since未使用のため特別処理なし（直後のPULLで最新化） */
       },
     });
     return unsubscribe;
   }, []);
 
-  // ローディング（ローカルが null のケースは基本発生しないが一応）
+  // ④ ホームがローカルに適用したときの合図（LOCAL_DOC_APPLIED）と storage を購読
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    // BroadcastChannel: LOCAL_DOC_APPLIED を拾う
+    let bc: BroadcastChannel | null = null;
+    try {
+      if ("BroadcastChannel" in window) {
+        bc = new BroadcastChannel(SYNC_CHANNEL);
+        bc.onmessage = (ev) => {
+          const msg = ev?.data;
+          if (msg && msg.type === LOCAL_APPLIED_TYPE && msg.docKey === DOC_KEY) {
+            const fresh = loadLocal();
+            if (fresh) setStore(fresh);
+          }
+        };
+      }
+    } catch {
+      // noop
+    }
+
+    // 同タブ postMessage: LOCAL_DOC_APPLIED を拾う
+    const onWinMsg = (ev: MessageEvent) => {
+      const msg = ev?.data;
+      if (msg && msg.type === LOCAL_APPLIED_TYPE && msg.docKey === DOC_KEY) {
+        const fresh = loadLocal();
+        if (fresh) setStore(fresh);
+      }
+    };
+    window.addEventListener("message", onWinMsg);
+
+    // 他タブ storage: LOCAL_KEY の中身が変わったら即反映
+    const onStorage = (ev: StorageEvent) => {
+      if (ev.key === LOCAL_KEY && ev.newValue) {
+        try {
+          const parsed = JSON.parse(ev.newValue) as Store;
+          if (parsed?.version === 1) setStore(parsed);
+        } catch {
+          // noop
+        }
+      }
+    };
+    window.addEventListener("storage", onStorage);
+
+    return () => {
+      if (bc) {
+        try {
+          bc.close();
+        } catch {}
+      }
+      window.removeEventListener("message", onWinMsg);
+      window.removeEventListener("storage", onStorage);
+    };
+  }, []);
+
+  // ローディング（基本ここは通らないが保険）
   if (!store) return <div className="text-sm text-gray-500">開発計画を読み込み中です…</div>;
 
   const folders = store.folders;
@@ -261,9 +320,7 @@ export function DevPlan() {
       {/* 右：ノート一覧 */}
       <section className="rounded-2xl border p-4 shadow-sm">
         <div className="flex items-center justify-between mb-3">
-          <h2 className="font-semibold">
-            {currentFolder ? `「${currentFolder.title}」のノート` : "ノート"}
-          </h2>
+          <h2 className="font-semibold">{currentFolder ? `「${currentFolder.title}」のノート` : "ノート"}</h2>
           {currentFolderId && (
             <button onClick={() => addNote(currentFolderId)} className="rounded-xl border px-3 py-1.5 text-sm hover:bg-gray-50">
               ノート追加
@@ -280,7 +337,10 @@ export function DevPlan() {
             {notes.map((n) => (
               <li key={n.id} className="rounded-xl border p-3">
                 <div className="flex items-center justify-between">
-                  <Link href={`/study/dev-plan/${currentFolderId}/${n.id}`} className="font-semibold underline-offset-2 hover:underline break-words">
+                  <Link
+                    href={`/study/dev-plan/${currentFolderId}/${n.id}`}
+                    className="font-semibold underline-offset-2 hover:underline break-words"
+                  >
                     {n.title}
                   </Link>
                   <div className="flex gap-2">

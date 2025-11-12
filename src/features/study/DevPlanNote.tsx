@@ -17,8 +17,11 @@ type Store = {
   version: 1;
 };
 
-const KEY = "devplan_v1";
-const LOCAL_KEY = KEY;
+// 同期系定数
+const DOC_KEY = "devplan_v1";
+const LOCAL_KEY = "devplan_v1";
+const SYNC_CHANNEL = "support-ai-sync";
+const LOCAL_APPLIED_TYPE = "LOCAL_DOC_APPLIED";
 
 const uid = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -76,15 +79,15 @@ export function DevPlanNoteDetail({
   const storeRef = useRef(store);
   useEffect(() => {
     storeRef.current = store;
-    if (store) saveLocal(store); // ② 変更はローカルへ即時保存
+    if (store) saveLocal(store);
   }, [store]);
 
-  // ③ 手動同期の合図を購読
+  // ② 手動同期の合図を購読（📥/☁/RESET）
   useEffect(() => {
     const unsubscribe = registerManualSync({
       pull: async () => {
         try {
-          const remote = await loadUserDoc<Store>(KEY);
+          const remote = await loadUserDoc<Store>(DOC_KEY);
           if (remote && remote.version === 1) {
             setStore(remote);
             saveLocal(remote);
@@ -96,7 +99,7 @@ export function DevPlanNoteDetail({
       push: async () => {
         try {
           const cur = storeRef.current ?? loadLocal() ?? createInitialStore();
-          await saveUserDoc<Store>(KEY, cur);
+          await saveUserDoc<Store>(DOC_KEY, cur);
         } catch (e) {
           console.warn("[DevPlanNoteDetail] manual PUSH failed:", e);
         }
@@ -106,6 +109,58 @@ export function DevPlanNoteDetail({
       },
     });
     return unsubscribe;
+  }, []);
+
+  // ③ ホームからのローカル適用通知 & storage 変化を購読
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    let bc: BroadcastChannel | null = null;
+    try {
+      if ("BroadcastChannel" in window) {
+        bc = new BroadcastChannel(SYNC_CHANNEL);
+        bc.onmessage = (ev) => {
+          const msg = ev?.data;
+          if (msg && msg.type === LOCAL_APPLIED_TYPE && msg.docKey === DOC_KEY) {
+            const fresh = loadLocal();
+            if (fresh) setStore(fresh);
+          }
+        };
+      }
+    } catch {
+      // noop
+    }
+
+    const onWinMsg = (ev: MessageEvent) => {
+      const msg = ev?.data;
+      if (msg && msg.type === LOCAL_APPLIED_TYPE && msg.docKey === DOC_KEY) {
+        const fresh = loadLocal();
+        if (fresh) setStore(fresh);
+      }
+    };
+    window.addEventListener("message", onWinMsg);
+
+    const onStorage = (ev: StorageEvent) => {
+      if (ev.key === LOCAL_KEY && ev.newValue) {
+        try {
+          const parsed = JSON.parse(ev.newValue) as Store;
+          if (parsed?.version === 1) setStore(parsed);
+        } catch {
+          // noop
+        }
+      }
+    };
+    window.addEventListener("storage", onStorage);
+
+    return () => {
+      if (bc) {
+        try {
+          bc.close();
+        } catch {}
+      }
+      window.removeEventListener("message", onWinMsg);
+      window.removeEventListener("storage", onStorage);
+    };
   }, []);
 
   if (!store) {
