@@ -1,8 +1,10 @@
+// src/features/study/dev-plan/DevPlanNoteDetail.tsx
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { loadUserDoc, saveUserDoc } from "@/lib/userDocStore";
+import { registerManualSync } from "@/lib/manual-sync";
 
 type ID = string;
 type SubNote = { id: ID; title: string; content: string };
@@ -16,6 +18,7 @@ type Store = {
 };
 
 const KEY = "devplan_v1";
+const LOCAL_KEY = KEY;
 
 const uid = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -25,20 +28,34 @@ const uid = () =>
 function loadLocal(): Store | null {
   if (typeof window === "undefined") return null;
   try {
-    const raw = localStorage.getItem(KEY);
+    const raw = localStorage.getItem(LOCAL_KEY);
     return raw ? (JSON.parse(raw) as Store) : null;
   } catch {
     return null;
   }
 }
-
 function saveLocal(s: Store) {
   if (typeof window === "undefined") return;
   try {
-    localStorage.setItem(KEY, JSON.stringify(s));
+    localStorage.setItem(LOCAL_KEY, JSON.stringify(s));
   } catch {
     // noop
   }
+}
+function createInitialStore(): Store {
+  const baseFolders: Folder[] = [
+    { id: uid(), title: "先延ばし対策" },
+    { id: uid(), title: "睡眠管理" },
+    { id: uid(), title: "勉強" },
+    { id: uid(), title: "Mental" },
+  ];
+  const firstId = baseFolders[0]?.id;
+  return {
+    folders: baseFolders,
+    notesByFolder: Object.fromEntries(baseFolders.map((f) => [f.id, [] as Note[]])),
+    currentFolderId: firstId,
+    version: 1,
+  };
 }
 
 export function DevPlanNoteDetail({
@@ -48,73 +65,49 @@ export function DevPlanNoteDetail({
   folderId: string;
   noteId: string;
 }) {
-  const [store, setStore] = useState<Store | null>(null);
-
-  // 初期読み込み（一覧側と同じロジック）
+  // ① ローカルのみで初期ロード
+  const [store, setStore] = useState<Store | null>(() => {
+    const base = loadLocal();
+    if (base) return base;
+    const init = createInitialStore();
+    saveLocal(init);
+    return init;
+  });
+  const storeRef = useRef(store);
   useEffect(() => {
-    let cancelled = false;
-
-    const init = async () => {
-      let base = loadLocal();
-
-      if (!base) {
-        // このページだけ直接開いた場合でも初期フォルダを用意
-        const baseFolders: Folder[] = [
-          { id: uid(), title: "先延ばし対策" },
-          { id: uid(), title: "睡眠管理" },
-          { id: uid(), title: "勉強" },
-          { id: uid(), title: "Mental" },
-        ];
-        const firstId = baseFolders[0]?.id;
-        base = {
-          folders: baseFolders,
-          notesByFolder: Object.fromEntries(baseFolders.map((f) => [f.id, [] as Note[]])),
-          currentFolderId: firstId,
-          version: 1,
-        };
-        saveLocal(base);
-      }
-
-      if (!cancelled) {
-        setStore(base);
-      }
-
-      try {
-        const remote = await loadUserDoc<Store>(KEY);
-        if (cancelled) return;
-
-        if (remote && remote.version === 1) {
-          setStore(remote);
-          saveLocal(remote);
-        } else if (!remote) {
-          await saveUserDoc<Store>(KEY, base);
-        }
-      } catch {
-        // サーバ不調時はローカルのみ
-      }
-    };
-
-    void init();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // store 変更時：保存
-  useEffect(() => {
-    if (!store) return;
-    saveLocal(store);
-    (async () => {
-      try {
-        await saveUserDoc<Store>(KEY, store);
-      } catch {
-        // noop
-      }
-    })();
+    storeRef.current = store;
+    if (store) saveLocal(store); // ② 変更はローカルへ即時保存
   }, [store]);
 
-  // ローディング中
+  // ③ 手動同期の合図を購読
+  useEffect(() => {
+    const unsubscribe = registerManualSync({
+      pull: async () => {
+        try {
+          const remote = await loadUserDoc<Store>(KEY);
+          if (remote && remote.version === 1) {
+            setStore(remote);
+            saveLocal(remote);
+          }
+        } catch (e) {
+          console.warn("[DevPlanNoteDetail] manual PULL failed:", e);
+        }
+      },
+      push: async () => {
+        try {
+          const cur = storeRef.current ?? loadLocal() ?? createInitialStore();
+          await saveUserDoc<Store>(KEY, cur);
+        } catch (e) {
+          console.warn("[DevPlanNoteDetail] manual PUSH failed:", e);
+        }
+      },
+      reset: async () => {
+        /* no-op */
+      },
+    });
+    return unsubscribe;
+  }, []);
+
   if (!store) {
     return <div className="text-sm text-gray-500">ノートを読み込み中です…</div>;
   }
@@ -153,10 +146,7 @@ export function DevPlanNoteDetail({
               ...s.notesByFolder,
               [folderId]: (s.notesByFolder[folderId] || []).map((n) =>
                 n.id === noteId
-                  ? {
-                      ...n,
-                      subnotes: [...n.subnotes, { id: uid(), title, content: "" }],
-                    }
+                  ? { ...n, subnotes: [...n.subnotes, { id: uid(), title, content: "" }] }
                   : n
               ),
             },
@@ -181,9 +171,7 @@ export function DevPlanNoteDetail({
                 n.id === noteId
                   ? {
                       ...n,
-                      subnotes: n.subnotes.map((sn) =>
-                        sn.id === subId ? { ...sn, title } : sn
-                      ),
+                      subnotes: n.subnotes.map((sn) => (sn.id === subId ? { ...sn, title } : sn)),
                     }
                   : n
               ),
@@ -202,12 +190,7 @@ export function DevPlanNoteDetail({
             notesByFolder: {
               ...s.notesByFolder,
               [folderId]: (s.notesByFolder[folderId] || []).map((n) =>
-                n.id === noteId
-                  ? {
-                      ...n,
-                      subnotes: n.subnotes.filter((sn) => sn.id !== subId),
-                    }
-                  : n
+                n.id === noteId ? { ...n, subnotes: n.subnotes.filter((sn) => sn.id !== subId) } : n
               ),
             },
           }
@@ -226,9 +209,7 @@ export function DevPlanNoteDetail({
                 n.id === noteId
                   ? {
                       ...n,
-                      subnotes: n.subnotes.map((sn) =>
-                        sn.id === subId ? { ...sn, content } : sn
-                      ),
+                      subnotes: n.subnotes.map((sn) => (sn.id === subId ? { ...sn, content } : sn)),
                     }
                   : n
               ),
@@ -242,10 +223,7 @@ export function DevPlanNoteDetail({
     return (
       <div className="space-y-2">
         <p className="text-sm text-red-600">ノートが見つかりませんでした。</p>
-        <Link
-          href="/study/dev-plan"
-          className="text-blue-600 hover:underline text-sm"
-        >
+        <Link href="/study/dev-plan" className="text-blue-600 hover:underline text-sm">
           一覧に戻る
         </Link>
       </div>
@@ -266,19 +244,14 @@ export function DevPlanNoteDetail({
           <button onClick={addSubNote} className="rounded-lg border px-2 py-1 text-xs">
             小ノート追加
           </button>
-          <Link
-            href={`/study/dev-plan`}
-            className="rounded-lg border px-2 py-1 text-xs hover:bg-gray-50"
-          >
+          <Link href={`/study/dev-plan`} className="rounded-lg border px-2 py-1 text-xs hover:bg-gray-50">
             一覧へ
           </Link>
         </div>
       </div>
 
       {note.subnotes.length === 0 ? (
-        <p className="text-sm text-gray-500">
-          小ノートがありません。「小ノート追加」で作成してください。
-        </p>
+        <p className="text-sm text-gray-500">小ノートがありません。「小ノート追加」で作成してください。</p>
       ) : (
         <div className="space-y-3">
           {note.subnotes.map((sn) => (
@@ -289,16 +262,10 @@ export function DevPlanNoteDetail({
                   <span className="text-xs text-gray-500">（編集可）</span>
                 </div>
                 <div className="flex gap-2">
-                  <button
-                    onClick={() => renameSub(sn.id)}
-                    className="rounded-lg border px-2 py-1 text-xs"
-                  >
+                  <button onClick={() => renameSub(sn.id)} className="rounded-lg border px-2 py-1 text-xs">
                     名
                   </button>
-                  <button
-                    onClick={() => deleteSub(sn.id)}
-                    className="rounded-lg border px-2 py-1 text-xs"
-                  >
+                  <button onClick={() => deleteSub(sn.id)} className="rounded-lg border px-2 py-1 text-xs">
                     削
                   </button>
                 </div>
