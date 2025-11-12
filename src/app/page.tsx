@@ -10,14 +10,7 @@ import { loadUserDoc, saveUserDoc } from "@/lib/userDocStore";
 // 手動同期の対象ドキュメント一覧（必要に応じて追加）
 const DOCS = [
   { docKey: "study_dictionary_v1", localKey: "dictionary_v2" },
-  // 例）{ docKey: "devplan_store_v1", localKey: "devplan_v1" },
-] as const;
-
-const categories = [
-  { id: "nudge",  title: "先延ばし対策", description: "5秒ルールやポモドーロで初動をつくる", href: "/nudge" },
-  { id: "sleep",  title: "睡眠管理",     description: "就寝・起床のリズムや振り返り（準備中）", href: "/sleep" },
-  { id: "study",  title: "勉強",         description: "用語辞典などの学習サポート", href: "/study" },
-  { id: "mental", title: "Mental",       description: "メンタルケア・気分管理など（準備中）", href: "/mental" },
+  { docKey: "devplan_v1",          localKey: "devplan_v1" }, // ← 追加！
 ] as const;
 
 // エラー表示用：できるだけ詳細に
@@ -44,7 +37,7 @@ function writeLocal(localKey: string, json: unknown) {
   } catch {}
 }
 
-// 「ローカルへ反映したよ」という合図（辞書などが画面を開いていれば即時更新できる）
+// 「ローカルへ反映したよ」という合図（辞書/DevPlanなどが開いていれば即時更新できる）
 const SYNC_CHANNEL = "support-ai-sync";
 function notifyLocalApplied(docKey: string) {
   const payload = { type: "LOCAL_DOC_APPLIED", docKey, at: Date.now() } as const;
@@ -136,6 +129,13 @@ export default function HomePage() {
       setBusy(null);
     }
   }, [userId, deviceId]);
+
+  const categories = [
+    { id: "nudge",  title: "先延ばし対策", description: "5秒ルールやポモドーロで初動をつくる", href: "/nudge" },
+    { id: "sleep",  title: "睡眠管理",     description: "就寝・起床のリズムや振り返り（準備中）", href: "/sleep" },
+    { id: "study",  title: "勉強",         description: "用語辞典などの学習サポート", href: "/study" },
+    { id: "mental", title: "Mental",       description: "メンタルケア・気分管理など（準備中）", href: "/mental" },
+  ] as const;
 
   return (
     <main className="p-4 space-y-4">
