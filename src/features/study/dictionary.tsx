@@ -15,23 +15,13 @@ type Entry = {
   createdAt: number;
   updatedAt: number;
 };
-
 type StoreV2 = { entries: Entry[]; version: 2 };
-
 // v1 既存データ用（yomi なし）
-type EntryV1 = {
-  id: ID;
-  term: string;
-  meaning: string;
-  createdAt: number;
-  updatedAt: number;
-};
+type EntryV1 = { id: ID; term: string; meaning: string; createdAt: number; updatedAt: number };
 type StoreV1 = { entries: EntryV1[]; version: 1 };
-
 type StoreAny = StoreV2 | StoreV1;
 
 /* ========= 定数 / ユーティリティ ========= */
-
 // ローカル保存用キー
 const LOCAL_KEY_V2 = "dictionary_v2";
 const LOCAL_KEY_V1 = "dictionary_v1";
@@ -39,9 +29,13 @@ const LOCAL_KEY_V1 = "dictionary_v1";
 // user_docs 用の doc_key
 const DOC_KEY = "study_dictionary_v1";
 
-// ホーム画面の手動同期ボタンが飛ばすチャンネル／キー
+// 手動同期の合図（ホーム画面と同じ）
 const SYNC_CHANNEL = "support-ai-sync";
+// ホームがフルリセット時に使うキー（辞書側では since を使わないが、念のため購読だけする）
 const STORAGE_KEY_RESET_REQ = "support-ai:sync:reset:req";
+
+// ホーム直書きのローカル反映通知（ホーム側で送る可能性あり）
+const LOCAL_APPLIED_TYPE = "LOCAL_DOC_APPLIED";
 
 const uid = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -52,7 +46,6 @@ const uid = () =>
 function migrate(raw: StoreAny | null | undefined): StoreV2 {
   if (!raw) return { entries: [], version: 2 };
   if ((raw as StoreV2).version === 2) return raw as StoreV2;
-
   const v1 = raw as StoreV1;
   const entries: Entry[] = (v1.entries ?? []).map((e) => ({
     id: e.id,
@@ -65,19 +58,12 @@ function migrate(raw: StoreAny | null | undefined): StoreV2 {
   return { entries, version: 2 };
 }
 
-// ローカル（localStorage）から読み込み
+// ローカル読み込み
 function loadLocal(): StoreV2 {
   try {
-    if (typeof window === "undefined") {
-      return { entries: [], version: 2 };
-    }
-    // まず新キー（v2）を試す
+    if (typeof window === "undefined") return { entries: [], version: 2 };
     const rawV2 = localStorage.getItem(LOCAL_KEY_V2);
-    if (rawV2) {
-      const parsed = JSON.parse(rawV2) as StoreAny;
-      return migrate(parsed);
-    }
-    // なければ旧キー（v1）から読み込んで migrate
+    if (rawV2) return migrate(JSON.parse(rawV2) as StoreAny);
     const rawV1 = localStorage.getItem(LOCAL_KEY_V1);
     const parsed = rawV1 ? (JSON.parse(rawV1) as StoreAny) : null;
     return migrate(parsed);
@@ -86,7 +72,7 @@ function loadLocal(): StoreV2 {
   }
 }
 
-// ローカル（localStorage）に保存
+// ローカル保存
 function saveLocal(s: StoreV2) {
   try {
     if (typeof window !== "undefined") {
@@ -102,13 +88,13 @@ export default function Dictionary() {
   const [store, setStore] = useState<StoreV2>(() => loadLocal());
   const storeRef = useRef(store);
 
-  // ローカルへは即時保存（※サーバーへは“手動ボタンの合図”でのみ）
+  // ローカルへは即時保存（サーバー反映はホームのボタン経由のみ）
   useEffect(() => {
     storeRef.current = store;
     saveLocal(store);
   }, [store]);
 
-  // ---- 手動同期の合図を受け取って PULL / PUSH を実行 ----
+  // 手動同期の合図を購読：PULL/PUSH/RESET + localStorage 変更検知
   useEffect(() => {
     if (typeof window === "undefined") return;
 
@@ -119,7 +105,6 @@ export default function Dictionary() {
           setStore(remote);
           saveLocal(remote);
         }
-        // remote が null の場合は何もしない（初期化アップロードは PUSH 側で）
       } catch (e) {
         console.warn("[dictionary] manual PULL failed:", e);
       }
@@ -133,7 +118,7 @@ export default function Dictionary() {
       }
     };
 
-    // 1) BroadcastChannel
+    // BroadcastChannel
     let bc: BroadcastChannel | null = null;
     try {
       if ("BroadcastChannel" in window) {
@@ -145,8 +130,10 @@ export default function Dictionary() {
           if (t.includes("PULL")) doPull();
           else if (t.includes("PUSH")) doPush();
           else if (t.includes("RESET")) {
-            // RESET は "since" 系のリセットだが辞書は since 未使用。
-            // 念のため直後の PULL を受ける想定なのでここでは何もしない。
+            // since は未使用。ホーム側の直後の PULL で最新化される想定。
+          } else if (t === LOCAL_APPLIED_TYPE && msg.docKey === DOC_KEY) {
+            // ホームが直接 localStorage に書いた場合の合図
+            setStore(loadLocal());
           }
         };
       }
@@ -154,23 +141,33 @@ export default function Dictionary() {
       // noop
     }
 
-    // 2) 同タブ postMessage
+    // 同タブ postMessage
     const onWinMsg = (ev: MessageEvent) => {
       const msg = ev?.data;
       if (!msg || typeof msg.type !== "string") return;
       const t = msg.type.toUpperCase();
       if (t.includes("PULL")) doPull();
       else if (t.includes("PUSH")) doPush();
-      else if (t.includes("RESET")) {
-        // noop（上記と同じ理由）
+      else if (t === LOCAL_APPLIED_TYPE && msg.docKey === DOC_KEY) {
+        setStore(loadLocal());
       }
     };
     window.addEventListener("message", onWinMsg);
 
-    // 3) 他タブ storage（RESET のみ明示キーがある）
+    // 他タブ storage
     const onStorage = (ev: StorageEvent) => {
-      if (ev.key !== STORAGE_KEY_RESET_REQ || !ev.newValue) return;
-      // RESET は辞書では処理不要。ホーム側で続けて PULL が来る想定。
+      if (!ev.key) return;
+      // ホームがローカルへ反映したときは localStorage の中身が変わるので拾う
+      if (ev.key === LOCAL_KEY_V2 && ev.newValue) {
+        try {
+          setStore(migrate(JSON.parse(ev.newValue)));
+        } catch {
+          // noop
+        }
+      }
+      if (ev.key === STORAGE_KEY_RESET_REQ) {
+        // RESET 自体は何もしない（直後に PULL のはず）
+      }
     };
     window.addEventListener("storage", onStorage);
 
@@ -210,7 +207,6 @@ export default function Dictionary() {
   const filtered = useMemo(() => {
     const nq = normalize(q.trim());
     const list = store.entries.slice();
-
     const hit = nq
       ? list.filter((e) => {
           const t = normalize(e.term);
@@ -232,8 +228,6 @@ export default function Dictionary() {
   }, [store.entries, q, sortKey, sortAsc]);
 
   /* ========= CRUD ========= */
-
-  // 追加
   const add = () => {
     const t = term.trim();
     const m = meaning.trim();
@@ -244,7 +238,6 @@ export default function Dictionary() {
     }
     const now = Date.now();
     const e: Entry = { id: uid(), term: t, meaning: m, yomi: y, createdAt: now, updatedAt: now };
-
     setStore((s) => ({ ...s, entries: [e, ...s.entries] }));
     setTerm("");
     setMeaning("");
@@ -252,7 +245,6 @@ export default function Dictionary() {
     termRef.current?.focus();
   };
 
-  // 編集開始
   const startEdit = (id: ID) => {
     const e = store.entries.find((x) => x.id === id);
     if (!e) return;
@@ -262,7 +254,6 @@ export default function Dictionary() {
     setTmpYomi(e.yomi ?? "");
   };
 
-  // 編集確定（保存）
   const commitEdit = () => {
     if (!editingId) return;
     const t = tmpTerm.trim();
@@ -273,7 +264,6 @@ export default function Dictionary() {
       return;
     }
     const now = Date.now();
-
     setStore((s) => {
       const entries = s.entries.map((x) =>
         x.id === editingId ? ({ ...x, term: t, meaning: m, yomi: y, updatedAt: now } as Entry) : x
@@ -283,22 +273,18 @@ export default function Dictionary() {
     setEditingId(null);
   };
 
-  // 削除
   const remove = (id: ID) => {
     setStore((s) => ({ ...s, entries: s.entries.filter((x) => x.id !== id) }));
   };
 
-  // 全削除
   const clearAll = () => {
     if (!confirm("全件削除します。よろしいですか？")) return;
     setStore({ entries: [], version: 2 });
   };
 
-  // JSON 入出力（setStore すればローカルに反映／サーバ反映は手動PUSH）
+  // JSON 入出力（サーバ反映はホームの「アップロード」で）
   const exportJson = () => {
-    const blob = new Blob([JSON.stringify(store, null, 2)], {
-      type: "application/json;charset=utf-8",
-    });
+    const blob = new Blob([JSON.stringify(store, null, 2)], { type: "application/json;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -313,7 +299,7 @@ export default function Dictionary() {
     reader.onload = () => {
       try {
         const parsed = migrate(JSON.parse(String(reader.result)) as StoreAny);
-        setStore(parsed); // ローカル更新のみ。サーバ反映はホーム画面の「アップロード」を使う
+        setStore(parsed); // ローカル更新。サーバ反映はホームで手動アップロード
         alert("インポートしました（ローカルに反映。サーバへは『アップロード』で同期）。");
       } catch {
         alert("JSONの読み込みに失敗しました。");
@@ -441,21 +427,13 @@ export default function Dictionary() {
                         <div className="font-medium break-words">{e.term}</div>
                         {e.yomi && <div className="text-xs text-gray-500 mt-0.5">よみ: {e.yomi}</div>}
                         <div className="text-sm text-gray-700 break-words">{e.meaning}</div>
-                        <div className="text-xs text-gray-500 mt-1">
-                          作成: {fmt(e.createdAt)} ／ 更新: {fmt(e.updatedAt)}
-                        </div>
+                        <div className="text-xs text-gray-500 mt-1">作成: {fmt(e.createdAt)} ／ 更新: {fmt(e.updatedAt)}</div>
                       </div>
                       <div className="flex flex-wrap gap-2">
-                        <button
-                          onClick={() => startEdit(e.id)}
-                          className="rounded-lg border px-3 py-2 text-sm hover:bg-gray-50"
-                        >
+                        <button onClick={() => startEdit(e.id)} className="rounded-lg border px-3 py-2 text-sm hover:bg-gray-50">
                           編集
                         </button>
-                        <button
-                          onClick={() => remove(e.id)}
-                          className="rounded-lg border px-3 py-2 text-sm hover:bg-gray-50"
-                        >
+                        <button onClick={() => remove(e.id)} className="rounded-lg border px-3 py-2 text-sm hover:bg-gray-50">
                           削除
                         </button>
                       </div>
@@ -485,16 +463,10 @@ export default function Dictionary() {
                         />
                       </div>
                       <div className="flex flex-wrap gap-2">
-                        <button
-                          onClick={commitEdit}
-                          className="rounded-lg border px-3 py-2 text-sm hover:bg-gray-50"
-                        >
+                        <button onClick={commitEdit} className="rounded-lg border px-3 py-2 text-sm hover:bg-gray-50">
                           保存
                         </button>
-                        <button
-                          onClick={() => setEditingId(null)}
-                          className="rounded-lg border px-3 py-2 text-sm hover:bg-gray-50"
-                        >
+                        <button onClick={() => setEditingId(null)} className="rounded-lg border px-3 py-2 text-sm hover:bg-gray-50">
                           取消
                         </button>
                       </div>

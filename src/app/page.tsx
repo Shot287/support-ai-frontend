@@ -5,6 +5,13 @@ import Link from "next/link";
 import { useCallback, useState } from "react";
 import { getDeviceId } from "@/lib/device";
 import { emitGlobalPull, emitGlobalPush } from "@/lib/sync-bus";
+import { loadUserDoc, saveUserDoc } from "@/lib/userDocStore";
+
+// 手動同期の対象ドキュメント一覧（必要に応じて追加）
+const DOCS = [
+  { docKey: "study_dictionary_v1", localKey: "dictionary_v2" },
+  // 例）{ docKey: "devplan_store_v1", localKey: "devplan_v1" },
+] as const;
 
 const categories = [
   { id: "nudge",  title: "先延ばし対策", description: "5秒ルールやポモドーロで初動をつくる", href: "/nudge" },
@@ -30,6 +37,29 @@ function formatErrorDetail(err: unknown) {
   }
 }
 
+// localStorage へ書き込み
+function writeLocal(localKey: string, json: unknown) {
+  try {
+    localStorage.setItem(localKey, JSON.stringify(json));
+  } catch {}
+}
+
+// 「ローカルへ反映したよ」という合図（辞書などが画面を開いていれば即時更新できる）
+const SYNC_CHANNEL = "support-ai-sync";
+function notifyLocalApplied(docKey: string) {
+  const payload = { type: "LOCAL_DOC_APPLIED", docKey, at: Date.now() } as const;
+  try {
+    if ("BroadcastChannel" in window) {
+      const bc = new BroadcastChannel(SYNC_CHANNEL);
+      bc.postMessage(payload);
+      bc.close();
+    }
+  } catch {}
+  try {
+    window.postMessage(payload, "*");
+  } catch {}
+}
+
 export default function HomePage() {
   // 暫定ユーザー（認証導入まで）
   const userId = "demo";
@@ -39,20 +69,31 @@ export default function HomePage() {
   const [message, setMessage] = useState<string | null>(null);
 
   // 📥 取得（クラウド → ローカル）
-  const onClickPullAll = useCallback(() => {
+  const onClickPullAll = useCallback(async () => {
     setMessage(null);
     setBusy("pull");
     try {
+      // 互換のため、各機能への合図も投げる
       emitGlobalPull(userId, deviceId);
+
+      // ホーム側で直接 Pull を実行（機能画面が開いていなくても反映）
+      for (const { docKey, localKey } of DOCS) {
+        const remote = await loadUserDoc<any>(docKey);
+        if (remote) {
+          writeLocal(localKey, remote);
+          notifyLocalApplied(docKey);
+        }
+      }
+
       alert(
         [
-          "📥 取得（受信）リクエストを送信しました。",
+          "📥 取得（受信）が完了しました。（サーバ → 端末）",
           `userId: ${userId}`,
           `deviceId: ${deviceId}`,
           `at: ${new Date().toLocaleString()}`,
         ].join("\n")
       );
-      setMessage("全機能に“取得（受信）”要求を送りました。各画面が最新化されます。");
+      setMessage("取得が完了しました。開いている画面は自動で最新に反映されます。");
     } catch (e) {
       const detail = formatErrorDetail(e);
       alert(["📥 取得（受信）でエラーが発生しました。", detail].join("\n\n"));
@@ -63,20 +104,30 @@ export default function HomePage() {
   }, [userId, deviceId]);
 
   // ☁ アップロード（ローカル → クラウド）
-  const onClickPushAll = useCallback(() => {
+  const onClickPushAll = useCallback(async () => {
     setMessage(null);
     setBusy("push");
     try {
+      // 互換のため、各機能への合図も投げる
       emitGlobalPush(userId, deviceId);
+
+      // ホーム側で直接 Push を実行
+      for (const { docKey, localKey } of DOCS) {
+        const raw = localStorage.getItem(localKey);
+        if (!raw) continue;
+        const parsed = JSON.parse(raw);
+        await saveUserDoc(docKey, parsed);
+      }
+
       alert(
         [
-          "☁ アップロード要求を送信しました。",
+          "☁ アップロードが完了しました。（端末 → サーバ）",
           `userId: ${userId}`,
           `deviceId: ${deviceId}`,
           `at: ${new Date().toLocaleString()}`,
         ].join("\n")
       );
-      setMessage("全機能に“アップロード”要求を送りました。ローカルの変更をクラウドに保存します。");
+      setMessage("アップロードが完了しました。別端末では『取得』を押すと反映されます。");
     } catch (e) {
       const detail = formatErrorDetail(e);
       alert(["☁ アップロードでエラーが発生しました。", detail].join("\n\n"));
@@ -98,7 +149,7 @@ export default function HomePage() {
             onClick={onClickPullAll}
             disabled={busy !== null}
             className="px-3 py-2 rounded-xl border shadow-sm hover:shadow transition disabled:opacity-50"
-            title="サーバ上の最新データを受信し、全機能を更新します"
+            title="サーバ上の最新データを受信し、localStorageへ反映します"
           >
             {busy === "pull" ? "取得中…" : "📥 取得"}
           </button>
@@ -108,7 +159,7 @@ export default function HomePage() {
             onClick={onClickPushAll}
             disabled={busy !== null}
             className="px-3 py-2 rounded-xl border shadow-sm hover:shadow transition disabled:opacity-50"
-            title="ローカルの変更をクラウドにアップロードします"
+            title="localStorageの変更をサーバーにアップロードします"
           >
             {busy === "push" ? "アップロード中…" : "☁ アップロード"}
           </button>
