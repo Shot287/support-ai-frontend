@@ -31,21 +31,22 @@ type Store = {
 };
 
 const LOCAL_KEY = "output_productivity_v1";
-const DOC_KEY = "output_productivity_v1";
+const DOC_KEY   = "output_productivity_v1";
+
+// 手動同期の合図（ホーム画面と同じ）
+const SYNC_CHANNEL = "support-ai-sync";
+// ホームがフルリセット時に使うキー（ここでは since 未使用。購読のみ）
+const STORAGE_KEY_RESET_REQ = "support-ai:sync:reset:req";
+// ホームが localStorage に直接反映したことを知らせる合図
+const LOCAL_APPLIED_TYPE = "LOCAL_DOC_APPLIED";
 
 const uid = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
-    : `${Date.now().toString(36)}-${Math.random()
-        .toString(36)
-        .slice(2, 10)}`;
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
 function createDefaultStore(): Store {
-  return {
-    goals: [],
-    records: {},
-    version: 1,
-  };
+  return { goals: [], records: {}, version: 1 };
 }
 
 function loadLocal(): Store {
@@ -55,7 +56,6 @@ function loadLocal(): Store {
     if (!raw) return createDefaultStore();
     const parsed = JSON.parse(raw) as Partial<Store>;
     if (!parsed || typeof parsed !== "object") return createDefaultStore();
-
     return {
       goals: parsed.goals ?? [],
       records: parsed.records ?? {},
@@ -72,7 +72,7 @@ function saveLocal(store: Store) {
       localStorage.setItem(LOCAL_KEY, JSON.stringify(store));
     }
   } catch {
-    // 失敗しても無視
+    // noop
   }
 }
 
@@ -97,48 +97,99 @@ export default function OutputProductivity() {
   const [yearMonth, setYearMonth] = useState<string>(() => getTodayYearMonth());
   const [newGoalName, setNewGoalName] = useState("");
 
-  // store 変更 → ローカル + サーバ保存
+  // 端末ローカルへは即時保存（サーバ反映はホームの手動同期のみ）
   useEffect(() => {
     storeRef.current = store;
     saveLocal(store);
-    (async () => {
-      try {
-        await saveUserDoc<Store>(DOC_KEY, store);
-      } catch (e) {
-        console.warn("[output-productivity] saveUserDoc failed:", e);
-      }
-    })();
   }, [store]);
 
-  // 初回マウントでサーバから最新版を取得
+  // 手動同期の合図を購読：PULL / PUSH / RESET + localStorage 変更検知
   useEffect(() => {
-    (async () => {
+    if (typeof window === "undefined") return;
+
+    const doPull = async () => {
       try {
         const remote = await loadUserDoc<Store>(DOC_KEY);
         if (remote && remote.version === 1) {
           setStore(remote);
           saveLocal(remote);
-        } else if (!remote) {
-          // サーバが空ならローカル状態をアップロード
-          await saveUserDoc<Store>(DOC_KEY, storeRef.current);
-        } else {
-          // 万一 version が違う形式だった場合も、ざっくり補正して使う
-          const fallback: Store = {
-            goals: (remote as any).goals ?? [],
-            records: (remote as any).records ?? {},
-            version: 1,
-          };
-          setStore(fallback);
-          saveLocal(fallback);
-          await saveUserDoc<Store>(DOC_KEY, fallback);
         }
       } catch (e) {
-        console.warn("[output-productivity] loadUserDoc failed:", e);
+        console.warn("[output-productivity] manual PULL failed:", e);
       }
-    })();
+    };
+
+    const doPush = async () => {
+      try {
+        await saveUserDoc<Store>(DOC_KEY, storeRef.current);
+      } catch (e) {
+        console.warn("[output-productivity] manual PUSH failed:", e);
+      }
+    };
+
+    // BroadcastChannel
+    let bc: BroadcastChannel | null = null;
+    try {
+      if ("BroadcastChannel" in window) {
+        bc = new BroadcastChannel(SYNC_CHANNEL);
+        bc.onmessage = (ev) => {
+          const msg = ev?.data;
+          if (!msg || typeof msg.type !== "string") return;
+          const t = msg.type.toUpperCase();
+          if (t.includes("PULL")) doPull();
+          else if (t.includes("PUSH")) doPush();
+          else if (t.includes("RESET")) {
+            // since 未使用。直後の PULL で最新化される想定。
+          } else if (t === LOCAL_APPLIED_TYPE && msg.docKey === DOC_KEY) {
+            // ホームが直接 localStorage に書いた場合の合図
+            setStore(loadLocal());
+          }
+        };
+      }
+    } catch {
+      // noop
+    }
+
+    // 同タブ postMessage
+    const onWinMsg = (ev: MessageEvent) => {
+      const msg = ev?.data;
+      if (!msg || typeof msg.type !== "string") return;
+      const t = msg.type.toUpperCase();
+      if (t.includes("PULL")) doPull();
+      else if (t.includes("PUSH")) doPush();
+      else if (t === LOCAL_APPLIED_TYPE && msg.docKey === DOC_KEY) {
+        setStore(loadLocal());
+      }
+    };
+    window.addEventListener("message", onWinMsg);
+
+    // 他タブ storage
+    const onStorage = (ev: StorageEvent) => {
+      if (!ev.key) return;
+      // ホームがローカルへ反映したときは localStorage の中身が変わるので拾う
+      if (ev.key === LOCAL_KEY && ev.newValue) {
+        try {
+          setStore(JSON.parse(ev.newValue));
+        } catch {
+          // noop
+        }
+      }
+      if (ev.key === STORAGE_KEY_RESET_REQ) {
+        // RESET 自体は何もしない（直後に PULL のはず）
+      }
+    };
+    window.addEventListener("storage", onStorage);
+
+    return () => {
+      if (bc) {
+        try { bc.close(); } catch {}
+      }
+      window.removeEventListener("message", onWinMsg);
+      window.removeEventListener("storage", onStorage);
+    };
   }, []);
 
-  // ゴールが存在していて、まだ何も選択されていなければ先頭を自動選択
+  // ゴールが存在していて、まだ何も選択していなければ先頭を自動選択
   useEffect(() => {
     if (!selectedGoalId && store.goals.length > 0) {
       setSelectedGoalId(store.goals[0].id);
@@ -212,10 +263,7 @@ export default function OutputProductivity() {
       const days = { ...(monthRec.days ?? {}) };
 
       days[dateKey] = { date: dateKey, note };
-      goalRecords[yearMonth] = {
-        ...monthRec,
-        days,
-      };
+      goalRecords[yearMonth] = { ...monthRec, days };
       records[goalId] = goalRecords;
 
       return { ...s, records };
@@ -240,12 +288,9 @@ export default function OutputProductivity() {
       const goals = s.goals.filter((g) => g.id !== id);
       const records = { ...s.records };
       delete records[id];
-
       return { ...s, goals, records };
     });
-    if (selectedGoalId === id) {
-      setSelectedGoalId(null);
-    }
+    if (selectedGoalId === id) setSelectedGoalId(null);
   };
 
   const currentActiveTasks = getActiveTasks(selectedGoal?.id ?? null);
@@ -344,9 +389,7 @@ export default function OutputProductivity() {
               </div>
               <textarea
                 value={currentActiveTasks}
-                onChange={(e) =>
-                  updateActiveTasks(selectedGoal.id, e.target.value)
-                }
+                onChange={(e) => updateActiveTasks(selectedGoal.id, e.target.value)}
                 rows={3}
                 className="w-full rounded-lg border px-3 py-2 text-sm bg-white"
                 placeholder={`この月に同時進行しているタスクを書き出してください。\n例：\n・◯◯レポート（締切 11/20）\n・線形代数の演習ノート作成\n・過去問○年分の解き直し など`}
@@ -358,10 +401,7 @@ export default function OutputProductivity() {
               {daysList.map(({ dateKey, day, weekday }) => {
                 const note = getNote(selectedGoal.id, dateKey);
                 return (
-                  <div
-                    key={dateKey}
-                    className="rounded-xl border px-3 py-2 text-sm bg-white"
-                  >
+                  <div key={dateKey} className="rounded-xl border px-3 py-2 text-sm bg-white">
                     <div className="flex items-center justify-between mb-1">
                       <div className="flex items-center gap-3">
                         <span className="font-medium">
@@ -372,9 +412,7 @@ export default function OutputProductivity() {
                     </div>
                     <textarea
                       value={note}
-                      onChange={(e) =>
-                        updateNote(selectedGoal.id, dateKey, e.target.value)
-                      }
+                      onChange={(e) => updateNote(selectedGoal.id, dateKey, e.target.value)}
                       rows={2}
                       className="w-full rounded-lg border px-3 py-2 text-sm"
                       placeholder="この日のアウトプット生産量（例：レポート3ページ、演習20問、ノート2ページ、スライド5枚 など）"

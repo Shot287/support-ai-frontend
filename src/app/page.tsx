@@ -11,6 +11,7 @@ import { loadUserDoc, saveUserDoc } from "@/lib/userDocStore";
 const DOCS = [
   { docKey: "study_dictionary_v1", localKey: "dictionary_v2" },
   { docKey: "devplan_v1",          localKey: "devplan_v1" }, // ← 追加！
+  { docKey: "output_productivity_v1", localKey: "output_productivity_v1" }
 ] as const;
 
 // エラー表示用：できるだけ詳細に
