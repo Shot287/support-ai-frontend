@@ -75,6 +75,14 @@ export default function StudyPage() {
       href: "/study/math-logic-expansion",
       type: "link" as const,
     },
+    {
+      id: "math-formulas",
+      title: "数学公式",
+      description:
+        "タイトルごとに複数の公式を登録。裏向け→めくるで復習（LaTeX/Gemini対応）。",
+      href: "/study/math-formulas",
+      type: "link" as const,
+    },
   ] as const;
 
   useEffect(() => {
