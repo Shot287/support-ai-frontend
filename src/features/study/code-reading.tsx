@@ -95,7 +95,17 @@ function MathMarkdown({ text }: { text: string }) {
   }
 
   return (
-    <div className="prose max-w-none prose-sm">
+    <div
+      className="
+        prose max-w-none prose-sm leading-relaxed text-[13px]
+        [&_p]:mb-1.5 [&_p:last-child]:mb-0
+        [&_ul]:my-1 [&_ol]:my-1 [&_li]:my-0.5
+        [&_strong]:font-semibold [&_strong]:text-gray-900
+        [&_code]:text-[0.75rem] [&_code]:px-0.5 [&_code]:py-0.5
+        [&_h3]:text-sm [&_h3]:mt-2 [&_h3]:mb-1
+        [&_blockquote]:border-l-2 [&_blockquote]:border-gray-300 [&_blockquote]:pl-2
+      "
+    >
       <ReactMarkdown
         remarkPlugins={[remarkMath]}
         rehypePlugins={[rehypeKatex]}
@@ -831,7 +841,7 @@ export default function CodeReading() {
                           />
                         )}
 
-                        <div className="mt-1 rounded-xl border px-3 py-2 bg-gray-50">
+                        <div className="mt-1 rounded-xl border px-3 py-2 bg-gray-50 max-h-72 overflow-y-auto">
                           {r.my ? (
                             <MathMarkdown text={s.myNote} />
                           ) : (
@@ -883,7 +893,7 @@ export default function CodeReading() {
                           />
                         )}
 
-                        <div className="mt-1 rounded-xl border px-3 py-2 bg-gray-50">
+                        <div className="mt-1 rounded-xl border px-3 py-2 bg-gray-50 max-h-72 overflow-y-auto">
                           {r.ai ? (
                             <MathMarkdown text={s.aiNote} />
                           ) : (
