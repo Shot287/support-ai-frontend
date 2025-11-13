@@ -49,12 +49,14 @@ type Store = {
 const LOCAL_KEY = "code_reading_v1";
 const DOC_KEY = "code_reading_v1";
 
+const SYNC_CHANNEL = "support-ai-sync";
+const STORAGE_KEY_RESET_REQ = "support-ai:sync:reset:req";
+const LOCAL_APPLIED_TYPE = "LOCAL_DOC_APPLIED";
+
 const uid = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
-    : `${Date.now().toString(36)}-${Math.random()
-        .toString(36)
-        .slice(2, 10)}`;
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
 // 初期状態：ルート直下に Python / TypeScript / C++ フォルダを用意
 function createDefaultStore(): Store {
@@ -138,44 +140,110 @@ export default function CodeReading() {
   const currentFolderId = store.currentFolderId;
   const currentFileId = store.currentFileId;
 
-  // 同期：store が変わるたびに localStorage + user_docs に保存
+  // ★ ローカル即時保存（サーバーには送らない：手動同期）
   useEffect(() => {
     storeRef.current = store;
     saveLocal(store);
-    (async () => {
-      try {
-        await saveUserDoc<Store>(DOC_KEY, store);
-      } catch {
-        // サーバ不調時は無視（ローカルのみで動作）
-      }
-    })();
   }, [store]);
 
-  // 初回マウント時：サーバの最新版を取得
+  // ★ 手動同期の合図を購読（PULL / PUSH / LOCAL_DOC_APPLIED / storage）
   useEffect(() => {
-    (async () => {
+    if (typeof window === "undefined") return;
+
+    const doPull = async () => {
       try {
         const remote = await loadUserDoc<Store>(DOC_KEY);
         if (remote && remote.version === 1) {
           setStore(remote);
           saveLocal(remote);
-        } else if (!remote) {
-          await saveUserDoc<Store>(DOC_KEY, storeRef.current);
-        } else {
-          const migrated: Store = { ...(remote as Store), version: 1 };
-          setStore(migrated);
-          saveLocal(migrated);
-          await saveUserDoc<Store>(DOC_KEY, migrated);
         }
-      } catch {
-        // オフラインでも動作させる
+      } catch (e) {
+        console.warn("[code-reading] manual PULL failed:", e);
       }
-    })();
+    };
+
+    const doPush = async () => {
+      try {
+        await saveUserDoc<Store>(DOC_KEY, storeRef.current);
+      } catch (e) {
+        console.warn("[code-reading] manual PUSH failed:", e);
+      }
+    };
+
+    // BroadcastChannel
+    let bc: BroadcastChannel | null = null;
+    try {
+      if ("BroadcastChannel" in window) {
+        bc = new BroadcastChannel(SYNC_CHANNEL);
+        bc.onmessage = (ev) => {
+          const msg = (ev as MessageEvent)?.data;
+          if (!msg || typeof msg.type !== "string") return;
+          const t = (msg.type as string).toUpperCase();
+          if (t.includes("PULL")) {
+            doPull();
+          } else if (t.includes("PUSH")) {
+            doPush();
+          } else if (t.includes("RESET")) {
+            // since 未使用なら noop（直後に PULL が来る想定）
+          } else if (t === LOCAL_APPLIED_TYPE && msg.docKey === DOC_KEY) {
+            // ホームが localStorage(LOCAL_KEY) に書き込んだ合図
+            setStore(loadLocal());
+          }
+        };
+      }
+    } catch {
+      // BroadcastChannel 失敗時は無視
+    }
+
+    // 同タブ window.postMessage
+    const onWinMsg = (ev: MessageEvent) => {
+      const msg = ev?.data;
+      if (!msg || typeof msg.type !== "string") return;
+      const t = (msg.type as string).toUpperCase();
+      if (t.includes("PULL")) {
+        doPull();
+      } else if (t.includes("PUSH")) {
+        doPush();
+      } else if (t === LOCAL_APPLIED_TYPE && msg.docKey === DOC_KEY) {
+        setStore(loadLocal());
+      }
+    };
+    window.addEventListener("message", onWinMsg);
+
+    // 他タブ storage（LOCAL_KEY 変更を拾う）
+    const onStorage = (ev: StorageEvent) => {
+      if (!ev.key) return;
+      if (ev.key === LOCAL_KEY && ev.newValue) {
+        try {
+          const parsed = JSON.parse(ev.newValue) as Store;
+          setStore({ ...parsed, version: 1 });
+        } catch {
+          // 壊れたJSONは無視
+        }
+      }
+      if (ev.key === STORAGE_KEY_RESET_REQ) {
+        // noop（直後に PULL が来る想定）
+      }
+    };
+    window.addEventListener("storage", onStorage);
+
+    return () => {
+      try {
+        bc?.close();
+      } catch {
+        // ignore
+      }
+      window.removeEventListener("message", onWinMsg);
+      window.removeEventListener("storage", onStorage);
+    };
   }, []);
 
   const nodes = store.nodes;
 
-  const currentFolder = currentFolderId ? nodes[currentFolderId] ?? null : null;
+  const currentFolder =
+    currentFolderId && nodes[currentFolderId]
+      ? nodes[currentFolderId]
+      : null;
 
   // カレントフォルダの中身取得（フォルダ → ファイル の順で並べる）
   const children = useMemo(() => {
