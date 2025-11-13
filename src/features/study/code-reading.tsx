@@ -10,7 +10,12 @@ import { python } from "@codemirror/lang-python";
 import { javascript } from "@codemirror/lang-javascript";
 import { cpp } from "@codemirror/lang-cpp";
 import type { Extension } from "@codemirror/state";
+
 import ReactMarkdown from "react-markdown";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+// ※ KaTeX の CSS は app/layout.tsx かグローバルCSSで読み込んでください。
+// 例: import "katex/dist/katex.min.css";
 
 type ID = string;
 
@@ -58,6 +63,48 @@ const uid = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+
+// ====== LaTeX テキスト自動補正（Gemini / ChatGPT 向け） ======
+function normalizeMathText(raw: string): string {
+  if (!raw) return "";
+
+  let text = raw;
+
+  // 1) 日本語環境で紛れ込みがちな「¥」をバックスラッシュに変換
+  text = text.replace(/¥/g, "\\");
+
+  // 2) $$ ... $$ ブロックを前後改行付きの独立ブロックに整形
+  text = text.replace(/\$\$([\s\S]*?)\$\$/g, (_match, inner) => {
+    const trimmed = String(inner).trim();
+    return `\n$$\n${trimmed}\n$$\n`;
+  });
+
+  return text;
+}
+
+// ====== MathMarkdown（Markdown + LaTeX 対応） ======
+function MathMarkdown({ text }: { text: string }) {
+  const normalized = normalizeMathText(text);
+
+  if (!normalized.trim()) {
+    return (
+      <p className="text-xs text-gray-400 italic">
+        まだ内容がありません。上の入力欄を開いて書き込んでください。
+      </p>
+    );
+  }
+
+  return (
+    <div className="prose max-w-none prose-sm">
+      <ReactMarkdown
+        remarkPlugins={[remarkMath]}
+        rehypePlugins={[rehypeKatex]}
+      >
+        {normalized}
+      </ReactMarkdown>
+    </div>
+  );
+}
 
 // 初期状態：ルート直下に Python / TypeScript / C++ フォルダを用意
 function createDefaultStore(): Store {
@@ -780,21 +827,13 @@ export default function CodeReading() {
                             }
                             rows={4}
                             className="w-full rounded-lg border px-3 py-2 text-xs leading-relaxed font-mono"
-                            placeholder="このコードは何をしているか、自分の言葉で説明してください。Gemini / ChatGPT に渡す前の自分の理解を書いておくと復習しやすいです。"
+                            placeholder="このコードは何をしているか、自分の言葉で説明してください。Gemini や ChatGPT に見せる用の文章を書いてもOKです。"
                           />
                         )}
 
                         <div className="mt-1 rounded-xl border px-3 py-2 bg-gray-50">
                           {r.my ? (
-                            s.myNote.trim() ? (
-                              <div className="prose max-w-none prose-sm">
-                                <ReactMarkdown>{s.myNote}</ReactMarkdown>
-                              </div>
-                            ) : (
-                              <p className="text-xs text-gray-400 italic">
-                                まだ内容がありません。上の入力欄を開いて書き込んでください。
-                              </p>
-                            )
+                            <MathMarkdown text={s.myNote} />
                           ) : (
                             <p className="text-xs text-gray-400 italic">
                               （裏面）「めくる」を押すと、自分の解釈ノートが表示されます。
@@ -838,27 +877,18 @@ export default function CodeReading() {
                                 ev.target.value
                               )
                             }
-                            rows={4}
+                            rows={6}
                             className="w-full rounded-lg border px-3 py-2 text-xs leading-relaxed font-mono"
-                            placeholder="Gemini や ChatGPT の解説・添削をここに貼り付けてください。Markdown 形式のままでOKです。"
+                            placeholder="Gemini や ChatGPT の解説・添削をそのまま貼り付けてください。**太字** や $\\sqrt{2/500}$ などの数式も綺麗に表示されます。"
                           />
                         )}
 
                         <div className="mt-1 rounded-xl border px-3 py-2 bg-gray-50">
                           {r.ai ? (
-                            s.aiNote.trim() ? (
-                              <div className="prose max-w-none prose-sm">
-                                <ReactMarkdown>{s.aiNote}</ReactMarkdown>
-                              </div>
-                            ) : (
-                              <p className="text-xs text-gray-400 italic">
-                                まだAIのコメントがありません。上の入力欄に Gemini / ChatGPT
-                                の回答を貼り付けてください。
-                              </p>
-                            )
+                            <MathMarkdown text={s.aiNote} />
                           ) : (
                             <p className="text-xs text-gray-400 italic">
-                              （裏面）「めくる」でAIの添削を表示します。復習するときだけ見るようにすると効果的です。
+                              （裏面）「めくる」でAIの添削を表示します。復習するときだけ見る用にしておくと便利です。
                             </p>
                           )}
                         </div>
