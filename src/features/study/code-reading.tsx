@@ -10,6 +10,7 @@ import { python } from "@codemirror/lang-python";
 import { javascript } from "@codemirror/lang-javascript";
 import { cpp } from "@codemirror/lang-cpp";
 import type { Extension } from "@codemirror/state";
+import ReactMarkdown from "react-markdown";
 
 type ID = string;
 
@@ -132,10 +133,12 @@ export default function CodeReading() {
   const [newFolderName, setNewFolderName] = useState("");
   const [newFileName, setNewFileName] = useState("");
 
-  // 右側：めくり状態（自分の解釈 / AIの添削）
-  const [revealState, setRevealState] = useState<
-    Record<ID, { showMy: boolean; showAi: boolean }>
-  >({});
+  // 右側：めくり状態（自分の解釈 / AIの添削）＋入力欄開閉状態
+  type RevealState = { my: boolean; ai: boolean };
+  type EditState = { my: boolean; ai: boolean };
+
+  const [revealMap, setRevealMap] = useState<Record<ID, RevealState>>({});
+  const [editMap, setEditMap] = useState<Record<ID, EditState>>({});
 
   const currentFolderId = store.currentFolderId;
   const currentFileId = store.currentFileId;
@@ -464,14 +467,27 @@ export default function CodeReading() {
   };
 
   const toggleReveal = (setId: ID, target: "my" | "ai") => {
-    setRevealState((prev) => {
-      const cur = prev[setId] ?? { showMy: false, showAi: false };
+    setRevealMap((prev) => {
+      const cur = prev[setId] ?? { my: false, ai: false };
       return {
         ...prev,
         [setId]:
           target === "my"
-            ? { ...cur, showMy: !cur.showMy }
-            : { ...cur, showAi: !cur.showAi },
+            ? { ...cur, my: !cur.my }
+            : { ...cur, ai: !cur.ai },
+      };
+    });
+  };
+
+  const toggleEdit = (setId: ID, target: "my" | "ai") => {
+    setEditMap((prev) => {
+      const cur = prev[setId] ?? { my: false, ai: false };
+      return {
+        ...prev,
+        [setId]:
+          target === "my"
+            ? { ...cur, my: !cur.my }
+            : { ...cur, ai: !cur.ai },
       };
     });
   };
@@ -582,7 +598,9 @@ export default function CodeReading() {
                   <button
                     type="button"
                     onClick={() =>
-                      n.kind === "folder" ? deleteFolder(n.id) : deleteFile(n.id)
+                      n.kind === "folder"
+                        ? deleteFolder(n.id)
+                        : deleteFile(n.id)
                     }
                     className="text-xs rounded-lg border px-2 py-1 text-gray-600 hover:bg-gray-50"
                   >
@@ -682,11 +700,10 @@ export default function CodeReading() {
             ) : (
               <div className="space-y-4">
                 {currentFile.sets.map((s, idx) => {
-                  const r = revealState[s.id] ?? {
-                    showMy: false,
-                    showAi: false,
-                  };
+                  const r = revealMap[s.id] ?? { my: false, ai: false };
+                  const e = editMap[s.id] ?? { my: false, ai: false };
                   const lang = currentFile.language ?? "python";
+
                   return (
                     <div
                       key={s.id}
@@ -726,76 +743,125 @@ export default function CodeReading() {
                         </div>
                       </div>
 
-                      {/* 自分の解釈（裏向き → めくる） */}
-                      <div className="rounded-xl border bg-white px-3 py-2">
+                      {/* 自分の解釈：入力欄＋裏向き表示 */}
+                      <div className="rounded-xl border bg-white px-3 py-2 space-y-2">
                         <div className="flex items-center justify-between mb-1">
                           <div className="text-xs font-semibold text-gray-700">
                             自分の解釈
                           </div>
-                          <button
-                            type="button"
-                            onClick={() => toggleReveal(s.id, "my")}
-                            className="text-xs rounded-lg border px-2 py-1 hover:bg-gray-50"
-                          >
-                            {r.showMy ? "隠す" : "めくる"}
-                          </button>
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => toggleEdit(s.id, "my")}
+                              className="text-xs rounded-lg border px-2 py-1 hover:bg-gray-50"
+                            >
+                              {e.my ? "入力を隠す" : "入力を開く"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => toggleReveal(s.id, "my")}
+                              className="text-xs rounded-lg border px-2 py-1 hover:bg-gray-50"
+                            >
+                              {r.my ? "隠す" : "めくる"}
+                            </button>
+                          </div>
                         </div>
-                        {r.showMy ? (
+
+                        {e.my && (
                           <textarea
                             value={s.myNote}
-                            onChange={(e) =>
+                            onChange={(ev) =>
                               updateSetField(
                                 currentFile.id,
                                 s.id,
                                 "myNote",
-                                e.target.value
+                                ev.target.value
                               )
                             }
                             rows={4}
-                            className="w-full rounded-lg border px-3 py-2 text-xs leading-relaxed"
-                            placeholder="このコードは何をしているか、自分の言葉で説明してみてください。"
+                            className="w-full rounded-lg border px-3 py-2 text-xs leading-relaxed font-mono"
+                            placeholder="このコードは何をしているか、自分の言葉で説明してください。Gemini / ChatGPT に渡す前の自分の理解を書いておくと復習しやすいです。"
                           />
-                        ) : (
-                          <div className="text-xs text-gray-400 italic py-2">
-                            裏向きの状態です。内容を思い出したいときは「めくる」を押してください。
-                          </div>
                         )}
+
+                        <div className="mt-1 rounded-xl border px-3 py-2 bg-gray-50">
+                          {r.my ? (
+                            s.myNote.trim() ? (
+                              <div className="prose max-w-none prose-sm">
+                                <ReactMarkdown>{s.myNote}</ReactMarkdown>
+                              </div>
+                            ) : (
+                              <p className="text-xs text-gray-400 italic">
+                                まだ内容がありません。上の入力欄を開いて書き込んでください。
+                              </p>
+                            )
+                          ) : (
+                            <p className="text-xs text-gray-400 italic">
+                              （裏面）「めくる」を押すと、自分の解釈ノートが表示されます。
+                            </p>
+                          )}
+                        </div>
                       </div>
 
-                      {/* AI の添削（裏向き → めくる） */}
-                      <div className="rounded-xl border bg-white px-3 py-2">
+                      {/* AI の添削：入力欄＋裏向き表示（Gemini/ChatGPT 用） */}
+                      <div className="rounded-xl border bg-white px-3 py-2 space-y-2">
                         <div className="flex items-center justify-between mb-1">
                           <div className="text-xs font-semibold text-gray-700">
-                            AIの添削・コメント
+                            AIの添削・コメント（Gemini / ChatGPT）
                           </div>
-                          <button
-                            type="button"
-                            onClick={() => toggleReveal(s.id, "ai")}
-                            className="text-xs rounded-lg border px-2 py-1 hover:bg-gray-50"
-                          >
-                            {r.showAi ? "隠す" : "めくる"}
-                          </button>
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => toggleEdit(s.id, "ai")}
+                              className="text-xs rounded-lg border px-2 py-1 hover:bg-gray-50"
+                            >
+                              {e.ai ? "入力を隠す" : "入力を開く"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => toggleReveal(s.id, "ai")}
+                              className="text-xs rounded-lg border px-2 py-1 hover:bg-gray-50"
+                            >
+                              {r.ai ? "隠す" : "めくる"}
+                            </button>
+                          </div>
                         </div>
-                        {r.showAi ? (
+
+                        {e.ai && (
                           <textarea
                             value={s.aiNote}
-                            onChange={(e) =>
+                            onChange={(ev) =>
                               updateSetField(
                                 currentFile.id,
                                 s.id,
                                 "aiNote",
-                                e.target.value
+                                ev.target.value
                               )
                             }
                             rows={4}
-                            className="w-full rounded-lg border px-3 py-2 text-xs leading-relaxed"
-                            placeholder="AIのフィードバックや、後から見返したいポイントを書き込んでください。"
+                            className="w-full rounded-lg border px-3 py-2 text-xs leading-relaxed font-mono"
+                            placeholder="Gemini や ChatGPT の解説・添削をここに貼り付けてください。Markdown 形式のままでOKです。"
                           />
-                        ) : (
-                          <div className="text-xs text-gray-400 italic py-2">
-                            裏向きの状態です。自分の解釈を思い出したあとに、答え合わせとして見てください。
-                          </div>
                         )}
+
+                        <div className="mt-1 rounded-xl border px-3 py-2 bg-gray-50">
+                          {r.ai ? (
+                            s.aiNote.trim() ? (
+                              <div className="prose max-w-none prose-sm">
+                                <ReactMarkdown>{s.aiNote}</ReactMarkdown>
+                              </div>
+                            ) : (
+                              <p className="text-xs text-gray-400 italic">
+                                まだAIのコメントがありません。上の入力欄に Gemini / ChatGPT
+                                の回答を貼り付けてください。
+                              </p>
+                            )
+                          ) : (
+                            <p className="text-xs text-gray-400 italic">
+                              （裏面）「めくる」でAIの添削を表示します。復習するときだけ見るようにすると効果的です。
+                            </p>
+                          )}
+                        </div>
                       </div>
                     </div>
                   );
