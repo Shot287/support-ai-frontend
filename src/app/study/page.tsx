@@ -28,6 +28,14 @@ export default function StudyPage() {
       type: "link" as const,
     },
     {
+      id: "python-dictionary",
+      title: "Python用語辞典",
+      description:
+        "Pythonの用語や文法・標準ライブラリの概念を登録しておける専用辞典。",
+      href: "/study/python-dictionary",
+      type: "link" as const,
+    },
+    {
       id: "dev-plan",
       title: "開発計画",
       description:

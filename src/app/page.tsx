@@ -10,6 +10,7 @@ import { loadUserDoc, saveUserDoc } from "@/lib/userDocStore";
 // 手動同期の対象ドキュメント一覧（必要に応じて追加）
 const DOCS = [
   { docKey: "study_dictionary_v1", localKey: "dictionary_v2" },
+  { docKey: "study_python_dictionary_v1", localKey: "python_dictionary_v2" },
   { docKey: "devplan_v1",          localKey: "devplan_v1" }, // ← 追加！
   { docKey: "output_productivity_v1", localKey: "output_productivity_v1" },
   { docKey: "code_reading_v1",        localKey: "code_reading_v1" },
