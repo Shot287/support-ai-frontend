@@ -136,7 +136,7 @@ export default function HomePage() {
     { id: "nudge",  title: "先延ばし対策", description: "5秒ルールやポモドーロで初動をつくる", href: "/nudge" },
     { id: "sleep",  title: "睡眠管理",     description: "就寝・起床のリズムや振り返り（準備中）", href: "/sleep" },
     { id: "study",  title: "勉強",         description: "用語辞典などの学習サポート", href: "/study" },
-    { id: "mental", title: "Mental",       description: "メンタルケア・気分管理など（準備中）", href: "/mental" },
+    { id: "mental", title: "M",       description: "修行", href: "/mental" },
   ] as const;
 
   return (
