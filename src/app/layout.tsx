@@ -25,8 +25,6 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           {children}
         </div>
 
-        {/* ★ PC限定タイマーの常駐ドック（どのページでも起動可能） */}
-        <StudyTimer />
       </body>
     </html>
   );
