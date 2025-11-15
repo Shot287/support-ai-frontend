@@ -15,4 +15,10 @@ export const mentalTools: MentalTool[] = [
     desktopOnly: true,
   },
   // ★ 今後ここに追加していくだけで /mental の一覧に出ます
+  {
+    id: "expressive-writing",
+    title: "エクスプレッシブライティング",
+    description: "不安・心配事を書き出し、後で実際どうなったかを記録して認知を整えるツール。",
+    href: "/mental/expressive-writing",
+  },
 ];

@@ -14,6 +14,7 @@ const DOCS = [
   { docKey: "devplan_v1",          localKey: "devplan_v1" }, // ← 追加！
   { docKey: "output_productivity_v1", localKey: "output_productivity_v1" },
   { docKey: "code_reading_v1",        localKey: "code_reading_v1" },
+  { docKey: "mental_expressive_writing_v1", localKey: "expressive_writing_v1" },
 ] as const;
 
 // エラー表示用：できるだけ詳細に
