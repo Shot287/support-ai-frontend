@@ -4,6 +4,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ClipboardEvent } from "react";
 import { loadUserDoc, saveUserDoc } from "@/lib/userDocStore";
+import { registerManualSync } from "@/lib/manual-sync";
 
 import ReactMarkdown from "react-markdown";
 import remarkMath from "remark-math";
@@ -181,49 +182,41 @@ export default function MathLogicExpansion() {
     ? store.files[store.currentFileId] ?? null
     : null;
 
-  // Store変更 → localStorage + サーバ保存
+  // Store変更 → localStorage 即時保存（サーバーはホームの手動同期ボタン経由）
   useEffect(() => {
     storeRef.current = store;
     saveLocal(store);
-    (async () => {
-      try {
-        await saveUserDoc<Store>(DOC_KEY, store);
-      } catch (e) {
-        console.warn("[math-logic-expansion] saveUserDoc failed:", e);
-      }
-    })();
   }, [store]);
 
-  // 初回ロードでサーバの最新版を取り込み
+  // ---- 手動同期の合図を購読（manual-sync.ts に一本化） ----
   useEffect(() => {
-    (async () => {
-      try {
-        const remote = await loadUserDoc<Store>(DOC_KEY);
-        if (remote && remote.version === 1) {
-          setStore(remote);
-          saveLocal(remote);
-        } else if (!remote) {
-          // サーバが空ならローカル状態をアップロード
-          await saveUserDoc<Store>(DOC_KEY, storeRef.current);
-        } else {
-          // バージョン違いなどが来たときは、最低限フィールドを合わせる
-          const def = createDefaultStore();
-          const fallback: Store = {
-            nodes: (remote as any).nodes ?? def.nodes,
-            files: (remote as any).files ?? {},
-            currentFolderId:
-              (remote as any).currentFolderId ?? def.currentFolderId,
-            currentFileId: (remote as any).currentFileId ?? null,
-            version: 1,
-          };
-          setStore(fallback);
-          saveLocal(fallback);
-          await saveUserDoc<Store>(DOC_KEY, fallback);
+    const unsubscribe = registerManualSync({
+      // 📥 取得（クラウド→ローカル）
+      pull: async () => {
+        try {
+          const remote = await loadUserDoc<Store>(DOC_KEY);
+          if (remote && remote.version === 1) {
+            setStore(remote);
+            saveLocal(remote);
+          }
+        } catch (e) {
+          console.warn("[math-logic-expansion] manual PULL failed:", e);
         }
-      } catch (e) {
-        console.warn("[math-logic-expansion] loadUserDoc failed:", e);
-      }
-    })();
+      },
+      // ☁ アップロード（ローカル→クラウド）
+      push: async () => {
+        try {
+          await saveUserDoc<Store>(DOC_KEY, storeRef.current);
+        } catch (e) {
+          console.warn("[math-logic-expansion] manual PUSH failed:", e);
+        }
+      },
+      // ⚠ RESET: since 未使用なので特別な処理は不要
+      reset: async () => {
+        /* no-op */
+      },
+    });
+    return unsubscribe;
   }, []);
 
   // ========= フォルダ／ファイル（code-reading と同じ構造） =========

@@ -18,6 +18,7 @@ const DOCS = [
   { docKey: "mental_vas_v1", localKey: "mental_vas_v1" },
   { docKey: "mental_defusion_v1", localKey: "mental_defusion_v1" },
   { docKey: "mental_loving_kindness_v1",  localKey: "loving_kindness_v1" },
+  { docKey: "math_logic_expansion_v1", localKey: "math_logic_expansion_v1" }
 ] as const;
 
 // エラー表示用：できるだけ詳細に
