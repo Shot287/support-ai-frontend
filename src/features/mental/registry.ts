@@ -21,4 +21,11 @@ export const mentalTools: MentalTool[] = [
     description: "不安・心配事を書き出し、後で実際どうなったかを記録して認知を整えるツール。",
     href: "/mental/expressive-writing",
   },
+  {
+    id: "vas",
+    title: "VAS（ストレスレベル）",
+    description:
+      "大学・家・職場などのフォルダーごとに、ストレスレベルを0〜100で記録・比較できます。",
+    href: "/mental/vas",
+  },
 ];
