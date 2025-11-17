@@ -72,7 +72,7 @@ function saveLocal(store: Store) {
 // ステータスから表示用のラベルと説明を返す
 function statusToLabel(status: WorryStatus) {
   if (status === "occurred") return "○"; // 想定より悪かった
-  if (status === "occurred_ok") return "  △"; // 想定より悪くなかった
+  if (status === "occurred_ok") return "△"; // 想定より悪くなかった
   if (status === "not_occurred") return "×"; // 起こらなかった
   return "-"; // まだ分からない
 }
@@ -288,7 +288,7 @@ export default function ExpressiveWriting() {
             : 想定より悪かった
           </div>
           <div>
-            <span className="inline-flex w-6 justify中心 font-semibold mr-1">
+            <span className="inline-flex w-6 justify-center font-semibold mr-1">
               △
             </span>
             : 想定より悪くならなかった
