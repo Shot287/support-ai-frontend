@@ -45,7 +45,7 @@ export default function StudyPage() {
     },
     {
       id: "output-productivity",
-      title: "アウトプット生産量",
+      title: "アウトプット管理",
       description:
         "レポート・演習・ノート整理などのアウトプット量を、月ごと・日ごとに記録します。",
       href: "/study/output-productivity",
