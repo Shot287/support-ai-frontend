@@ -35,4 +35,11 @@ export const mentalTools: MentalTool[] = [
       "浮かんできた考えを距離を置いて観察し、代替説明や証拠を書きながら認知を柔軟にする ACT の技法。",
     href: "/mental/defusion",
   },
+  {
+    id: "loving-kindness",
+    title: "慈悲の瞑想",
+    description:
+      "自分や他者に向けて慈しみの言葉を書き、心を落ち着ける静的な1枚ノート。",
+    href: "/mental/loving-kindness",
+  },
 ];
