@@ -72,7 +72,7 @@ function saveLocal(store: Store) {
 // ステータスから表示用のラベルと説明を返す
 function statusToLabel(status: WorryStatus) {
   if (status === "occurred") return "○"; // 想定より悪かった
-  if (status === "occurred_ok") return " △"; // 想定より悪くなかった
+  if (status === "occurred_ok") return "  △"; // 想定より悪くなかった
   if (status === "not_occurred") return "×"; // 起こらなかった
   return "-"; // まだ分からない
 }
