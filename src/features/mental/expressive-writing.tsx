@@ -7,16 +7,24 @@ import { registerManualSync } from "@/lib/manual-sync";
 
 type ID = string;
 
-// -, ○, × の3状態
-export type WorryStatus = "unknown" | "occurred" | "occurred_ok";
+// -, ○, △, × の4状態
+// - unknown       : まだ分からない
+// - occurred      : 想定より悪かった
+// - occurred_ok   : 想定より悪くならなかった
+// - not_occurred  : 起こらなかった
+export type WorryStatus =
+  | "unknown"
+  | "occurred"
+  | "occurred_ok"
+  | "not_occurred";
 
 export type WorryItem = {
   id: ID;
-  title: string;       // 一言タイトル
-  detail: string;      // 自由記述（どう心配しているか）
-  status: WorryStatus; // -, ○, ×
+  title: string; // 一言タイトル
+  detail: string; // 自由記述（どう心配しているか）
+  status: WorryStatus; // -, ○, △, ×
   createdAt: number;
-  resolvedAt?: number; // ○ or × になったタイミング
+  resolvedAt?: number; // ○ / △ / × になったタイミング
 };
 
 type Store = {
@@ -63,34 +71,39 @@ function saveLocal(store: Store) {
 
 // ステータスから表示用のラベルと説明を返す
 function statusToLabel(status: WorryStatus) {
-  if (status === "occurred") return "○";
-  if (status === "occurred_ok") return "×";
-  return "-";
+  if (status === "occurred") return "○"; // 想定より悪かった
+  if (status === "occurred_ok") return "△"; // 想定より悪くなかった
+  if (status === "not_occurred") return "×"; // 起こらなかった
+  return "-"; // まだ分からない
 }
 
 function statusToDescription(status: WorryStatus) {
-  if (status === "occurred") return "起こった";
-  if (status === "occurred_ok") return "起こったが、想定よりも悪くなかった";
+  if (status === "occurred") return "想定より悪かった";
+  if (status === "occurred_ok") return "想定より悪くならなかった";
+  if (status === "not_occurred") return "起こらなかった";
   return "まだ分からない";
 }
 
 // サマリー用のテキスト
-function summaryText(total: number, occurred: number, occurredOk: number) {
+function summaryText(
+  total: number,
+  bad: number,
+  notBad: number,
+  notOccurred: number
+) {
   if (total === 0) {
     return "まだデータがありません。心配事を書き出して、実際どうなったかを記録してみましょう。";
   }
 
-  const resolved = occurred + occurredOk;
-  const trueBadRate =
-    resolved > 0 ? Math.round((occurred / resolved) * 100) : 0;
-  const notSoBadRate =
-    resolved > 0 ? Math.round((occurredOk / resolved) * 100) : 0;
-
+  const resolved = bad + notBad + notOccurred;
   if (resolved === 0) {
-    return `登録 ${total} 件のうち、まだ結果が分かっているものはありません。時間が経ったら ○ / × を付けていきましょう。`;
+    return `登録 ${total} 件のうち、まだ結果が分かっているものはありません。時間が経ったら ○ / △ / × を付けていきましょう。`;
   }
 
-  return `これまでに結果が分かった ${resolved} 件の心配事のうち、本当に悪い方に転んだのは約 ${trueBadRate}%、起こったが想定よりマシだったのは約 ${notSoBadRate}% でした。`;
+  const trueBadRate = Math.round((bad / resolved) * 100);
+  const notSoBadRate = Math.round(((notBad + notOccurred) / resolved) * 100);
+
+  return `これまでに結果が分かった ${resolved} 件の心配事のうち、想定より悪かったのは約 ${trueBadRate}%、起こらなかった・想定より悪くならなかったものは約 ${notSoBadRate}% でした。`;
 }
 
 // ===== 本体コンポーネント =====
@@ -120,10 +133,7 @@ export default function ExpressiveWriting() {
             saveLocal(remote);
           }
         } catch (e) {
-          console.warn(
-            "[expressive-writing] manual PULL failed:",
-            e
-          );
+          console.warn("[expressive-writing] manual PULL failed:", e);
         }
       },
       // ☁ アップロード（ローカル→クラウド）
@@ -131,10 +141,7 @@ export default function ExpressiveWriting() {
         try {
           await saveUserDoc<Store>(DOC_KEY, storeRef.current);
         } catch (e) {
-          console.warn(
-            "[expressive-writing] manual PUSH failed:",
-            e
-          );
+          console.warn("[expressive-writing] manual PUSH failed:", e);
         }
       },
       // ⚠ RESET: since 未使用なので特別な処理は不要
@@ -169,16 +176,27 @@ export default function ExpressiveWriting() {
     setDetail("");
   };
 
-  // ===== ステータス変更（-, ○, × をループ） =====
+  // ===== ステータス変更（-, ○, △, × をループ） =====
   const cycleStatus = (id: ID) => {
     const now = Date.now();
     setStore((s) => {
       const items = s.items.map((it) => {
         if (it.id !== id) return it;
+
         let next: WorryStatus;
-        if (it.status === "unknown") next = "occurred";
-        else if (it.status === "occurred") next = "occurred_ok";
-        else next = "unknown";
+        if (it.status === "unknown") {
+          // - → ○（想定より悪かった）
+          next = "occurred";
+        } else if (it.status === "occurred") {
+          // ○ → △（想定より悪くなかった）
+          next = "occurred_ok";
+        } else if (it.status === "occurred_ok") {
+          // △ → ×（起こらなかった）
+          next = "not_occurred";
+        } else {
+          // × → -（まだ分からない） に戻る
+          next = "unknown";
+        }
 
         if (next === "unknown") {
           // 未確定に戻した場合は resolvedAt を消す
@@ -188,7 +206,7 @@ export default function ExpressiveWriting() {
           // 未確定 → 確定 になった瞬間に resolvedAt を記録
           return { ...it, status: next, resolvedAt: now };
         } else {
-          // 確定 → 別の確定ステータス（○↔×）は resolvedAt を維持
+          // 確定 → 別の確定ステータス（○↔△↔×）は resolvedAt を維持
           return { ...it, status: next };
         }
       });
@@ -214,14 +232,16 @@ export default function ExpressiveWriting() {
   const stats = useMemo(() => {
     const total = store.items.length;
     let unknown = 0;
-    let occurred = 0;
-    let occurredOk = 0;
+    let bad = 0;
+    let notBad = 0;
+    let notOccurred = 0;
     for (const it of store.items) {
       if (it.status === "unknown") unknown++;
-      else if (it.status === "occurred") occurred++;
-      else if (it.status === "occurred_ok") occurredOk++;
+      else if (it.status === "occurred") bad++;
+      else if (it.status === "occurred_ok") notBad++;
+      else if (it.status === "not_occurred") notOccurred++;
     }
-    return { total, unknown, occurred, occurredOk };
+    return { total, unknown, bad, notBad, notOccurred };
   }, [store.items]);
 
   const fmtDateTime = (t: number | undefined) => {
@@ -250,26 +270,34 @@ export default function ExpressiveWriting() {
           と言われています。
           <br />
           ここでは、今抱えている不安を書き出しておき、あとから
-          「実際どうなったか？」を ○ / × / - で記録します。
+          「実際どうなったか？」を
+          <span className="font-semibold"> ○ / △ / × / - </span>
+          で記録します。
         </p>
         <div className="rounded-xl bg-gray-50 border px-3 py-2 text-xs text-gray-700 space-y-1">
           <div>
-            <span className="inline-flex w-5 justify-center font-semibold mr-1">
+            <span className="inline-flex w-6 justify-center font-semibold mr-1">
               -
             </span>
             : まだ分からない
           </div>
           <div>
-            <span className="inline-flex w-5 justify-center font-semibold mr-1">
+            <span className="inline-flex w-6 justify-center font-semibold mr-1">
               ○
             </span>
-            : 起こった
+            : 想定より悪かった
           </div>
           <div>
-            <span className="inline-flex w-5 justify-center font-semibold mr-1">
+            <span className="inline-flex w-6 justify中心 font-semibold mr-1">
+              △
+            </span>
+            : 想定より悪くならなかった
+          </div>
+          <div>
+            <span className="inline-flex w-6 justify-center font-semibold mr-1">
               ×
             </span>
-            : 起こったが、想定より悪くなかった
+            : 起こらなかった
           </div>
         </div>
         <div className="mt-2 rounded-xl bg-blue-50 border border-blue-100 px-3 py-2 text-xs text-blue-900">
@@ -277,10 +305,18 @@ export default function ExpressiveWriting() {
           <div className="flex flex-wrap items-center gap-2 text-[11px] mb-1">
             <span>登録: {stats.total} 件</span>
             <span> / -: {stats.unknown}</span>
-            <span> / ○: {stats.occurred}</span>
-            <span> / ×: {stats.occurredOk}</span>
+            <span> / ○: {stats.bad}</span>
+            <span> / △: {stats.notBad}</span>
+            <span> / ×: {stats.notOccurred}</span>
           </div>
-          <p>{summaryText(stats.total, stats.occurred, stats.occurredOk)}</p>
+          <p>
+            {summaryText(
+              stats.total,
+              stats.bad,
+              stats.notBad,
+              stats.notOccurred
+            )}
+          </p>
         </div>
       </section>
 
@@ -341,7 +377,10 @@ export default function ExpressiveWriting() {
                         ? "bg-gray-50 text-gray-500 border-gray-300 hover:bg-gray-100"
                         : it.status === "occurred"
                         ? "bg-red-50 text-red-700 border-red-300 hover:bg-red-100"
-                        : "bg-green-50 text-green-700 border-green-300 hover:bg-green-100")
+                        : it.status === "occurred_ok"
+                        ? "bg-green-50 text-green-700 border-green-300 hover:bg-green-100"
+                        : // not_occurred
+                          "bg-blue-50 text-blue-700 border-blue-300 hover:bg-blue-100")
                     }
                     title={statusToDescription(it.status)}
                   >
