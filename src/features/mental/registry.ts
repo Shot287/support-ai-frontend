@@ -28,4 +28,11 @@ export const mentalTools: MentalTool[] = [
       "大学・家・職場などのフォルダーごとに、ストレスレベルを0〜100で記録・比較できます。",
     href: "/mental/vas",
   },
+  {
+    id: "defusion",
+    title: "脱フュージョン",
+    description:
+      "浮かんできた考えを距離を置いて観察し、代替説明や証拠を書きながら認知を柔軟にする ACT の技法。",
+    href: "/mental/defusion",
+  },
 ];
