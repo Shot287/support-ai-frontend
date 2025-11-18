@@ -3,17 +3,18 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { loadUserDoc, saveUserDoc } from "@/lib/userDocStore";
+import { registerManualSync } from "@/lib/manual-sync";
 
 type ID = string;
 
 type Goal = {
   id: ID;
-  name: string;       // 例: 勉強時間, 睡眠時間
+  name: string; // 例: 勉強時間, 睡眠時間
   createdAt: number;
 };
 
 type DayNote = {
-  date: string;       // "2025-11-01" など
+  date: string; // "2025-11-01" など
   note: string;
 };
 
@@ -133,42 +134,42 @@ export default function ProcessGoals() {
   const [yearMonth, setYearMonth] = useState<string>(() => getTodayYearMonth());
   const [newGoalName, setNewGoalName] = useState("");
 
-  // store 変更 → ローカル + サーバ保存
+  // ---- Store 変更 → ローカル保存のみ（サーバ同期は manual-sync 任せ） ----
   useEffect(() => {
     storeRef.current = store;
     saveLocal(store);
-    (async () => {
-      try {
-        await saveUserDoc<StoreV2>(DOC_KEY, store);
-      } catch (e) {
-        console.warn("[process-goals] saveUserDoc failed:", e);
-      }
-    })();
   }, [store]);
 
-  // 初回マウントでサーバから最新版を取得
+  // ---- 手動同期への登録 ----
   useEffect(() => {
-    (async () => {
-      try {
-        const remote = await loadUserDoc<StoreV2>(DOC_KEY);
-        if (remote && remote.version === 2) {
+    const unsubscribe = registerManualSync({
+      // サーバ → ローカル
+      pull: async () => {
+        try {
+          const remote = await loadUserDoc<StoreAny>(DOC_KEY);
+          if (!remote) return;
           const migrated = migrate(remote);
           setStore(migrated);
           saveLocal(migrated);
-        } else if (!remote) {
-          // サーバが空ならローカル状態をアップロード
-          await saveUserDoc<StoreV2>(DOC_KEY, storeRef.current);
-        } else {
-          // version 1 など、念のため migrate
-          const migrated = migrate(remote as StoreAny);
-          setStore(migrated);
-          saveLocal(migrated);
-          await saveUserDoc<StoreV2>(DOC_KEY, migrated);
+        } catch (e) {
+          console.warn("[process-goals] manual PULL failed:", e);
         }
-      } catch (e) {
-        console.warn("[process-goals] loadUserDoc failed:", e);
-      }
-    })();
+      },
+      // ローカル → サーバ
+      push: async () => {
+        try {
+          await saveUserDoc<StoreV2>(DOC_KEY, storeRef.current);
+        } catch (e) {
+          console.warn("[process-goals] manual PUSH failed:", e);
+        }
+      },
+      // 今回は特にリセット処理なし
+      reset: async () => {
+        /* no-op */
+      },
+    });
+
+    return unsubscribe;
   }, []);
 
   // ゴールが存在していて、まだ何も選択されていなければ先頭を自動選択
@@ -327,7 +328,6 @@ export default function ProcessGoals() {
             <input
               value={newGoalName}
               onChange={(e) => setNewGoalName(e.target.value)}
-              placeholder="例：勉強時間 / 睡眠時間 / 筋トレ など"
               className="flex-1 rounded-xl border px-3 py-2 text-sm"
             />
             <button
@@ -367,7 +367,7 @@ export default function ProcessGoals() {
           <div className="space-y-4">
             {/* 月のまとめ用・大きめノート（常に展開） */}
             <div className="rounded-2xl border px-4 py-3 bg-gray-50">
-              <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center justify_between mb-2">
                 <h3 className="text-sm font-semibold">
                   月間サマリー（最高記録・平均記録などをメモ）
                 </h3>
@@ -378,7 +378,6 @@ export default function ProcessGoals() {
                 onChange={(e) => updateSummary(selectedGoal.id, e.target.value)}
                 rows={3}
                 className="w-full rounded-lg border px-3 py-2 text-sm bg-white"
-                placeholder="この月の合計時間・最高記録・平均記録・一言メモなどを書いてください。"
               />
             </div>
 
@@ -406,7 +405,6 @@ export default function ProcessGoals() {
                       }
                       rows={2}
                       className="w-full rounded-lg border px-3 py-2 text-sm"
-                      placeholder="この日の記録（例：勉強3時間、睡眠7.5時間、できたこと・反省点など）"
                     />
                   </div>
                 );
