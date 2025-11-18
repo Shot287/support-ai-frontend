@@ -9,8 +9,9 @@ type ID = string;
 
 type WordItem = {
   id: ID;
-  no: number; // スタディサプリの番号（1〜100 など）
-  word: string; // 英単語
+  no: number;      // スタディサプリの番号（1〜100 など）
+  pos: string;     // 品詞（例: "名", "動", "副" など）
+  word: string;    // 英単語
   meaning: string; // 日本語の意味
   marked: boolean; // マーク対象かどうか
 };
@@ -33,9 +34,7 @@ const DOC_KEY = "study_sapuri_words_v1";
 const uid = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
-    : `${Date.now().toString(36)}-${Math.random()
-        .toString(36)
-        .slice(2, 10)}`;
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
 function createDefaultStore(): Store {
   return {
@@ -50,12 +49,33 @@ function loadLocal(): Store {
     if (typeof window === "undefined") return createDefaultStore();
     const raw = localStorage.getItem(LOCAL_KEY);
     if (!raw) return createDefaultStore();
-    const parsed = JSON.parse(raw) as Partial<Store>;
+    const parsed = JSON.parse(raw) as any;
+
     if (!parsed || typeof parsed !== "object") return createDefaultStore();
 
     const def = createDefaultStore();
+
+    const folders: Folder[] = Array.isArray(parsed.folders)
+      ? parsed.folders.map((f: any): Folder => {
+          const wordsArray: any[] = Array.isArray(f.words) ? f.words : [];
+          const words: WordItem[] = wordsArray.map((w: any): WordItem => ({
+            id: typeof w.id === "string" ? w.id : uid(),
+            no: typeof w.no === "number" ? w.no : 0,
+            pos: typeof w.pos === "string" ? w.pos : "",
+            word: String(w.word ?? ""),
+            meaning: String(w.meaning ?? ""),
+            marked: Boolean(w.marked),
+          }));
+          return {
+            id: typeof f.id === "string" ? f.id : uid(),
+            name: typeof f.name === "string" ? f.name : "未設定フォルダ",
+            words,
+          };
+        })
+      : def.folders;
+
     return {
-      folders: parsed.folders ?? def.folders,
+      folders,
       currentFolderId:
         typeof parsed.currentFolderId === "string"
           ? parsed.currentFolderId
@@ -117,8 +137,19 @@ export default function SapuriWordbook() {
         try {
           const remote = await loadUserDoc<Store>(DOC_KEY);
           if (remote && remote.version === 1) {
-            setStore(remote);
-            saveLocal(remote);
+            // remote 側にも pos が無い可能性に軽く対応
+            const fixed: Store = {
+              ...remote,
+              folders: remote.folders.map((f) => ({
+                ...f,
+                words: f.words.map((w) => ({
+                  ...w,
+                  pos: typeof w.pos === "string" ? w.pos : "",
+                })),
+              })),
+            };
+            setStore(fixed);
+            saveLocal(fixed);
           }
         } catch (e) {
           console.warn("[sapuri-wordbook] manual PULL failed:", e);
@@ -214,14 +245,15 @@ export default function SapuriWordbook() {
   /**
    * 期待フォーマット（例）:
    * [
-   *   { "no": 1, "word": "apple", "meaning": "リンゴ" },
-   *   { "no": 2, "word": "book",  "meaning": "本"   }
+   *   { "no": 1, "pos": "名", "word": "department", "meaning": "部門" },
+   *   { "no": 2, "pos": "副", "word": "simply",     "meaning": "単に" }
    * ]
    *
    * キー名は多少ゆるく対応:
    * - 番号: no / number / id
-   * - 英語: word / term / english / en
-   * - 意味: meaning / jp / japanese / translation
+   * - 品詞: pos / partOfSpeech / part / 品詞
+   * - 英語: word / term / english / en / 英単語
+   * - 意味: meaning / jp / japanese / translation / 意味
    */
   const handleImportJson = () => {
     if (!currentFolder) {
@@ -256,8 +288,20 @@ export default function SapuriWordbook() {
           ? noRaw
           : i + 1; // 番号が無い場合は 1,2,3,... と振る
 
+      const pos =
+        row.pos ??
+        row.partOfSpeech ??
+        row.part ??
+        row["品詞"] ??
+        "";
+
       const word =
-        row.word ?? row.term ?? row.english ?? row.en ?? row["英単語"] ?? "";
+        row.word ??
+        row.term ??
+        row.english ??
+        row.en ??
+        row["英単語"] ??
+        "";
       const meaning =
         row.meaning ??
         row.jp ??
@@ -274,6 +318,7 @@ export default function SapuriWordbook() {
       newWords.push({
         id: uid(),
         no,
+        pos: String(pos ?? ""),
         word: String(word),
         meaning: String(meaning),
         marked: false,
@@ -339,7 +384,6 @@ export default function SapuriWordbook() {
     setSession(newSession);
   };
 
-  // ★★ ここを修正：store も依存に入れて、最新の marked 状態を反映する ★★
   const currentSessionWord = useMemo(() => {
     if (!session || session.finished) return null;
     const folder = store.folders.find((f) => f.id === session.folderId);
@@ -378,7 +422,6 @@ export default function SapuriWordbook() {
     if (!session || session.finished) return;
 
     const total = session.wordIds.length;
-    // 最後の単語を答え終わったら終了
     const isLast = session.currentIndex >= total - 1;
 
     setSession((prev) => {
@@ -528,8 +571,8 @@ export default function SapuriWordbook() {
                 className="w-full rounded-lg border px-3 py-2 text-xs font-mono"
                 placeholder={`例:
 [
-  { "no": 1, "word": "apple", "meaning": "リンゴ" },
-  { "no": 2, "word": "book",  "meaning": "本" }
+  { "no": 401, "pos": "副", "word": "simply", "meaning": "単に" },
+  { "no": 402, "pos": "名", "word": "background", "meaning": "背景" }
 ]`}
               />
               <div className="flex justify-end">
@@ -639,13 +682,15 @@ export default function SapuriWordbook() {
                   </div>
                 </div>
 
-                {/* 単語表示 */}
+                {/* 単語表示（問題側: 品詞 + 英単語） */}
                 <div className="text-center space-y-1">
                   <div className="text-[11px] text-gray-400">
                     No.{currentSessionWord.no}
                   </div>
                   <div className="text-2xl font-bold tracking-wide">
-                    {currentSessionWord.word}
+                    {currentSessionWord.pos
+                      ? `${currentSessionWord.pos} ${currentSessionWord.word}`
+                      : currentSessionWord.word}
                   </div>
                 </div>
 
@@ -690,14 +735,14 @@ export default function SapuriWordbook() {
                     <button
                       type="button"
                       onClick={handleCorrect}
-                      className="rounded-xl border px-3 py-1.5 text-xs hover:bg-gray-50"
+                      className="rounded-xl border px-3 py-1.5 text-xs border-blue-500 text-blue-600 hover:bg-blue-50"
                     >
                       正解
                     </button>
                     <button
                       type="button"
                       onClick={handleWrong}
-                      className="rounded-xl border px-3 py-1.5 text-xs hover:bg-gray-50"
+                      className="rounded-xl border px-3 py-1.5 text-xs border-red-500 text-red-600 hover:bg-red-50"
                     >
                       不正解
                     </button>
