@@ -91,6 +91,14 @@ export default function StudyPage() {
       href: "/study/math-formulas",
       type: "link" as const,
     },
+    {
+      id: "sapuri-wordbook",
+      title: "スタディサプリ対応英単語帳",
+      description:
+        "スタディサプリの番号つき英単語をJSONでインポートして、暗記テスト＆マーク付き復習。",
+      href: "/study/sapuri-wordbook",
+      type: "link" as const,
+    },
   ] as const;
 
   useEffect(() => {
