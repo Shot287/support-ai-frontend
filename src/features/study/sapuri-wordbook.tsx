@@ -9,10 +9,10 @@ type ID = string;
 
 type WordItem = {
   id: ID;
-  no: number;        // スタディサプリの番号（1〜100 など）
-  word: string;      // 英単語
-  meaning: string;   // 日本語の意味
-  marked: boolean;   // マーク対象かどうか
+  no: number; // スタディサプリの番号（1〜100 など）
+  word: string; // 英単語
+  meaning: string; // 日本語の意味
+  marked: boolean; // マーク対象かどうか
 };
 
 type Folder = {
@@ -33,7 +33,9 @@ const DOC_KEY = "study_sapuri_words_v1";
 const uid = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
-    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    : `${Date.now().toString(36)}-${Math.random()
+        .toString(36)
+        .slice(2, 10)}`;
 
 function createDefaultStore(): Store {
   return {
@@ -197,7 +199,7 @@ export default function SapuriWordbook() {
     setStore((s) => {
       const nextFolders = s.folders.filter((f) => f.id !== id);
       const nextCurrent =
-        s.currentFolderId === id ? (nextFolders[0]?.id ?? null) : s.currentFolderId;
+        s.currentFolderId === id ? nextFolders[0]?.id ?? null : s.currentFolderId;
       return {
         ...s,
         folders: nextFolders,
@@ -248,9 +250,7 @@ export default function SapuriWordbook() {
     for (let i = 0; i < parsed.length; i++) {
       const row = parsed[i] ?? {};
       const noRaw =
-        row.no ??
-        row.number ??
-        (typeof row.id === "number" ? row.id : undefined);
+        row.no ?? row.number ?? (typeof row.id === "number" ? row.id : undefined);
       const no =
         typeof noRaw === "number"
           ? noRaw
@@ -339,16 +339,15 @@ export default function SapuriWordbook() {
     setSession(newSession);
   };
 
+  // ★★ ここを修正：store も依存に入れて、最新の marked 状態を反映する ★★
   const currentSessionWord = useMemo(() => {
     if (!session || session.finished) return null;
-    const folder = storeRef.current.folders.find(
-      (f) => f.id === session.folderId
-    );
+    const folder = store.folders.find((f) => f.id === session.folderId);
     if (!folder) return null;
     const wordId = session.wordIds[session.currentIndex];
     const word = folder.words.find((w) => w.id === wordId) ?? null;
     return word;
-  }, [session]);
+  }, [session, store]);
 
   const handleShowAnswer = () => {
     if (!session || session.finished) return;
@@ -378,33 +377,23 @@ export default function SapuriWordbook() {
   const answerCommon = (isCorrect: boolean) => {
     if (!session || session.finished) return;
 
-    const totalAnswered = session.correctCount + session.wrongCount + 1;
     const total = session.wordIds.length;
-
     // 最後の単語を答え終わったら終了
     const isLast = session.currentIndex >= total - 1;
 
     setSession((prev) => {
       if (!prev) return prev;
+      const nextCorrect = prev.correctCount + (isCorrect ? 1 : 0);
+      const nextWrong = prev.wrongCount + (isCorrect ? 0 : 1);
       return {
         ...prev,
-        correctCount: prev.correctCount + (isCorrect ? 1 : 0),
-        wrongCount: prev.wrongCount + (isCorrect ? 0 : 1),
+        correctCount: nextCorrect,
+        wrongCount: nextWrong,
         currentIndex: isLast ? prev.currentIndex : prev.currentIndex + 1,
         showAnswer: false,
         finished: isLast,
       };
     });
-
-    if (isLast) {
-      const correct = session.correctCount + (isCorrect ? 1 : 0);
-      const accuracy = (correct / total) * 100;
-      console.log(
-        `[sapuri-wordbook] session finished: correct=${correct}/${total} (${accuracy.toFixed(
-          1
-        )}%)`
-      );
-    }
   };
 
   const handleCorrect = () => {
