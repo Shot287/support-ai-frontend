@@ -142,17 +142,17 @@ export default function HomePage() {
   }, [userId, deviceId]);
 
   const categories = [
-    { id: "nudge",  title: "先延ばし対策", description: "5秒ルールやポモドーロで初動をつくる", href: "/nudge" },
-    { id: "sleep",  title: "睡眠管理",     description: "就寝・起床のリズムや振り返り（準備中）", href: "/sleep" },
-    { id: "study",  title: "勉強",         description: "用語辞典などの学習サポート", href: "/study" },
-    { id: "mental", title: "M",       description: "修行", href: "/mental" },
+    { id: "nudge",  title: "①", href: "/nudge" },
+    { id: "sleep",  title: "②", href: "/sleep" },
+    { id: "study",  title: "③", href: "/study" },
+    { id: "mental", title: "④", href: "/mental" },
   ] as const;
 
   return (
     <main className="p-4 space-y-4">
       {/* タイトルとボタン群 */}
       <div className="flex items-center justify-between gap-3">
-        <h1 className="text-2xl font-bold">機能を選んでください</h1>
+        <h1 className="text-2xl font-bold">機能</h1>
 
         <div className="flex gap-2">
           {/* 📥 取得ボタン */}
@@ -189,7 +189,6 @@ export default function HomePage() {
             className="block rounded-2xl border p-4 shadow-sm hover:shadow-md transition"
           >
             <h2 className="text-xl font-semibold">{c.title}</h2>
-            <p className="text-sm text-gray-600 mt-2">{c.description}</p>
           </Link>
         ))}
       </div>
