@@ -65,44 +65,15 @@ export default function ReflectionNote() {
 
   const [selectedDate, setSelectedDate] = useState<string>(() => getToday());
 
-  // 変更のたびにローカル + サーバへ保存（新方式同期）
+  // 手動同期用の状態
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncMessage, setSyncMessage] = useState<string | null>(null);
+
+  // 変更のたびに「ローカルのみ」保存（サーバは手動同期）
   useEffect(() => {
     storeRef.current = store;
-    // ローカル
     saveLocal(store);
-    // サーバ
-    (async () => {
-      try {
-        await saveUserDoc<Store>(DOC_KEY, store);
-      } catch (e) {
-        console.warn("[reflection-note] saveUserDoc failed:", e);
-      }
-    })();
   }, [store]);
-
-  // 初回マウント時にサーバから最新版を取得
-  useEffect(() => {
-    (async () => {
-      try {
-        const remote = await loadUserDoc<Store>(DOC_KEY);
-        if (remote && remote.version === 1) {
-          setStore(remote);
-          saveLocal(remote);
-        } else if (!remote) {
-          // サーバが空ならローカルをアップロード
-          await saveUserDoc<Store>(DOC_KEY, storeRef.current);
-        } else {
-          // 将来 version を増やしたときのための保険
-          const migrated: Store = { ...(remote as Store), version: 1 };
-          setStore(migrated);
-          saveLocal(migrated);
-          await saveUserDoc<Store>(DOC_KEY, migrated);
-        }
-      } catch (e) {
-        console.warn("[reflection-note] loadUserDoc failed:", e);
-      }
-    })();
-  }, []);
 
   // 過去に書いた日付を一覧にする（新しい日付が上）
   const datesWithNotes = useMemo(() => {
@@ -141,10 +112,87 @@ export default function ReflectionNote() {
     });
   };
 
+  // ===== 手動同期：サーバから読み込む =====
+  const handlePullFromServer = async () => {
+    setIsSyncing(true);
+    setSyncMessage(null);
+    try {
+      const remote = await loadUserDoc<Store>(DOC_KEY);
+
+      if (!remote) {
+        setSyncMessage("サーバ側にはまだデータがありません。");
+        return;
+      }
+
+      let applied: Store;
+      if (remote.version === 1) {
+        applied = remote;
+      } else {
+        // 将来 version を増やしたときのための保険
+        applied = { ...(remote as Store), version: 1 };
+      }
+
+      setStore(applied);
+      saveLocal(applied);
+      setSyncMessage("サーバから最新データを読み込みました。");
+    } catch (e) {
+      console.warn("[reflection-note] pull (loadUserDoc) failed:", e);
+      setSyncMessage("サーバからの読み込みに失敗しました。通信環境を確認してください。");
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  // ===== 手動同期：サーバへアップロード =====
+  const handlePushToServer = async () => {
+    setIsSyncing(true);
+    setSyncMessage(null);
+    try {
+      const data = storeRef.current;
+      await saveUserDoc<Store>(DOC_KEY, data);
+      setSyncMessage("現在の端末の内容をサーバへ保存しました。");
+    } catch (e) {
+      console.warn("[reflection-note] push (saveUserDoc) failed:", e);
+      setSyncMessage("サーバへの保存に失敗しました。通信環境を確認してください。");
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
   return (
     <div className="grid gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
-      {/* 左側：日付選択 & 一覧 */}
+      {/* 左側：日付選択 & 一覧 + 手動同期 */}
       <section className="rounded-2xl border p-4 shadow-sm">
+        {/* 手動同期ブロック */}
+        <div className="mb-4 border-b pb-3">
+          <h2 className="font-semibold mb-2 text-sm">サーバ同期（手動）</h2>
+          <div className="flex flex-wrap gap-2 mb-2">
+            <button
+              type="button"
+              onClick={handlePullFromServer}
+              disabled={isSyncing}
+              className="rounded-xl border px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50 disabled:opacity-60"
+            >
+              サーバから読み込む
+            </button>
+            <button
+              type="button"
+              onClick={handlePushToServer}
+              disabled={isSyncing}
+              className="rounded-xl border px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50 disabled:opacity-60"
+            >
+              サーバへアップロード
+            </button>
+          </div>
+          <p className="text-[11px] text-gray-500">
+            反省ノートは自動的にこの端末に保存されます。
+            複数端末で共有したいときだけ、必要なタイミングでサーバと同期してください。
+          </p>
+          {syncMessage && (
+            <p className="mt-1 text-[11px] text-gray-600">{syncMessage}</p>
+          )}
+        </div>
+
         <h2 className="font-semibold mb-3">日付を選ぶ</h2>
 
         <div className="mb-4 space-y-2">
@@ -215,12 +263,6 @@ export default function ReflectionNote() {
           onChange={(e) => handleChangeNote(e.target.value)}
           rows={12}
           className="w-full rounded-xl border px-3 py-2 text-sm leading-relaxed"
-          placeholder="今日うまくいかなかった点、できた点、その原因、明日から変えてみることなどを書いてみましょう。
-
-例）
-・先延ばししてしまったこと
-・そのとき何を考えていたか
-・次に同じ状況になったとき、どう行動したいか"
         />
       </section>
     </div>
