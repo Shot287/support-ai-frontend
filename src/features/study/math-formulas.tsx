@@ -179,6 +179,7 @@ function saveLocal(store: StoreV2) {
 }
 
 // 入力欄 / 表示欄 それぞれの「裏向き状態」
+// タイトルも数式カードも、id ごとにこの状態を共有して使う
 type RevealState = {
   input: boolean; // true: 表 / false: 裏
   display: boolean;
@@ -314,7 +315,11 @@ export default function MathFormulas() {
     }));
   };
 
-  const openFile = (id: ID) => setStore((s) => ({ ...s, currentFileId: id }));
+  const openFile = (id: ID) =>
+    setStore((s) => ({
+      ...s,
+      currentFileId: id,
+    }));
 
   const goUpFolder = () => {
     if (!currentFolderId) return;
@@ -422,10 +427,7 @@ export default function MathFormulas() {
         st.id === titleId
           ? {
               ...st,
-              formulas: [
-                ...st.formulas,
-                { id: uid(), source: "" },
-              ],
+              formulas: [...st.formulas, { id: uid(), source: "" }],
             }
           : st
       );
@@ -472,27 +474,27 @@ export default function MathFormulas() {
     });
   };
 
-  const getReveal = (formulaId: ID): RevealState => {
-    const r = revealMap[formulaId];
+  const getReveal = (id: ID): RevealState => {
+    const r = revealMap[id];
     return r ?? { input: false, display: false };
   };
 
-  const toggleInputReveal = (formulaId: ID) => {
+  const toggleInputReveal = (id: ID) => {
     setRevealMap((prev) => {
-      const current = prev[formulaId] ?? { input: false, display: false };
+      const current = prev[id] ?? { input: false, display: false };
       return {
         ...prev,
-        [formulaId]: { ...current, input: !current.input },
+        [id]: { ...current, input: !current.input },
       };
     });
   };
 
-  const toggleDisplayReveal = (formulaId: ID) => {
+  const toggleDisplayReveal = (id: ID) => {
     setRevealMap((prev) => {
-      const current = prev[formulaId] ?? { input: false, display: false };
+      const current = prev[id] ?? { input: false, display: false };
       return {
         ...prev,
-        [formulaId]: { ...current, display: !current.display },
+        [id]: { ...current, display: !current.display },
       };
     });
   };
@@ -655,136 +657,191 @@ export default function MathFormulas() {
               </p>
             ) : (
               <div className="space-y-4">
-                {currentFile.sets.map((set, idx) => (
-                  <div
-                    key={set.id}
-                    className="rounded-2xl border px-4 py-3 bg-gray-50 space-y-3"
-                  >
-                    <div className="flex items-center justify-between">
-                      <h3 className="text-sm font-semibold">
-                        タイトル {idx + 1}
-                      </h3>
-                      <button
-                        onClick={() => deleteTitle(set.id)}
-                        className="text-xs text-red-500 hover:underline"
-                      >
-                        タイトルごと削除
-                      </button>
-                    </div>
+                {currentFile.sets.map((set, idx) => {
+                  const rTitle = getReveal(set.id);
+                  return (
+                    <div
+                      key={set.id}
+                      className="rounded-2xl border px-4 py-3 bg-gray-50 space-y-3"
+                    >
+                      <div className="flex items-center justify-between">
+                        <h3 className="text-sm font-semibold">
+                          タイトル {idx + 1}
+                        </h3>
+                        <button
+                          onClick={() => deleteTitle(set.id)}
+                          className="text-xs text-red-500 hover:underline"
+                        >
+                          タイトルごと削除
+                        </button>
+                      </div>
 
-                    {/* タイトル入力 */}
-                    <div className="space-y-1">
-                      <label className="text-xs font-semibold text-gray-700">
-                        タイトル
-                      </label>
-                      <input
-                        value={set.title}
-                        onChange={(e) =>
-                          updateTitle(currentFile.id, set.id, e.target.value)
-                        }
-                        className="w-full rounded-lg border px-3 py-2 text-xs"
-                        placeholder="例：オイラーの公式 / ガウス積分 など"
-                      />
-                    </div>
-
-                    {/* 数式カード群 */}
-                    <div className="space-y-3">
-                      {set.formulas.map((fm, j) => {
-                        const r = getReveal(fm.id);
-                        return (
-                          <div
-                            key={fm.id}
-                            className="rounded-xl border bg-white px-3 py-3 space-y-3"
+                      {/* タイトル：入力欄（裏向き） */}
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-semibold text-gray-700">
+                            タイトルの入力欄（裏向き）
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => toggleInputReveal(set.id)}
+                            className="text-[11px] rounded-lg border px-2 py-1 hover:bg-gray-50"
                           >
-                            <div className="flex items-center justify-between mb-1">
-                              <span className="text-xs font-semibold text-gray-700">
-                                数式カード {idx + 1}-{j + 1}
-                              </span>
-                              <button
-                                onClick={() => deleteFormula(set.id, fm.id)}
-                                className="text-[11px] text-red-500 hover:underline"
-                              >
-                                このカードを削除
-                              </button>
-                            </div>
-
-                            {/* 入力欄（裏向き） */}
-                            <div className="space-y-1">
-                              <div className="flex items-center justify-between">
-                                <span className="text-[11px] font-semibold text-gray-700">
-                                  数式の入力欄（裏向き）
-                                </span>
-                                <button
-                                  type="button"
-                                  onClick={() => toggleInputReveal(fm.id)}
-                                  className="text-[11px] rounded-lg border px-2 py-1 hover:bg-gray-50"
-                                >
-                                  {r.input ? "裏返す（隠す）" : "めくる（入力を表示）"}
-                                </button>
-                              </div>
-                              {r.input ? (
-                                <textarea
-                                  value={fm.source}
-                                  onChange={(e) =>
-                                    updateFormula(
-                                      currentFile.id,
-                                      set.id,
-                                      fm.id,
-                                      e.target.value
-                                    )
-                                  }
-                                  rows={3}
-                                  className="w-full rounded-lg border px-3 py-2 text-xs font-mono"
-                                  placeholder="例：$$e^{ix} = \cos x + i\sin x$$"
-                                />
-                              ) : (
-                                <div className="w-full rounded-lg border px-3 py-3 text-[11px] text-gray-400 text-center italic bg-gray-50">
-                                  （入力欄は裏向きです。「めくる」ボタンで編集内容を表示）
-                                </div>
-                              )}
-                            </div>
-
-                            {/* 表示欄（裏向き） */}
-                            <div className="space-y-1">
-                              <div className="flex items-center justify-between">
-                                <span className="text-[11px] font-semibold text-gray-700">
-                                  数式の表示欄（裏向き）
-                                </span>
-                                <button
-                                  type="button"
-                                  onClick={() => toggleDisplayReveal(fm.id)}
-                                  className="text-[11px] rounded-lg border px-2 py-1 hover:bg-gray-50"
-                                >
-                                  {r.display
-                                    ? "裏返す（隠す）"
-                                    : "めくる（表示を確認）"}
-                                </button>
-                              </div>
-                              {r.display ? (
-                                <div className="rounded-lg border px-3 py-2 bg-gray-50">
-                                  <MathMarkdown text={fm.source} />
-                                </div>
-                              ) : (
-                                <div className="w-full rounded-lg border px-3 py-3 text-[11px] text-gray-400 text-center italic bg-gray-50">
-                                  （表示欄は裏向きです。「めくる」ボタンで数式を確認）
-                                </div>
-                              )}
-                            </div>
+                            {rTitle.input
+                              ? "裏返す（隠す）"
+                              : "めくる（入力を表示）"}
+                          </button>
+                        </div>
+                        {rTitle.input ? (
+                          <input
+                            value={set.title}
+                            onChange={(e) =>
+                              updateTitle(currentFile.id, set.id, e.target.value)
+                            }
+                            className="w-full rounded-lg border px-3 py-2 text-xs"
+                            placeholder="例：オイラーの公式 / ガウス積分 など"
+                          />
+                        ) : (
+                          <div className="w-full rounded-lg border px-3 py-3 text-[11px] text-gray-400 text-center italic bg-gray-50">
+                            （タイトルの入力欄は裏向きです。「めくる」ボタンで編集内容を表示）
                           </div>
-                        );
-                      })}
+                        )}
+                      </div>
 
-                      {/* このタイトルに数式カードを追加 */}
-                      <button
-                        type="button"
-                        onClick={() => addFormula(set.id)}
-                        className="mt-1 rounded-xl border px-3 py-1.5 text-[11px] hover:bg-gray-50"
-                      >
-                        数式カードを追加
-                      </button>
+                      {/* タイトル：表示欄（裏向き） */}
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-semibold text-gray-700">
+                            タイトルの表示欄（裏向き）
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => toggleDisplayReveal(set.id)}
+                            className="text-[11px] rounded-lg border px-2 py-1 hover:bg-gray-50"
+                          >
+                            {rTitle.display
+                              ? "裏返す（隠す）"
+                              : "めくる（表示を確認）"}
+                          </button>
+                        </div>
+                        {rTitle.display ? (
+                          <div className="rounded-lg border px-3 py-2 bg-white text-xs">
+                            {set.title ? (
+                              <span>{set.title}</span>
+                            ) : (
+                              <span className="text-gray-400 italic">
+                                （タイトルが未入力です）
+                              </span>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="w-full rounded-lg border px-3 py-3 text-[11px] text-gray-400 text-center italic bg-gray-50">
+                            （タイトルの表示欄は裏向きです。「めくる」ボタンで内容を確認）
+                          </div>
+                        )}
+                      </div>
+
+                      {/* 数式カード群 */}
+                      <div className="space-y-3">
+                        {set.formulas.map((fm, j) => {
+                          const r = getReveal(fm.id);
+                          return (
+                            <div
+                              key={fm.id}
+                              className="rounded-xl border bg-white px-3 py-3 space-y-3"
+                            >
+                              <div className="flex items-center justify-between mb-1">
+                                <span className="text-xs font-semibold text-gray-700">
+                                  数式カード {idx + 1}-{j + 1}
+                                </span>
+                                <button
+                                  onClick={() => deleteFormula(set.id, fm.id)}
+                                  className="text-[11px] text-red-500 hover:underline"
+                                >
+                                  このカードを削除
+                                </button>
+                              </div>
+
+                              {/* 入力欄（裏向き） */}
+                              <div className="space-y-1">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[11px] font-semibold text-gray-700">
+                                    数式の入力欄（裏向き）
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleInputReveal(fm.id)}
+                                    className="text-[11px] rounded-lg border px-2 py-1 hover:bg-gray-50"
+                                  >
+                                    {r.input
+                                      ? "裏返す（隠す）"
+                                      : "めくる（入力を表示）"}
+                                  </button>
+                                </div>
+                                {r.input ? (
+                                  <textarea
+                                    value={fm.source}
+                                    onChange={(e) =>
+                                      updateFormula(
+                                        currentFile.id,
+                                        set.id,
+                                        fm.id,
+                                        e.target.value
+                                      )
+                                    }
+                                    rows={3}
+                                    className="w-full rounded-lg border px-3 py-2 text-xs font-mono"
+                                    placeholder="例：$$e^{ix} = \cos x + i\sin x$$"
+                                  />
+                                ) : (
+                                  <div className="w-full rounded-lg border px-3 py-3 text-[11px] text-gray-400 text-center italic bg-gray-50">
+                                    （入力欄は裏向きです。「めくる」ボタンで編集内容を表示）
+                                  </div>
+                                )}
+                              </div>
+
+                              {/* 表示欄（裏向き） */}
+                              <div className="space-y-1">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[11px] font-semibold text-gray-700">
+                                    数式の表示欄（裏向き）
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleDisplayReveal(fm.id)}
+                                    className="text-[11px] rounded-lg border px-2 py-1 hover:bg-gray-50"
+                                  >
+                                    {r.display
+                                      ? "裏返す（隠す）"
+                                      : "めくる（表示を確認）"}
+                                  </button>
+                                </div>
+                                {r.display ? (
+                                  <div className="rounded-lg border px-3 py-2 bg-gray-50">
+                                    <MathMarkdown text={fm.source} />
+                                  </div>
+                                ) : (
+                                  <div className="w-full rounded-lg border px-3 py-3 text-[11px] text-gray-400 text-center italic bg-gray-50">
+                                    （表示欄は裏向きです。「めくる」ボタンで数式を確認）
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+
+                        {/* このタイトルに数式カードを追加 */}
+                        <button
+                          type="button"
+                          onClick={() => addFormula(set.id)}
+                          className="mt-1 rounded-xl border px-3 py-1.5 text-[11px] hover:bg-gray-50"
+                        >
+                          数式カードを追加
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </>
