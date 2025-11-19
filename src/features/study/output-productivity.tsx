@@ -8,19 +8,30 @@ type ID = string;
 
 type Goal = {
   id: ID;
-  name: string;       // 例: レポート, 演習問題, ノート整理 など
+  name: string; // 例: レポート, 演習問題, ノート整理 など
   createdAt: number;
 };
 
 type DayNote = {
-  date: string;       // "2025-11-01" など
-  note: string;       // その日のアウトプット量メモ
+  date: string; // "2025-11-01" など
+  note: string; // その日のアウトプット量メモ
 };
 
-// 月ごとに「アウトプット中タスクメモ」＋日別メモ
+// 月ごとに「アウトプット中タスクメモ（曜日ごと）」＋日別メモ
+type WeekdayTasks = {
+  mon: string;
+  tue: string;
+  wed: string;
+  thu: string;
+  fri: string;
+  sat: string;
+  sun: string;
+};
+
 type MonthRecord = {
-  activeTasks: string;                      // その月に走っているタスクの一覧
-  days: Record<string, DayNote>;           // days[dateKey]
+  activeTasks: string; // 旧：1つだけのアウトプット中タスクメモ（互換保持用）
+  weekdayTasks?: WeekdayTasks; // 新：曜日ごとのアウトプット中タスクメモ
+  days: Record<string, DayNote>; // days[dateKey]
 };
 
 type Store = {
@@ -31,7 +42,7 @@ type Store = {
 };
 
 const LOCAL_KEY = "output_productivity_v1";
-const DOC_KEY   = "output_productivity_v1";
+const DOC_KEY = "output_productivity_v1";
 
 // 手動同期の合図（ホーム画面と同じ）
 const SYNC_CHANNEL = "support-ai-sync";
@@ -43,7 +54,9 @@ const LOCAL_APPLIED_TYPE = "LOCAL_DOC_APPLIED";
 const uid = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
-    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    : `${Date.now().toString(36)}-${Math.random()
+        .toString(36)
+        .slice(2, 10)}`;
 
 function createDefaultStore(): Store {
   return { goals: [], records: {}, version: 1 };
@@ -88,6 +101,16 @@ function getDaysInMonth(year: number, month: number): number {
 }
 
 const weekdayJa = ["日", "月", "火", "水", "木", "金", "土"];
+
+const weekdayConfig: { key: keyof WeekdayTasks; label: string }[] = [
+  { key: "mon", label: "月" },
+  { key: "tue", label: "火" },
+  { key: "wed", label: "水" },
+  { key: "thu", label: "木" },
+  { key: "fri", label: "金" },
+  { key: "sat", label: "土" },
+  { key: "sun", label: "日" },
+];
 
 export default function OutputProductivity() {
   const [store, setStore] = useState<Store>(() => loadLocal());
@@ -182,7 +205,9 @@ export default function OutputProductivity() {
 
     return () => {
       if (bc) {
-        try { bc.close(); } catch {}
+        try {
+          bc.close();
+        } catch {}
       }
       window.removeEventListener("message", onWinMsg);
       window.removeEventListener("storage", onStorage);
@@ -217,29 +242,84 @@ export default function OutputProductivity() {
     return arr;
   }, [yearMonth]);
 
-  // 月の「アウトプット中タスク」取得
-  const getActiveTasks = (goalId: ID | null): string => {
-    if (!goalId) return "";
-    return store.records[goalId]?.[yearMonth]?.activeTasks ?? "";
+  // --- アウトプット中タスク（曜日ごとのノート） ---
+
+  // MonthRecord を安全に取得（なければデフォルト生成）
+  const getMonthRecord = (s: Store, goalId: ID | null): MonthRecord | null => {
+    if (!goalId) return null;
+    const goalRecords = s.records[goalId];
+    if (!goalRecords) return null;
+    const mr = goalRecords[yearMonth];
+    if (!mr) return null;
+    return mr;
   };
 
-  // 月の「アウトプット中タスク」更新
-  const updateActiveTasks = (goalId: ID | null, text: string) => {
+  // 曜日ごとの初期値作成（旧 activeTasks があればそれをベースにする）
+  const createInitialWeekdayTasks = (mr?: MonthRecord | null): WeekdayTasks => {
+    const base =
+      mr && typeof mr.activeTasks === "string" && mr.activeTasks.trim().length > 0
+        ? mr.activeTasks
+        : "";
+    return {
+      mon: base,
+      tue: base,
+      wed: base,
+      thu: base,
+      fri: base,
+      sat: base,
+      sun: base,
+    };
+  };
+
+  // 曜日ごとのタスク取得
+  const getWeekdayTask = (
+    goalId: ID | null,
+    weekdayKey: keyof WeekdayTasks
+  ): string => {
+    if (!goalId) return "";
+    const mr = getMonthRecord(store, goalId);
+    if (!mr) return "";
+    if (mr.weekdayTasks) {
+      return mr.weekdayTasks[weekdayKey] ?? "";
+    }
+    // 旧データしかない場合は activeTasks を全曜日共通の初期値として返す
+    if (typeof mr.activeTasks === "string") {
+      return mr.activeTasks;
+    }
+    return "";
+  };
+
+  // 曜日ごとのタスク更新
+  const updateWeekdayTask = (
+    goalId: ID | null,
+    weekdayKey: keyof WeekdayTasks,
+    text: string
+  ) => {
     if (!goalId) return;
     setStore((s) => {
       const records = { ...s.records };
       const goalRecords = { ...(records[goalId] ?? {}) };
-      const monthRec: MonthRecord = goalRecords[yearMonth] ?? {
-        activeTasks: "",
-        days: {},
+      const existingMr: MonthRecord =
+        goalRecords[yearMonth] ?? {
+          activeTasks: "",
+          days: {},
+        };
+
+      const currentWeekdayTasks: WeekdayTasks =
+        existingMr.weekdayTasks ?? createInitialWeekdayTasks(existingMr);
+
+      const nextWeekdayTasks: WeekdayTasks = {
+        ...currentWeekdayTasks,
+        [weekdayKey]: text,
       };
 
       goalRecords[yearMonth] = {
-        ...monthRec,
-        activeTasks: text,
+        ...existingMr,
+        // 旧 activeTasks はそのまま残しておく（互換用）
+        weekdayTasks: nextWeekdayTasks,
       };
-      records[goalId] = goalRecords;
 
+      records[goalId] = goalRecords;
       return { ...s, records };
     });
   };
@@ -293,8 +373,6 @@ export default function OutputProductivity() {
     if (selectedGoalId === id) setSelectedGoalId(null);
   };
 
-  const currentActiveTasks = getActiveTasks(selectedGoal?.id ?? null);
-
   return (
     <div className="grid gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
       {/* 左側：アウトプット対象（項目）リスト */}
@@ -341,7 +419,6 @@ export default function OutputProductivity() {
             <input
               value={newGoalName}
               onChange={(e) => setNewGoalName(e.target.value)}
-              placeholder="例：レポート / 演習問題 / ノート整理 など"
               className="flex-1 rounded-xl border px-3 py-2 text-sm"
             />
             <button
@@ -381,19 +458,38 @@ export default function OutputProductivity() {
           </p>
         ) : (
           <div className="space-y-4">
-            {/* 月の「アウトプット中タスク」メモ（常に展開） */}
+            {/* 月の「アウトプット中タスク（曜日ごと）」メモ */}
             <div className="rounded-2xl border px-4 py-3 bg-gray-50">
               <div className="flex items-center justify-between mb-2">
-                <h3 className="text-sm font-semibold">アウトプット中タスク</h3>
+                <h3 className="text-sm font-semibold">
+                  アウトプット中タスク（曜日ごとのメモ）
+                </h3>
                 <span className="text-xs text-gray-500">{yearMonth}</span>
               </div>
-              <textarea
-                value={currentActiveTasks}
-                onChange={(e) => updateActiveTasks(selectedGoal.id, e.target.value)}
-                rows={3}
-                className="w-full rounded-lg border px-3 py-2 text-sm bg-white"
-                placeholder={`この月に同時進行しているタスクを書き出してください。\n例：\n・◯◯レポート（締切 11/20）\n・線形代数の演習ノート作成\n・過去問○年分の解き直し など`}
-              />
+              <p className="text-xs text-gray-500 mb-2">
+                月～日のそれぞれについて、この曜日に走らせたいタスク・科目などを書いてください。
+              </p>
+
+              <div className="grid gap-2 md:grid-cols-2">
+                {weekdayConfig.map(({ key, label }) => {
+                  const value = getWeekdayTask(selectedGoal.id, key);
+                  return (
+                    <div key={key} className="rounded-xl border bg-white px-3 py-2">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-sm font-medium">{label}曜日</span>
+                      </div>
+                      <textarea
+                        value={value}
+                        onChange={(e) =>
+                          updateWeekdayTask(selectedGoal.id, key, e.target.value)
+                        }
+                        rows={2}
+                        className="w-full rounded-lg border px-2 py-1 text-xs"
+                      />
+                    </div>
+                  );
+                })}
+              </div>
             </div>
 
             {/* 日別ノート（常に展開状態） */}
@@ -401,7 +497,10 @@ export default function OutputProductivity() {
               {daysList.map(({ dateKey, day, weekday }) => {
                 const note = getNote(selectedGoal.id, dateKey);
                 return (
-                  <div key={dateKey} className="rounded-xl border px-3 py-2 text-sm bg-white">
+                  <div
+                    key={dateKey}
+                    className="rounded-xl border px-3 py-2 text-sm bg-white"
+                  >
                     <div className="flex items-center justify-between mb-1">
                       <div className="flex items-center gap-3">
                         <span className="font-medium">
@@ -412,10 +511,11 @@ export default function OutputProductivity() {
                     </div>
                     <textarea
                       value={note}
-                      onChange={(e) => updateNote(selectedGoal.id, dateKey, e.target.value)}
+                      onChange={(e) =>
+                        updateNote(selectedGoal.id, dateKey, e.target.value)
+                      }
                       rows={2}
                       className="w-full rounded-lg border px-3 py-2 text-sm"
-                      placeholder="この日のアウトプット生産量（例：レポート3ページ、演習20問、ノート2ページ、スライド5枚 など）"
                     />
                   </div>
                 );
