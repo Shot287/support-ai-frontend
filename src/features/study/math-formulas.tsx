@@ -3,6 +3,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { loadUserDoc, saveUserDoc } from "@/lib/userDocStore";
+import { registerManualSync } from "@/lib/manual-sync";
 import ReactMarkdown from "react-markdown";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
@@ -18,24 +19,52 @@ type Node = {
   kind: NodeKind;
 };
 
-type FormulaSet = {
+/** v2: タイトルごとに複数の数式カード */
+type FormulaCard = {
+  id: ID;
+  source: string; // LaTeX / Markdown 数式
+};
+
+type TitleSet = {
+  id: ID;
+  title: string;
+  formulas: FormulaCard[];
+};
+
+type FileDataV2 = {
+  id: ID;
+  sets: TitleSet[];
+};
+
+type StoreV2 = {
+  nodes: Record<ID, Node>;
+  files: Record<ID, FileDataV2>;
+  currentFolderId: ID | null;
+  currentFileId: ID | null;
+  version: 2;
+};
+
+/** v1 旧型: タイトル 1 つにつき数式 1 つ */
+type LegacyFormulaSet = {
   id: ID;
   title: string;
   formula: string;
 };
 
-type FileData = {
+type FileDataV1 = {
   id: ID;
-  sets: FormulaSet[];
+  sets: LegacyFormulaSet[];
 };
 
-type Store = {
+type StoreV1 = {
   nodes: Record<ID, Node>;
-  files: Record<ID, FileData>;
+  files: Record<ID, FileDataV1>;
   currentFolderId: ID | null;
   currentFileId: ID | null;
   version: 1;
 };
+
+type StoreAny = StoreV1 | StoreV2;
 
 const LOCAL_KEY = "math_formulas_v1";
 const DOC_KEY = "math_formulas_v1";
@@ -43,9 +72,7 @@ const DOC_KEY = "math_formulas_v1";
 const uid = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
-    : `${Date.now().toString(36)}-${Math.random()
-        .toString(36)
-        .slice(2, 10)}`;
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
 // ---------- KaTeX対応 ----------
 function normalizeMathText(raw: string): string {
@@ -72,8 +99,8 @@ function MathMarkdown({ text }: { text: string }) {
   );
 }
 
-// ---------- 初期構成 ----------
-function createDefaultStore(): Store {
+// ---------- 初期構成 & マイグレーション ----------
+function createDefaultStore(): StoreV2 {
   const rootId = uid();
   const node: Node = {
     id: rootId,
@@ -86,71 +113,126 @@ function createDefaultStore(): Store {
     files: {},
     currentFolderId: rootId,
     currentFileId: null,
-    version: 1,
+    version: 2,
   };
 }
 
-function loadLocal(): Store {
+function migrateToV2(raw: StoreAny | null | undefined): StoreV2 {
+  if (!raw) return createDefaultStore();
+
+  // すでに v2
+  if ((raw as StoreV2).version === 2) {
+    const v2 = raw as StoreV2;
+    return { ...v2, version: 2 };
+  }
+
+  // v1 → v2 変換
+  const v1 = raw as StoreV1;
+  const filesV2: Record<ID, FileDataV2> = {};
+
+  for (const [fileId, file] of Object.entries(v1.files ?? {})) {
+    const setsV2: TitleSet[] = (file.sets ?? []).map((s) => ({
+      id: s.id,
+      title: s.title,
+      formulas: [
+        {
+          id: uid(),
+          source: s.formula ?? "",
+        },
+      ],
+    }));
+    filesV2[fileId] = {
+      id: fileId,
+      sets: setsV2,
+    };
+  }
+
+  return {
+    nodes: v1.nodes ?? {},
+    files: filesV2,
+    currentFolderId: v1.currentFolderId ?? null,
+    currentFileId: v1.currentFileId ?? null,
+    version: 2,
+  };
+}
+
+function loadLocal(): StoreV2 {
   try {
     if (typeof window === "undefined") return createDefaultStore();
     const raw = localStorage.getItem(LOCAL_KEY);
     if (!raw) return createDefaultStore();
-    const parsed = JSON.parse(raw) as Store;
-    return { ...parsed, version: 1 };
+    const parsed = JSON.parse(raw) as StoreAny;
+    return migrateToV2(parsed);
   } catch {
     return createDefaultStore();
   }
 }
 
-function saveLocal(store: Store) {
+function saveLocal(store: StoreV2) {
   try {
     if (typeof window !== "undefined") {
       localStorage.setItem(LOCAL_KEY, JSON.stringify(store));
     }
-  } catch {}
+  } catch {
+    // noop
+  }
 }
+
+// 入力欄 / 表示欄 それぞれの「裏向き状態」
+type RevealState = {
+  input: boolean; // true: 表 / false: 裏
+  display: boolean;
+};
 
 // ---------- メイン ----------
 export default function MathFormulas() {
-  const [store, setStore] = useState<Store>(() => loadLocal());
+  const [store, setStore] = useState<StoreV2>(() => loadLocal());
   const storeRef = useRef(store);
 
   const [newFolderName, setNewFolderName] = useState("");
   const [newFileName, setNewFileName] = useState("");
-  const [revealMap, setRevealMap] = useState<Record<ID, boolean>>({});
+  const [revealMap, setRevealMap] = useState<Record<ID, RevealState>>({});
 
   const currentFolderId = store.currentFolderId;
   const currentFileId = store.currentFileId;
 
-  // 同期保存
+  // ローカル即時保存（サーバ反映は手動同期に任せる）
   useEffect(() => {
     storeRef.current = store;
     saveLocal(store);
-    (async () => {
-      try {
-        await saveUserDoc<Store>(DOC_KEY, store);
-      } catch {}
-    })();
   }, [store]);
 
-  // 初回ロード
+  // 手動同期登録
   useEffect(() => {
-    (async () => {
-      try {
-        const remote = await loadUserDoc<Store>(DOC_KEY);
-        if (remote && remote.version === 1) {
-          setStore(remote);
-          saveLocal(remote);
-        } else if (!remote) {
-          await saveUserDoc<Store>(DOC_KEY, storeRef.current);
-        } else {
-          const migrated: Store = { ...(remote as Store), version: 1 };
-          setStore(migrated);
-          saveLocal(migrated);
-          await saveUserDoc<Store>(DOC_KEY, migrated);
+    const unsubscribe = registerManualSync({
+      // サーバ → ローカル
+      pull: async () => {
+        try {
+          const remote = await loadUserDoc<StoreAny>(DOC_KEY);
+          if (remote) {
+            const migrated = migrateToV2(remote);
+            setStore(migrated);
+            saveLocal(migrated);
+          }
+        } catch (e) {
+          console.warn("[math-formulas] manual PULL failed:", e);
         }
-      } catch {}
-    })();
+      },
+      // ローカル → サーバ
+      push: async () => {
+        try {
+          await saveUserDoc<StoreV2>(DOC_KEY, storeRef.current);
+        } catch (e) {
+          console.warn("[math-formulas] manual PUSH failed:", e);
+        }
+      },
+      // 今回は RESET なし
+      reset: async () => {
+        /* no-op */
+      },
+    });
+
+    return unsubscribe;
   }, []);
 
   const nodes = store.nodes;
@@ -210,7 +292,7 @@ export default function MathFormulas() {
         parentId: s.currentFolderId,
         kind: "file",
       };
-      const fileData: FileData = { id, sets: [] };
+      const fileData: FileDataV2 = { id, sets: [] };
       return {
         ...s,
         nodes: { ...s.nodes, [id]: node },
@@ -258,14 +340,14 @@ export default function MathFormulas() {
         }
       }
       const nextNodes: Record<ID, Node> = {};
-      const nextFiles: Record<ID, FileData> = {};
+      const nextFiles: Record<ID, FileDataV2> = {};
       for (const [nid, node] of Object.entries(s.nodes)) {
         if (!toDelete.has(nid)) nextNodes[nid] = node;
       }
       for (const [fid, file] of Object.entries(s.files)) {
         if (!toDelete.has(fid)) nextFiles[fid] = file;
       }
-      return { ...s, nodes: nextNodes, files: nextFiles };
+      return { ...s, nodes: nextNodes, files: nextFiles, currentFileId: null };
     });
   };
 
@@ -280,46 +362,50 @@ export default function MathFormulas() {
     });
   };
 
-  // ---------- 数学公式操作 ----------
-  const addSet = () => {
+  // ---------- タイトル / 数式カード操作 ----------
+  const addTitle = () => {
     if (!currentFileId) return;
     setStore((s) => {
       const f = s.files[currentFileId];
       if (!f) return s;
-      const newSet: FormulaSet = { id: uid(), title: "", formula: "" };
+      const newTitle: TitleSet = {
+        id: uid(),
+        title: "",
+        formulas: [
+          {
+            id: uid(),
+            source: "",
+          },
+        ],
+      };
       return {
         ...s,
         files: {
           ...s.files,
-          [currentFileId]: { ...f, sets: [...f.sets, newSet] },
+          [currentFileId]: { ...f, sets: [...f.sets, newTitle] },
         },
       };
     });
   };
 
-  const updateSet = (
-    fileId: ID,
-    setId: ID,
-    field: keyof FormulaSet,
-    value: string
-  ) => {
+  const updateTitle = (fileId: ID, titleId: ID, value: string) => {
     setStore((s) => {
       const f = s.files[fileId];
       if (!f) return s;
       const sets = f.sets.map((st) =>
-        st.id === setId ? { ...st, [field]: value } : st
+        st.id === titleId ? { ...st, title: value } : st
       );
       return { ...s, files: { ...s.files, [fileId]: { ...f, sets } } };
     });
   };
 
-  const deleteSet = (setId: ID) => {
+  const deleteTitle = (titleId: ID) => {
     if (!currentFileId) return;
-    if (!confirm("この数式を削除しますか？")) return;
+    if (!confirm("このタイトルと中の数式をすべて削除しますか？")) return;
     setStore((s) => {
       const f = s.files[currentFileId];
       if (!f) return s;
-      const sets = f.sets.filter((st) => st.id !== setId);
+      const sets = f.sets.filter((st) => st.id !== titleId);
       return {
         ...s,
         files: { ...s.files, [currentFileId]: { ...f, sets } },
@@ -327,8 +413,88 @@ export default function MathFormulas() {
     });
   };
 
-  const toggleReveal = (setId: ID) => {
-    setRevealMap((prev) => ({ ...prev, [setId]: !prev[setId] }));
+  const addFormula = (titleId: ID) => {
+    if (!currentFileId) return;
+    setStore((s) => {
+      const f = s.files[currentFileId];
+      if (!f) return s;
+      const sets = f.sets.map((st) =>
+        st.id === titleId
+          ? {
+              ...st,
+              formulas: [
+                ...st.formulas,
+                { id: uid(), source: "" },
+              ],
+            }
+          : st
+      );
+      return { ...s, files: { ...s.files, [currentFileId]: { ...f, sets } } };
+    });
+  };
+
+  const updateFormula = (
+    fileId: ID,
+    titleId: ID,
+    formulaId: ID,
+    value: string
+  ) => {
+    setStore((s) => {
+      const f = s.files[fileId];
+      if (!f) return s;
+      const sets = f.sets.map((st) => {
+        if (st.id !== titleId) return st;
+        return {
+          ...st,
+          formulas: st.formulas.map((fm) =>
+            fm.id === formulaId ? { ...fm, source: value } : fm
+          ),
+        };
+      });
+      return { ...s, files: { ...s.files, [fileId]: { ...f, sets } } };
+    });
+  };
+
+  const deleteFormula = (titleId: ID, formulaId: ID) => {
+    if (!currentFileId) return;
+    if (!confirm("この数式カードを削除しますか？")) return;
+    setStore((s) => {
+      const f = s.files[currentFileId];
+      if (!f) return s;
+      const sets = f.sets.map((st) => {
+        if (st.id !== titleId) return st;
+        return {
+          ...st,
+          formulas: st.formulas.filter((fm) => fm.id !== formulaId),
+        };
+      });
+      return { ...s, files: { ...s.files, [currentFileId]: { ...f, sets } } };
+    });
+  };
+
+  const getReveal = (formulaId: ID): RevealState => {
+    const r = revealMap[formulaId];
+    return r ?? { input: false, display: false };
+  };
+
+  const toggleInputReveal = (formulaId: ID) => {
+    setRevealMap((prev) => {
+      const current = prev[formulaId] ?? { input: false, display: false };
+      return {
+        ...prev,
+        [formulaId]: { ...current, input: !current.input },
+      };
+    });
+  };
+
+  const toggleDisplayReveal = (formulaId: ID) => {
+    setRevealMap((prev) => {
+      const current = prev[formulaId] ?? { input: false, display: false };
+      return {
+        ...prev,
+        [formulaId]: { ...current, display: !current.display },
+      };
+    });
   };
 
   // ---------- UI ----------
@@ -476,16 +642,16 @@ export default function MathFormulas() {
                 ファイル: {nodes[currentFile.id]?.name}
               </h2>
               <button
-                onClick={addSet}
+                onClick={addTitle}
                 className="rounded-xl border px-3 py-1.5 text-xs hover:bg-gray-50"
               >
-                数式を追加
+                タイトルを追加
               </button>
             </div>
 
             {currentFile.sets.length === 0 ? (
               <p className="text-sm text-gray-500">
-                まだ数式がありません。「数式を追加」から追加してください。
+                まだタイトルがありません。「タイトルを追加」から作成してください。
               </p>
             ) : (
               <div className="space-y-4">
@@ -496,16 +662,17 @@ export default function MathFormulas() {
                   >
                     <div className="flex items-center justify-between">
                       <h3 className="text-sm font-semibold">
-                        数式 {idx + 1}
+                        タイトル {idx + 1}
                       </h3>
                       <button
-                        onClick={() => deleteSet(set.id)}
+                        onClick={() => deleteTitle(set.id)}
                         className="text-xs text-red-500 hover:underline"
                       >
-                        削除
+                        タイトルごと削除
                       </button>
                     </div>
 
+                    {/* タイトル入力 */}
                     <div className="space-y-1">
                       <label className="text-xs font-semibold text-gray-700">
                         タイトル
@@ -513,38 +680,108 @@ export default function MathFormulas() {
                       <input
                         value={set.title}
                         onChange={(e) =>
-                          updateSet(currentFile.id, set.id, "title", e.target.value)
+                          updateTitle(currentFile.id, set.id, e.target.value)
                         }
                         className="w-full rounded-lg border px-3 py-2 text-xs"
-                        placeholder="例：オイラーの公式"
+                        placeholder="例：オイラーの公式 / ガウス積分 など"
                       />
                     </div>
 
-                    <div className="space-y-1">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-semibold text-gray-700">
-                          数式
-                        </span>
-                        <button
-                          onClick={() => toggleReveal(set.id)}
-                          className="text-xs rounded-lg border px-2 py-1 hover:bg-gray-50"
-                        >
-                          {revealMap[set.id] ? "隠す" : "めくる"}
-                        </button>
-                      </div>
-                      {revealMap[set.id] ? (
-                        <MathMarkdown text={set.formula} />
-                      ) : (
-                        <textarea
-                          value={set.formula}
-                          onChange={(e) =>
-                            updateSet(currentFile.id, set.id, "formula", e.target.value)
-                          }
-                          rows={3}
-                          className="w-full rounded-lg border px-3 py-2 text-xs font-mono"
-                          placeholder="例：$$e^{ix} = \cos x + i\sin x$$"
-                        />
-                      )}
+                    {/* 数式カード群 */}
+                    <div className="space-y-3">
+                      {set.formulas.map((fm, j) => {
+                        const r = getReveal(fm.id);
+                        return (
+                          <div
+                            key={fm.id}
+                            className="rounded-xl border bg-white px-3 py-3 space-y-3"
+                          >
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="text-xs font-semibold text-gray-700">
+                                数式カード {idx + 1}-{j + 1}
+                              </span>
+                              <button
+                                onClick={() => deleteFormula(set.id, fm.id)}
+                                className="text-[11px] text-red-500 hover:underline"
+                              >
+                                このカードを削除
+                              </button>
+                            </div>
+
+                            {/* 入力欄（裏向き） */}
+                            <div className="space-y-1">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[11px] font-semibold text-gray-700">
+                                  数式の入力欄（裏向き）
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => toggleInputReveal(fm.id)}
+                                  className="text-[11px] rounded-lg border px-2 py-1 hover:bg-gray-50"
+                                >
+                                  {r.input ? "裏返す（隠す）" : "めくる（入力を表示）"}
+                                </button>
+                              </div>
+                              {r.input ? (
+                                <textarea
+                                  value={fm.source}
+                                  onChange={(e) =>
+                                    updateFormula(
+                                      currentFile.id,
+                                      set.id,
+                                      fm.id,
+                                      e.target.value
+                                    )
+                                  }
+                                  rows={3}
+                                  className="w-full rounded-lg border px-3 py-2 text-xs font-mono"
+                                  placeholder="例：$$e^{ix} = \cos x + i\sin x$$"
+                                />
+                              ) : (
+                                <div className="w-full rounded-lg border px-3 py-3 text-[11px] text-gray-400 text-center italic bg-gray-50">
+                                  （入力欄は裏向きです。「めくる」ボタンで編集内容を表示）
+                                </div>
+                              )}
+                            </div>
+
+                            {/* 表示欄（裏向き） */}
+                            <div className="space-y-1">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[11px] font-semibold text-gray-700">
+                                  数式の表示欄（裏向き）
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => toggleDisplayReveal(fm.id)}
+                                  className="text-[11px] rounded-lg border px-2 py-1 hover:bg-gray-50"
+                                >
+                                  {r.display
+                                    ? "裏返す（隠す）"
+                                    : "めくる（表示を確認）"}
+                                </button>
+                              </div>
+                              {r.display ? (
+                                <div className="rounded-lg border px-3 py-2 bg-gray-50">
+                                  <MathMarkdown text={fm.source} />
+                                </div>
+                              ) : (
+                                <div className="w-full rounded-lg border px-3 py-3 text-[11px] text-gray-400 text-center italic bg-gray-50">
+                                  （表示欄は裏向きです。「めくる」ボタンで数式を確認）
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+
+                      {/* このタイトルに数式カードを追加 */}
+                      <button
+                        type="button"
+                        onClick={() => addFormula(set.id)}
+                        className="mt-1 rounded-xl border px-3 py-1.5 text-[11px] hover:bg-gray-50"
+                      >
+                        数式カードを追加
+                      </button>
                     </div>
                   </div>
                 ))}
