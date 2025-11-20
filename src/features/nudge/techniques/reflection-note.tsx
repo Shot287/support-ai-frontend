@@ -13,6 +13,11 @@ type Store = {
 const LOCAL_KEY = "reflection_note_v1";
 const DOC_KEY = "reflection_note_v1";
 
+// 手動同期の共通チャネル（ホームと同じ定義）
+const SYNC_CHANNEL = "support-ai-sync";
+const STORAGE_KEY_RESET_REQ = "support-ai:sync:reset:req";
+const LOCAL_APPLIED_TYPE = "LOCAL_DOC_APPLIED";
+
 function createDefaultStore(): Store {
   return {
     notes: {},
@@ -25,8 +30,11 @@ function loadLocal(): Store {
     if (typeof window === "undefined") return createDefaultStore();
     const raw = localStorage.getItem(LOCAL_KEY);
     if (!raw) return createDefaultStore();
-    const parsed = JSON.parse(raw) as Store;
-    return { ...parsed, version: 1 };
+    const parsed = JSON.parse(raw) as Partial<Store>;
+    return {
+      notes: parsed.notes ?? {},
+      version: 1,
+    };
   } catch {
     return createDefaultStore();
   }
@@ -65,15 +73,101 @@ export default function ReflectionNote() {
 
   const [selectedDate, setSelectedDate] = useState<string>(() => getToday());
 
-  // 手動同期用の状態
-  const [isSyncing, setIsSyncing] = useState(false);
-  const [syncMessage, setSyncMessage] = useState<string | null>(null);
-
-  // 変更のたびに「ローカルのみ」保存（サーバは手動同期）
+  // 端末ローカルへは即時保存（サーバ反映はホームの手動同期ボタンのみ）
   useEffect(() => {
     storeRef.current = store;
     saveLocal(store);
   }, [store]);
+
+  // 手動同期の合図を購読（PULL / PUSH / LOCAL_DOC_APPLIED / storage）
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const doPull = async () => {
+      try {
+        const remote = await loadUserDoc<Store>(DOC_KEY);
+        if (remote && remote.version === 1) {
+          setStore(remote);
+          saveLocal(remote);
+        }
+      } catch (e) {
+        console.warn("[reflection-note] manual PULL failed:", e);
+      }
+    };
+
+    const doPush = async () => {
+      try {
+        await saveUserDoc<Store>(DOC_KEY, storeRef.current);
+      } catch (e) {
+        console.warn("[reflection-note] manual PUSH failed:", e);
+      }
+    };
+
+    // BroadcastChannel
+    let bc: BroadcastChannel | null = null;
+    try {
+      if ("BroadcastChannel" in window) {
+        bc = new BroadcastChannel(SYNC_CHANNEL);
+        bc.onmessage = (ev) => {
+          const msg = ev?.data;
+          if (!msg || typeof msg.type !== "string") return;
+          const t = msg.type.toUpperCase();
+          if (t.includes("PULL")) doPull();
+          else if (t.includes("PUSH")) doPush();
+          else if (t.includes("RESET")) {
+            // since 未使用。直後に PULL が来る想定。
+          } else if (t === LOCAL_APPLIED_TYPE && msg.docKey === DOC_KEY) {
+            // ホームが localStorage に直接反映した合図
+            setStore(loadLocal());
+          }
+        };
+      }
+    } catch {
+      // noop
+    }
+
+    // 同タブ postMessage
+    const onWinMsg = (ev: MessageEvent) => {
+      const msg = ev?.data;
+      if (!msg || typeof msg.type !== "string") return;
+      const t = msg.type.toUpperCase();
+      if (t.includes("PULL")) doPull();
+      else if (t.includes("PUSH")) doPush();
+      else if (t === LOCAL_APPLIED_TYPE && msg.docKey === DOC_KEY) {
+        setStore(loadLocal());
+      }
+    };
+    window.addEventListener("message", onWinMsg);
+
+    // 他タブ storage
+    const onStorage = (ev: StorageEvent) => {
+      if (!ev.key) return;
+      // ホームが localStorage(localKey) を書き換えたとき
+      if (ev.key === LOCAL_KEY && ev.newValue) {
+        try {
+          setStore(JSON.parse(ev.newValue));
+        } catch {
+          // noop
+        }
+      }
+      if (ev.key === STORAGE_KEY_RESET_REQ) {
+        // RESET 自体は noop（直後に PULL が来る前提）
+      }
+    };
+    window.addEventListener("storage", onStorage);
+
+    return () => {
+      if (bc) {
+        try {
+          bc.close();
+        } catch {
+          // noop
+        }
+      }
+      window.removeEventListener("message", onWinMsg);
+      window.removeEventListener("storage", onStorage);
+    };
+  }, []);
 
   // 過去に書いた日付を一覧にする（新しい日付が上）
   const datesWithNotes = useMemo(() => {
@@ -112,87 +206,10 @@ export default function ReflectionNote() {
     });
   };
 
-  // ===== 手動同期：サーバから読み込む =====
-  const handlePullFromServer = async () => {
-    setIsSyncing(true);
-    setSyncMessage(null);
-    try {
-      const remote = await loadUserDoc<Store>(DOC_KEY);
-
-      if (!remote) {
-        setSyncMessage("サーバ側にはまだデータがありません。");
-        return;
-      }
-
-      let applied: Store;
-      if (remote.version === 1) {
-        applied = remote;
-      } else {
-        // 将来 version を増やしたときのための保険
-        applied = { ...(remote as Store), version: 1 };
-      }
-
-      setStore(applied);
-      saveLocal(applied);
-      setSyncMessage("サーバから最新データを読み込みました。");
-    } catch (e) {
-      console.warn("[reflection-note] pull (loadUserDoc) failed:", e);
-      setSyncMessage("サーバからの読み込みに失敗しました。通信環境を確認してください。");
-    } finally {
-      setIsSyncing(false);
-    }
-  };
-
-  // ===== 手動同期：サーバへアップロード =====
-  const handlePushToServer = async () => {
-    setIsSyncing(true);
-    setSyncMessage(null);
-    try {
-      const data = storeRef.current;
-      await saveUserDoc<Store>(DOC_KEY, data);
-      setSyncMessage("現在の端末の内容をサーバへ保存しました。");
-    } catch (e) {
-      console.warn("[reflection-note] push (saveUserDoc) failed:", e);
-      setSyncMessage("サーバへの保存に失敗しました。通信環境を確認してください。");
-    } finally {
-      setIsSyncing(false);
-    }
-  };
-
   return (
     <div className="grid gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
-      {/* 左側：日付選択 & 一覧 + 手動同期 */}
+      {/* 左側：日付選択 & 一覧 */}
       <section className="rounded-2xl border p-4 shadow-sm">
-        {/* 手動同期ブロック */}
-        <div className="mb-4 border-b pb-3">
-          <h2 className="font-semibold mb-2 text-sm">サーバ同期（手動）</h2>
-          <div className="flex flex-wrap gap-2 mb-2">
-            <button
-              type="button"
-              onClick={handlePullFromServer}
-              disabled={isSyncing}
-              className="rounded-xl border px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50 disabled:opacity-60"
-            >
-              サーバから読み込む
-            </button>
-            <button
-              type="button"
-              onClick={handlePushToServer}
-              disabled={isSyncing}
-              className="rounded-xl border px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50 disabled:opacity-60"
-            >
-              サーバへアップロード
-            </button>
-          </div>
-          <p className="text-[11px] text-gray-500">
-            反省ノートは自動的にこの端末に保存されます。
-            複数端末で共有したいときだけ、必要なタイミングでサーバと同期してください。
-          </p>
-          {syncMessage && (
-            <p className="mt-1 text-[11px] text-gray-600">{syncMessage}</p>
-          )}
-        </div>
-
         <h2 className="font-semibold mb-3">日付を選ぶ</h2>
 
         <div className="mb-4 space-y-2">

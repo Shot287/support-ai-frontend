@@ -3,6 +3,7 @@
 
 import { useMemo, useState, useCallback, useEffect, useRef } from "react";
 import type { KeyboardEvent } from "react";
+import { loadUserDoc, saveUserDoc } from "@/lib/userDocStore";
 
 /* ================= 型 ================= */
 type Task = { id: string; title: string; createdAt: number };
@@ -131,12 +132,19 @@ function plusDays(ymd: string, days: number): string {
   return `${y}-${m}-${dd}`;
 }
 
-/* ================ 永続化（履歴） ================ */
-const RR_KEY = "roundrobin_v1";
+/* ================ 手動同期用 定数 ================ */
+const LOCAL_KEY = "roundrobin_v1";   // ホーム DOCS の localKey と一致させる
+const DOC_KEY = "roundrobin_v1";     // サーバ側 docKey
 
+const SYNC_CHANNEL = "support-ai-sync";
+const STORAGE_KEY_RESET_REQ = "support-ai:sync:reset:req";
+const LOCAL_APPLIED_TYPE = "LOCAL_DOC_APPLIED";
+
+/* ================ 永続化（履歴 = 同期対象） ================ */
 function loadArchive(): ArchiveStore {
   try {
-    const raw = typeof window !== "undefined" ? localStorage.getItem(RR_KEY) : null;
+    const raw =
+      typeof window !== "undefined" ? localStorage.getItem(LOCAL_KEY) : null;
     if (!raw) return { runs: [], version: 1 };
     const parsed = JSON.parse(raw) as ArchiveStore;
     return parsed?.version ? parsed : { runs: [], version: 1 };
@@ -145,16 +153,25 @@ function loadArchive(): ArchiveStore {
   }
 }
 function saveArchive(s: ArchiveStore) {
-  if (typeof window !== "undefined") localStorage.setItem(RR_KEY, JSON.stringify(s));
+  if (typeof window !== "undefined") {
+    localStorage.setItem(LOCAL_KEY, JSON.stringify(s));
+  }
 }
 
-/* ================ ★ ToDo 下書き保存（自動） ================ */
-type Draft = { from: string; to: string; tasks: Task[]; version: 1; createdAt: number };
+/* ================ ★ ToDo 下書き保存（ローカル専用） ================ */
+type Draft = {
+  from: string;
+  to: string;
+  tasks: Task[];
+  version: 1;
+  createdAt: number;
+};
 const RR_DRAFT_KEY = "roundrobin_draft_v1";
 
 function loadDraft(): Draft | null {
   try {
-    const raw = typeof window !== "undefined" ? localStorage.getItem(RR_DRAFT_KEY) : null;
+    const raw =
+      typeof window !== "undefined" ? localStorage.getItem(RR_DRAFT_KEY) : null;
     if (!raw) return null;
     const d = JSON.parse(raw) as Draft;
     return d?.version ? d : null;
@@ -163,19 +180,27 @@ function loadDraft(): Draft | null {
   }
 }
 function saveDraft(d: Draft) {
-  if (typeof window !== "undefined") localStorage.setItem(RR_DRAFT_KEY, JSON.stringify(d));
+  if (typeof window !== "undefined") {
+    localStorage.setItem(RR_DRAFT_KEY, JSON.stringify(d));
+  }
 }
 function clearDraft() {
-  if (typeof window !== "undefined") localStorage.removeItem(RR_DRAFT_KEY);
+  if (typeof window !== "undefined") {
+    localStorage.removeItem(RR_DRAFT_KEY);
+  }
 }
 
 /* ================ 本体 ================ */
 export default function RoundRobin() {
   // 期間（いつからいつまで）— 下書きがあれば復元
-  const draft = useRef<Draft | null>(typeof window !== "undefined" ? loadDraft() : null);
+  const draft = useRef<Draft | null>(
+    typeof window !== "undefined" ? loadDraft() : null
+  );
 
   const [from, setFrom] = useState<string>(() => draft.current?.from ?? today());
-  const [to, setTo] = useState<string>(() => draft.current?.to ?? plusDays(today(), 7));
+  const [to, setTo] = useState<string>(
+    () => draft.current?.to ?? plusDays(today(), 7)
+  );
 
   // タスクリスト（ToDo：総当たりへ移るまでは自由編集）
   const [tasks, setTasks] = useState<Task[]>(() => draft.current?.tasks ?? []);
@@ -190,19 +215,130 @@ export default function RoundRobin() {
   // 振り返り（○/×）
   const [marks, setMarks] = useState<Marks>({});
 
-  // 履歴
+  // 履歴（★サーバと手動同期する対象）
   const [archive, setArchive] = useState<ArchiveStore>(() => loadArchive());
+  const archiveRef = useRef<ArchiveStore>(archive);
+
   const [expandedId, setExpandedId] = useState<string | null>(null); // 履歴の詳細トグル
   const [savedFlag, setSavedFlag] = useState(false); // 今回結果を保存済みか
 
-  const idToTask = useMemo(() => Object.fromEntries(tasks.map((t) => [t.id, t])), [tasks]);
+  const idToTask = useMemo(
+    () => Object.fromEntries(tasks.map((t) => [t.id, t])),
+    [tasks]
+  );
 
   const validDates = useMemo(() => {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) return false;
-    return Date.parse(`${from}T00:00:00+09:00`) <= Date.parse(`${to}T23:59:59+09:00`);
+    if (
+      !/^\d{4}-\d{2}-\d{2}$/.test(from) ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(to)
+    )
+      return false;
+    return (
+      Date.parse(`${from}T00:00:00+09:00`) <=
+      Date.parse(`${to}T23:59:59+09:00`)
+    );
   }, [from, to]);
 
   const canStart = tasks.length >= 2 && validDates;
+
+  // ★タスク数から総当たり試行回数を算出（nC2 = n(n-1)/2）
+  const totalTrials = useMemo(
+    () => (tasks.length * (tasks.length - 1)) / 2,
+    [tasks.length]
+  );
+
+  // ----- ★ 履歴のローカル保存（サーバではなく端末のみ） -----
+  useEffect(() => {
+    archiveRef.current = archive;
+    saveArchive(archive);
+  }, [archive]);
+
+  // ----- ★ 手動同期の合図を購読（PULL / PUSH / LOCAL_DOC_APPLIED / storage） -----
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const doPull = async () => {
+      try {
+        const remote = await loadUserDoc<ArchiveStore>(DOC_KEY);
+        if (remote && remote.version === 1) {
+          setArchive(remote);
+          saveArchive(remote);
+        }
+      } catch (e) {
+        console.warn("[round-robin] manual PULL failed:", e);
+      }
+    };
+
+    const doPush = async () => {
+      try {
+        await saveUserDoc<ArchiveStore>(DOC_KEY, archiveRef.current);
+      } catch (e) {
+        console.warn("[round-robin] manual PUSH failed:", e);
+      }
+    };
+
+    // BroadcastChannel
+    let bc: BroadcastChannel | null = null;
+    try {
+      if ("BroadcastChannel" in window) {
+        bc = new BroadcastChannel(SYNC_CHANNEL);
+        bc.onmessage = (ev) => {
+          const msg = ev?.data;
+          if (!msg || typeof msg.type !== "string") return;
+          const t = msg.type.toUpperCase();
+          if (t.includes("PULL")) doPull();
+          else if (t.includes("PUSH")) doPush();
+          else if (t.includes("RESET")) {
+            // since 未使用なら noop（直後に PULL が来る想定）
+          } else if (t === LOCAL_APPLIED_TYPE && msg.docKey === DOC_KEY) {
+            // ホームが localStorage(localKey) を直接書き換えた合図
+            setArchive(loadArchive());
+          }
+        };
+      }
+    } catch {
+      // noop
+    }
+
+    // 同タブ postMessage
+    const onWinMsg = (ev: MessageEvent) => {
+      const msg = ev?.data;
+      if (!msg || typeof msg.type !== "string") return;
+      const t = msg.type.toUpperCase();
+      if (t.includes("PULL")) doPull();
+      else if (t.includes("PUSH")) doPush();
+      else if (t === LOCAL_APPLIED_TYPE && msg.docKey === DOC_KEY) {
+        setArchive(loadArchive());
+      }
+    };
+    window.addEventListener("message", onWinMsg);
+
+    // 他タブ storage（localKey 変更を拾う）
+    const onStorage = (ev: StorageEvent) => {
+      if (!ev.key) return;
+      if (ev.key === LOCAL_KEY && ev.newValue) {
+        try {
+          setArchive(JSON.parse(ev.newValue));
+        } catch {
+          // noop
+        }
+      }
+      if (ev.key === STORAGE_KEY_RESET_REQ) {
+        // RESET 自体は noop（直後に PULL が来る前提）
+      }
+    };
+    window.addEventListener("storage", onStorage);
+
+    return () => {
+      try {
+        bc?.close();
+      } catch {
+        // noop
+      }
+      window.removeEventListener("message", onWinMsg);
+      window.removeEventListener("storage", onStorage);
+    };
+  }, []);
 
   // ----- ★ 下書きの自動保存（phase === "input" の間のみ） -----
   useEffect(() => {
@@ -221,7 +357,8 @@ export default function RoundRobin() {
     });
     setTitle("");
   };
-  const removeTask = (id: string) => setTasks((prev) => prev.filter((x) => x.id !== id));
+  const removeTask = (id: string) =>
+    setTasks((prev) => prev.filter((x) => x.id !== id));
   const move = (id: string, dir: -1 | 1) => {
     setTasks((prev) => {
       const idx = prev.findIndex((t) => t.id === id);
@@ -257,7 +394,9 @@ export default function RoundRobin() {
       setHistory((h) => {
         const c: History = {
           totals: { ...h.totals },
-          head2head: Object.fromEntries(Object.entries(h.head2head).map(([k, v]) => [k, { ...v }])),
+          head2head: Object.fromEntries(
+            Object.entries(h.head2head).map(([k, v]) => [k, { ...v }])
+          ),
         };
         recordWinLose(c, winner, loser);
         return c;
@@ -300,20 +439,23 @@ export default function RoundRobin() {
       id: uid(),
       from,
       to,
-      tasks: tasks.slice(),              // 当時のタイトル等を保存
+      tasks: tasks.slice(), // 当時のタイトル等を保存
       rankingIds: ranking.map((t) => t.id),
       history: JSON.parse(JSON.stringify(history)),
       marks: JSON.parse(JSON.stringify(marks)),
       createdAt: Date.now(),
     };
-    const next = { version: 1 as const, runs: [run, ...archive.runs] };
+    const next: ArchiveStore = { version: 1, runs: [run, ...archive.runs] };
     setArchive(next);
     saveArchive(next);
     setSavedFlag(true);
   };
 
   const deleteRun = (id: string) => {
-    const next = { version: 1 as const, runs: archive.runs.filter((r) => r.id !== id) };
+    const next: ArchiveStore = {
+      version: 1,
+      runs: archive.runs.filter((r) => r.id !== id),
+    };
     setArchive(next);
     saveArchive(next);
     if (expandedId === id) setExpandedId(null);
@@ -321,7 +463,7 @@ export default function RoundRobin() {
 
   const clearAllRuns = () => {
     if (!confirm("履歴をすべて削除します。よろしいですか？")) return;
-    const next = { version: 1 as const, runs: [] };
+    const next: ArchiveStore = { version: 1, runs: [] };
     setArchive(next);
     saveArchive(next);
     setExpandedId(null);
@@ -335,7 +477,10 @@ export default function RoundRobin() {
           <h2 className="font-semibold">対象期間</h2>
           {phase === "input" && (
             <button
-              onClick={() => { clearDraft(); alert("下書きを削除しました。"); }}
+              onClick={() => {
+                clearDraft();
+                alert("下書きを削除しました。");
+              }}
               className="rounded-lg border px-3 py-1 text-sm hover:bg-gray-50"
               title="自動保存された下書きを削除します"
             >
@@ -351,7 +496,9 @@ export default function RoundRobin() {
             className="rounded-xl border px-3 py-2"
             aria-label="開始日"
             disabled={phase !== "input"}
-            title={phase !== "input" ? "総当たり開始後は編集できません" : ""}
+            title={
+              phase !== "input" ? "総当たり開始後は編集できません" : ""
+            }
           />
         </div>
         <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -363,24 +510,35 @@ export default function RoundRobin() {
             className="rounded-xl border px-3 py-2"
             aria-label="終了日"
             disabled={phase !== "input"}
-            title={phase !== "input" ? "総当たり開始後は編集できません" : ""}
+            title={
+              phase !== "input" ? "総当たり開始後は編集できません" : ""
+            }
           />
-          {!(Date.parse(`${from}T00:00:00+09:00`) <= Date.parse(`${to}T23:59:59+09:00`)) && (
-            <span className="text-xs text-red-600">開始日は終了日以前にしてください</span>
+          {!(
+            Date.parse(`${from}T00:00:00+09:00`) <=
+            Date.parse(`${to}T23:59:59+09:00`)
+          ) && (
+            <span className="text-xs text-red-600">
+              開始日は終了日以前にしてください
+            </span>
           )}
           {phase !== "input" && (
             <span className="text-xs text-gray-500">※ 期間は確定済みです</span>
           )}
         </div>
         {draft.current && phase === "input" && (
-          <p className="mt-2 text-xs text-green-700">✅ 下書きから復元済み（自動保存中）</p>
+          <p className="mt-2 text-xs text-green-700">
+            ✅ 下書きから復元済み（自動保存中）
+          </p>
         )}
       </section>
 
       {/* === ToDo入力（phase: input） === */}
       {phase === "input" && (
         <section className="rounded-xl border p-4">
-          <h2 className="text-xl font-semibold mb-3">ToDoリスト（開始前は自由に編集）</h2>
+          <h2 className="text-xl font-semibold mb-3">
+            ToDoリスト（開始前は自由に編集）
+          </h2>
           <div className="flex gap-2">
             <input
               value={title}
@@ -396,7 +554,10 @@ export default function RoundRobin() {
               }}
               aria-label="タスク入力"
             />
-            <button onClick={addTask} className="rounded-xl border px-4 py-2 hover:bg-gray-50">
+            <button
+              onClick={addTask}
+              className="rounded-xl border px-4 py-2 hover:bg-gray-50"
+            >
               追加
             </button>
           </div>
@@ -433,20 +594,34 @@ export default function RoundRobin() {
               </li>
             ))}
             {tasks.length === 0 && (
-              <li className="text-sm text-gray-500">まだタスクがありません。</li>
+              <li className="text-sm text-gray-500">
+                まだタスクがありません。
+              </li>
             )}
           </ul>
 
           <div className="mt-4 flex items-center justify-between">
             <div className="text-sm text-gray-600">
-              現在 {tasks.length} 件。※2件以上＋期間が有効で開始できます（下書きは自動保存）
+              現在 {tasks.length} 件。
+              {" "}
+              総当たり試行回数:{" "}
+              <span className="tabular-nums font-semibold">
+                {totalTrials}
+              </span>{" "}
+              回。
+              <br />
+              ※ 2件以上＋期間が有効で開始できます（下書きは自動保存）
             </div>
             <button
               onClick={start}
               disabled={!canStart}
               className="rounded-xl bg-black px-5 py-2 text-white disabled:bg-gray-300"
               title={
-                !validDates ? "期間が不正です" : tasks.length < 2 ? "タスクが足りません" : ""
+                !validDates
+                  ? "期間が不正です"
+                  : tasks.length < 2
+                  ? "タスクが足りません"
+                  : ""
               }
             >
               総当たり方式へ進む（編集を確定）
@@ -491,7 +666,9 @@ export default function RoundRobin() {
       {phase === "result" && (
         <section className="rounded-xl border p-4 grid gap-6">
           <div>
-            <h2 className="text-xl font-semibold mb-1">優先順位（総当たり）</h2>
+            <h2 className="text-xl font-semibold mb-1">
+              優先順位（総当たり）
+            </h2>
             <div className="text-sm text-gray-600 mb-3">
               期間: <span className="tabular-nums">{from}</span> 〜{" "}
               <span className="tabular-nums">{to}</span>
@@ -501,7 +678,8 @@ export default function RoundRobin() {
                 <li key={t.id}>
                   <span className="font-medium">{t.title}</span>{" "}
                   <span className="text-xs text-gray-500">
-                    (W{safeTotals(history, t.id).wins}-L{safeTotals(history, t.id).losses})
+                    (W{safeTotals(history, t.id).wins}-L
+                    {safeTotals(history, t.id).losses})
                   </span>
                 </li>
               ))}
@@ -521,7 +699,9 @@ export default function RoundRobin() {
           </div>
 
           <div>
-            <h3 className="font-semibold mb-2">振り返り（期間内に行動できた？）</h3>
+            <h3 className="font-semibold mb-2">
+              振り返り（期間内に行動できた？）
+            </h3>
             <ul className="space-y-2">
               {ranking.map((t) => {
                 const mark = marks[t.id] ?? null;
@@ -540,7 +720,9 @@ export default function RoundRobin() {
                       <button
                         onClick={() => toggleMark(t.id, "maru")}
                         className={`rounded-lg border px-3 py-1 text-sm ${
-                          mark === "maru" ? "bg-green-600 text-white" : "hover:bg-gray-50"
+                          mark === "maru"
+                            ? "bg-green-600 text-white"
+                            : "hover:bg-gray-50"
                         }`}
                         title="○（できた）"
                       >
@@ -549,7 +731,9 @@ export default function RoundRobin() {
                       <button
                         onClick={() => toggleMark(t.id, "batsu")}
                         className={`rounded-lg border px-3 py-1 text-sm ${
-                          mark === "batsu" ? "bg-red-600 text-white" : "hover:bg-gray-50"
+                          mark === "batsu"
+                            ? "bg-red-600 text-white"
+                            : "hover:bg-gray-50"
                         }`}
                         title="×（できなかった）"
                       >
@@ -610,7 +794,9 @@ export default function RoundRobin() {
         <div className="mb-3 flex items-center justify-between">
           <h2 className="font-semibold">履歴</h2>
           <div className="flex items-center gap-2">
-            <span className="text-sm text-gray-600">{archive.runs.length} 件</span>
+            <span className="text-sm text-gray-600">
+              {archive.runs.length} 件
+            </span>
             {archive.runs.length > 0 && (
               <button
                 onClick={clearAllRuns}
@@ -623,14 +809,24 @@ export default function RoundRobin() {
         </div>
 
         {archive.runs.length === 0 ? (
-          <p className="text-sm text-gray-500">まだ保存された履歴はありません。</p>
+          <p className="text-sm text-gray-500">
+            まだ保存された履歴はありません。
+          </p>
         ) : (
           <ul className="space-y-3">
             {archive.runs.map((r) => {
-              const map = Object.fromEntries(r.tasks.map((t) => [t.id, t]));
-              const top3 = r.rankingIds.slice(0, 3).map((id) => map[id]?.title ?? "?");
-              const maru = Object.values(r.marks).filter((v) => v === "maru").length;
-              const batu = Object.values(r.marks).filter((v) => v === "batsu").length;
+              const map = Object.fromEntries(
+                r.tasks.map((t) => [t.id, t])
+              );
+              const top3 = r.rankingIds
+                .slice(0, 3)
+                .map((id) => map[id]?.title ?? "?");
+              const maru = Object.values(r.marks).filter(
+                (v) => v === "maru"
+              ).length;
+              const batu = Object.values(r.marks).filter(
+                (v) => v === "batsu"
+              ).length;
               const created = new Intl.DateTimeFormat("ja-JP", {
                 year: "numeric",
                 month: "2-digit",
@@ -651,12 +847,15 @@ export default function RoundRobin() {
                         {r.from} 〜 {r.to}
                       </div>
                       <div className="text-xs text-gray-600">
-                        保存: {created} ／ 上位: {top3.join(" > ")} ／ ○{maru} ×{batu}
+                        保存: {created} ／ 上位:{" "}
+                        {top3.join(" > ")} ／ ○{maru} ×{batu}
                       </div>
                     </div>
                     <div className="flex items-center gap-2 flex-shrink-0">
                       <button
-                        onClick={() => setExpandedId(expanded ? null : r.id)}
+                        onClick={() =>
+                          setExpandedId(expanded ? null : r.id)
+                        }
                         className="rounded-lg border px-3 py-1 text-sm hover:bg-gray-50"
                         aria-expanded={expanded}
                       >
@@ -673,19 +872,28 @@ export default function RoundRobin() {
 
                   {expanded && (
                     <div className="mt-3 border-t pt-3">
-                      <h4 className="font-semibold mb-2 text-sm">優先順位・○×</h4>
+                      <h4 className="font-semibold mb-2 text-sm">
+                        優先順位・○×
+                      </h4>
                       <ol className="list-decimal pl-5 space-y-1">
                         {r.rankingIds.map((id) => {
                           const t = map[id];
                           const m = r.marks[id] ?? null;
                           return (
                             <li key={id} className="flex items-center gap-2">
-                              <span className="font-medium">{t?.title ?? "(不明)"}</span>
+                              <span className="font-medium">
+                                {t?.title ?? "(不明)"}
+                              </span>
                               <span className="text-xs text-gray-500">
-                                (W{safeTotals(r.history, id).wins}-L{safeTotals(r.history, id).losses})
+                                (W{safeTotals(r.history, id).wins}-L
+                                {safeTotals(r.history, id).losses})
                               </span>
                               <span className="text-xs">
-                                {m === "maru" ? "○" : m === "batsu" ? "×" : "—"}
+                                {m === "maru"
+                                  ? "○"
+                                  : m === "batsu"
+                                  ? "×"
+                                  : "—"}
                               </span>
                             </li>
                           );
