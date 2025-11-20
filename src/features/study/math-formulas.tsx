@@ -676,11 +676,27 @@ export default function MathFormulas() {
                         </button>
                       </div>
 
-                      {/* タイトル：入力欄（裏向き） */}
+                      {/* タイトル：表（常に表示される表示欄 / Gemini対応） */}
+                      <div className="space-y-1">
+                        <span className="text-xs font-semibold text-gray-700">
+                          タイトル（表・Gemini表示用）
+                        </span>
+                        <div className="rounded-lg border px-3 py-2 bg-white text-xs">
+                          {set.title ? (
+                            <MathMarkdown text={set.title} />
+                          ) : (
+                            <span className="text-gray-400 italic">
+                              （タイトルが未入力です）
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* タイトル：裏（入力欄） */}
                       <div className="space-y-1">
                         <div className="flex items-center justify-between">
                           <span className="text-xs font-semibold text-gray-700">
-                            タイトルの入力欄（裏向き）
+                            タイトルの入力欄（裏）
                           </span>
                           <button
                             type="button"
@@ -688,60 +704,28 @@ export default function MathFormulas() {
                             className="text-[11px] rounded-lg border px-2 py-1 hover:bg-gray-50"
                           >
                             {rTitle.input
-                              ? "裏返す（隠す）"
-                              : "めくる（入力を表示）"}
+                              ? "裏を閉じる（入力欄を隠す）"
+                              : "裏を開く（入力欄を表示）"}
                           </button>
                         </div>
                         {rTitle.input ? (
-                          <input
+                          <textarea
                             value={set.title}
                             onChange={(e) =>
                               updateTitle(currentFile.id, set.id, e.target.value)
                             }
-                            className="w-full rounded-lg border px-3 py-2 text-xs"
-                            placeholder="例：オイラーの公式 / ガウス積分 など"
+                            rows={2}
+                            className="w-full rounded-lg border px-3 py-2 text-xs font-mono"
+                            placeholder="例：$$e^{ix} = \cos x + i\sin x$$ の意味 / 応用 など（Geminiにコピペするテキスト）"
                           />
                         ) : (
                           <div className="w-full rounded-lg border px-3 py-3 text-[11px] text-gray-400 text-center italic bg-gray-50">
-                            （タイトルの入力欄は裏向きです。「めくる」ボタンで編集内容を表示）
+                            （タイトルの入力欄は裏側にあります。「裏を開く」ボタンで編集）
                           </div>
                         )}
                       </div>
 
-                      {/* タイトル：表示欄（裏向き） */}
-                      <div className="space-y-1">
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs font-semibold text-gray-700">
-                            タイトルの表示欄（裏向き）
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => toggleDisplayReveal(set.id)}
-                            className="text-[11px] rounded-lg border px-2 py-1 hover:bg-gray-50"
-                          >
-                            {rTitle.display
-                              ? "裏返す（隠す）"
-                              : "めくる（表示を確認）"}
-                          </button>
-                        </div>
-                        {rTitle.display ? (
-                          <div className="rounded-lg border px-3 py-2 bg-white text-xs">
-                            {set.title ? (
-                              <span>{set.title}</span>
-                            ) : (
-                              <span className="text-gray-400 italic">
-                                （タイトルが未入力です）
-                              </span>
-                            )}
-                          </div>
-                        ) : (
-                          <div className="w-full rounded-lg border px-3 py-3 text-[11px] text-gray-400 text-center italic bg-gray-50">
-                            （タイトルの表示欄は裏向きです。「めくる」ボタンで内容を確認）
-                          </div>
-                        )}
-                      </div>
-
-                      {/* 数式カード群 */}
+                      {/* 数式カード群（従来どおり） */}
                       <div className="space-y-3">
                         {set.formulas.map((fm, j) => {
                           const r = getReveal(fm.id);
