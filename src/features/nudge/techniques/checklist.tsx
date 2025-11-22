@@ -15,6 +15,8 @@ type Action = {
   isDone?: boolean;
   /** この行動で意識することのメモ欄 */
   memo?: string;
+  /** 目標時間（秒単位）。UI では mm:ss で編集。*/
+  targetSec?: number;
 };
 
 type ChecklistSet = {
@@ -29,6 +31,8 @@ type ActionLog = {
   startAt: number;
   endAt?: number;
   durationMs?: number; // end時に確定（ローカル保持）
+  /** この試行が目標時間内なら true, 超過なら false, 目標なし等なら undefined */
+  success?: boolean;
 };
 
 type ProcrastinationLog = {
@@ -92,6 +96,40 @@ function fmtDuration(ms: number) {
   return `${hh}${mm}${ss}`;
 }
 
+/** targetSec(秒) → "mm:ss" 文字列 */
+function formatMmSsFromSec(sec?: number): string {
+  if (sec == null) return "";
+  const t = Math.max(0, Math.round(sec));
+  const m = Math.floor(t / 60);
+  const s = t % 60;
+  return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+}
+
+/** "mm:ss" → 秒（不正な形式なら null） */
+function parseMmSs(text: string): number | null {
+  const trimmed = text.trim();
+  const m = /^(\d{1,3}):([0-5]\d)$/.exec(trimmed);
+  if (!m) return null;
+  const min = parseInt(m[1], 10);
+  const sec = parseInt(m[2], 10);
+  return min * 60 + sec;
+}
+
+/** 目標時間に基づき成功判定を行う（目標なしなら undefined） */
+function calcSuccessFor(
+  store: Store,
+  setId: ID,
+  actionId: ID,
+  durationMs: number
+): boolean | undefined {
+  const set = store.sets.find((s) => s.id === setId);
+  const action = set?.actions.find((a) => a.id === actionId);
+  const targetSec = action?.targetSec;
+  if (targetSec == null) return undefined;
+  const targetMs = targetSec * 1000;
+  return durationMs <= targetMs;
+}
+
 /** localStorage から Store を読み込み（なければ初期値） */
 function loadLocal(): Store {
   try {
@@ -126,6 +164,7 @@ function loadLocal(): Store {
         order: i,
         isDone: false,
         memo: "",
+        targetSec: undefined,
       }));
       return {
         sets: [{ id: setId, title: "ナイトルーティン", actions, createdAt: now() }],
@@ -137,7 +176,7 @@ function loadLocal(): Store {
 
     const parsed = JSON.parse(raw) as Store;
 
-    // 後方互換（isDone/memo が未定義の過去データを補う）
+    // 後方互換（isDone/memo/targetSec が未定義の過去データを補う）
     const normalized: Store = {
       ...parsed,
       sets: (parsed.sets ?? []).map((s) => ({
@@ -146,9 +185,20 @@ function loadLocal(): Store {
           ...a,
           isDone: a.isDone ?? false,
           memo: a.memo ?? "",
+          targetSec:
+            typeof a.targetSec === "number" && !Number.isNaN(a.targetSec)
+              ? a.targetSec
+              : undefined,
         })),
       })),
-      runs: parsed.runs ?? [],
+      runs: (parsed.runs ?? []).map((r) => ({
+        ...r,
+        actions: (r.actions ?? []).map((al) => ({
+          ...al,
+          success:
+            typeof al.success === "boolean" ? al.success : undefined,
+        })),
+      })),
       version: 1,
     };
     return normalized;
@@ -197,9 +247,20 @@ export default function Checklist() {
                 ...a,
                 isDone: a.isDone ?? false,
                 memo: a.memo ?? "",
+                targetSec:
+                  typeof a.targetSec === "number" && !Number.isNaN(a.targetSec)
+                    ? a.targetSec
+                    : undefined,
               })),
             })),
-            runs: remote.runs ?? [],
+            runs: (remote.runs ?? []).map((r) => ({
+              ...r,
+              actions: (r.actions ?? []).map((al) => ({
+                ...al,
+                success:
+                  typeof al.success === "boolean" ? al.success : undefined,
+              })),
+            })),
             version: 1,
           };
           setStore(normalized);
@@ -248,7 +309,11 @@ export default function Checklist() {
           else if (t.includes("PUSH")) doPush();
           else if (t.includes("RESET")) {
             // since を使わないのでここは noop（直後の PULL に期待）
-          } else if (t === LOCAL_APPLIED_TYPE && msg.docKey && DOC_KEYS.includes(msg.docKey)) {
+          } else if (
+            t === LOCAL_APPLIED_TYPE &&
+            msg.docKey &&
+            DOC_KEYS.includes(msg.docKey)
+          ) {
             // ホームが localStorage(LOCAL_KEY) を直接書き換えた合図
             setStore(loadLocal());
           }
@@ -265,7 +330,11 @@ export default function Checklist() {
       const t = msg.type.toUpperCase();
       if (t.includes("PULL")) doPull();
       else if (t.includes("PUSH")) doPush();
-      else if (t === LOCAL_APPLIED_TYPE && msg.docKey && DOC_KEYS.includes(msg.docKey)) {
+      else if (
+        t === LOCAL_APPLIED_TYPE &&
+        msg.docKey &&
+        DOC_KEYS.includes(msg.docKey)
+      ) {
         setStore(loadLocal());
       }
     };
@@ -311,7 +380,10 @@ export default function Checklist() {
   }, [store.sets, store.current?.setId]);
 
   const actionsSorted = useMemo(
-    () => (currentSet?.actions ?? []).slice().sort((a, b) => a.order - b.order),
+    () =>
+      (currentSet?.actions ?? [])
+        .slice()
+        .sort((a, b) => a.order - b.order),
     [currentSet]
   );
 
@@ -351,7 +423,8 @@ export default function Checklist() {
 
   const deleteSet = () => {
     if (!currentSet) return;
-    if (store.sets.length <= 1) return alert("少なくとも1つのセットが必要です。");
+    if (store.sets.length <= 1)
+      return alert("少なくとも1つのセットが必要です。");
     if (!confirm(`「${currentSet.title}」を削除しますか？`)) return;
 
     const deletingId = currentSet.id;
@@ -363,7 +436,9 @@ export default function Checklist() {
         ...s,
         sets: nextSets,
         runs: nextRuns,
-        current: nextSet ? { setId: nextSet.id, index: 0, runId: uid() } : undefined,
+        current: nextSet
+          ? { setId: nextSet.id, index: 0, runId: uid() }
+          : undefined,
       };
     });
   };
@@ -393,6 +468,7 @@ export default function Checklist() {
                   order,
                   isDone: false,
                   memo: "",
+                  targetSec: undefined,
                 },
               ],
             }
@@ -433,6 +509,24 @@ export default function Checklist() {
               ...set,
               actions: set.actions.map((a) =>
                 a.id === id ? { ...a, memo } : a
+              ),
+            }
+      ),
+    }));
+  };
+
+  /** 目標時間更新用（秒） */
+  const updateActionTargetSec = (id: ID, sec: number | undefined) => {
+    if (!currentSet) return;
+    setStore((s) => ({
+      ...s,
+      sets: s.sets.map((set) =>
+        set.id !== currentSet.id
+          ? set
+          : {
+              ...set,
+              actions: set.actions.map((a) =>
+                a.id === id ? { ...a, targetSec: sec } : a
               ),
             }
       ),
@@ -494,7 +588,9 @@ export default function Checklist() {
             : { ...set, actions: swapped.map((x, k) => ({ ...x, order: k })) }
         ),
         current:
-          s.current?.setId === currentSet.id ? { ...s.current, index: j } : s.current,
+          s.current?.setId === currentSet.id
+            ? { ...s.current, index: j }
+            : s.current,
       }));
     }
   };
@@ -578,10 +674,18 @@ export default function Checklist() {
           );
           if (i >= 0) {
             const log = next.actions[i];
+            const duration = endedAt - log.startAt;
+            const success = calcSuccessFor(
+              prev,
+              cur.setId,
+              cur.running!.actionId,
+              duration
+            );
             next.actions[i] = {
               ...log,
               endAt: endedAt,
-              durationMs: endedAt - log.startAt,
+              durationMs: duration,
+              success,
             };
           }
         }
@@ -657,7 +761,10 @@ export default function Checklist() {
       runs: s.runs.map((r) =>
         r.id !== s.current!.runId
           ? r
-          : { ...r, actions: [...r.actions, { actionId: a.id, startAt: t }] }
+          : {
+              ...r,
+              actions: [...r.actions, { actionId: a.id, startAt: t }],
+            }
       ),
     }));
   };
@@ -679,7 +786,14 @@ export default function Checklist() {
         const i = logs.findIndex((l) => l.actionId === actionId && !l.endAt);
         if (i >= 0) {
           const log = logs[i];
-          logs[i] = { ...log, endAt: endedAt, durationMs: endedAt - log.startAt };
+          const duration = endedAt - log.startAt;
+          const success = calcSuccessFor(prev, cur.setId, actionId, duration);
+          logs[i] = {
+            ...log,
+            endAt: endedAt,
+            durationMs: duration,
+            success,
+          };
         }
         return { ...r, actions: logs };
       });
@@ -718,7 +832,14 @@ export default function Checklist() {
         const i = logs.findIndex((l) => l.actionId === actionId && !l.endAt);
         if (i >= 0) {
           const log = logs[i];
-          logs[i] = { ...log, endAt: endedAt, durationMs: endedAt - log.startAt };
+          const duration = endedAt - log.startAt;
+          const success = calcSuccessFor(prev, cur.setId, actionId, duration);
+          logs[i] = {
+            ...log,
+            endAt: endedAt,
+            durationMs: duration,
+            success,
+          };
         }
         next.actions = logs;
 
@@ -774,7 +895,36 @@ export default function Checklist() {
   };
 
   const runningElapsedMs = running ? now() - running.startAt : 0;
-  const procrastElapsedMs = procrastinating ? now() - procrastinating.startAt : 0;
+  const procrastElapsedMs = procrastinating
+    ? now() - procrastinating.startAt
+    : 0;
+
+  /* ====== 目標時間入力（現在表示中の action 用のローカル状態） ====== */
+  const [targetInput, setTargetInput] = useState<string>("");
+
+  useEffect(() => {
+    // ページ切り替え時などに、現在の action.targetSec から入力欄をリセット
+    setTargetInput(formatMmSsFromSec(action?.targetSec));
+  }, [action?.id, action?.targetSec]);
+
+  const applyTargetInput = () => {
+    if (!action) return;
+    const trimmed = targetInput.trim();
+    if (trimmed === "") {
+      // 目標時間なし
+      updateActionTargetSec(action.id, undefined);
+      return;
+    }
+    const sec = parseMmSs(trimmed);
+    if (sec == null) {
+      alert("目標時間は mm:ss 形式で入力してください（例: 02:00）");
+      setTargetInput(formatMmSsFromSec(action.targetSec));
+      return;
+    }
+    updateActionTargetSec(action.id, sec);
+    // 正規化された表示に更新
+    setTargetInput(formatMmSsFromSec(sec));
+  };
 
   /* ====== UI ====== */
   return (
@@ -832,7 +982,9 @@ export default function Checklist() {
           <div className="flex gap-2">
             <button
               onClick={startChecklist}
-              disabled={!!procrastinating || !!running || actionsSorted.length === 0}
+              disabled={
+                !!procrastinating || !!running || actionsSorted.length === 0
+              }
               className="rounded-xl bg-black text-white px-4 py-2 disabled:opacity-40"
             >
               チェックリスト開始
@@ -847,11 +999,13 @@ export default function Checklist() {
           </div>
         </div>
 
-        {!running && procrastinating && procrastinating.fromActionId === null && (
-          <div className="mt-2 text-sm text-red-600">
-            先延ばし中：{fmtDuration(procrastElapsedMs)}（1番目の行動を開始すると確定）
-          </div>
-        )}
+        {!running &&
+          procrastinating &&
+          procrastinating.fromActionId === null && (
+            <div className="mt-2 text-sm text-red-600">
+              先延ばし中：{fmtDuration(procrastElapsedMs)}（1番目の行動を開始すると確定）
+            </div>
+          )}
       </section>
 
       {/* ページャ */}
@@ -948,11 +1102,13 @@ export default function Checklist() {
                   進行中：{fmtDuration(runningElapsedMs)}
                 </span>
               )}
-              {!running && procrastinating && procrastinating.fromActionId !== null && (
-                <span className="text-sm text-red-600">
-                  先延ばし中：{fmtDuration(procrastElapsedMs)}
-                </span>
-              )}
+              {!running &&
+                procrastinating &&
+                procrastinating.fromActionId !== null && (
+                  <span className="text-sm text-red-600">
+                    先延ばし中：{fmtDuration(procrastElapsedMs)}
+                  </span>
+                )}
             </div>
 
             {/* メモ欄 */}
@@ -966,6 +1122,24 @@ export default function Checklist() {
                 className="w-full rounded-xl border px-3 py-2 text-sm min-h-[72px]"
                 placeholder="例：急がず丁寧に／姿勢を意識する など"
               />
+            </div>
+
+            {/* 目標時間入力欄（mm:ss） */}
+            <div className="mt-4">
+              <label className="block text-sm text-gray-600 mb-1">
+                目標時間（mm:ss）
+              </label>
+              <input
+                type="text"
+                value={targetInput}
+                onChange={(e) => setTargetInput(e.target.value)}
+                onBlur={applyTargetInput}
+                className="w-32 rounded-xl border px-3 py-2 text-sm tabular-nums"
+                placeholder="例: 02:00"
+              />
+              <p className="mt-1 text-xs text-gray-500">
+                例: 02:00 なら 2分。空欄にするとこの行動には目標時間を設定しません。
+              </p>
             </div>
           </>
         ) : (
@@ -1030,6 +1204,11 @@ export default function Checklist() {
                 {a.memo && (
                   <p className="ml-1 text-xs text-gray-500 whitespace-pre-line break-words">
                     メモ: {a.memo}
+                  </p>
+                )}
+                {typeof a.targetSec === "number" && (
+                  <p className="ml-1 text-xs text-gray-500">
+                    目標時間: {formatMmSsFromSec(a.targetSec)}
                   </p>
                 )}
               </li>

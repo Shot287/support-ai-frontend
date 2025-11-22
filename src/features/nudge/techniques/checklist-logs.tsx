@@ -13,6 +13,9 @@ type Action = {
   createdAt: number;
   order: number;
   isDone?: boolean;
+  memo?: string;
+  /** 目標時間（秒）。UI では mm:ss で編集。 */
+  targetSec?: number;
 };
 
 type ChecklistSet = {
@@ -27,6 +30,8 @@ type ActionLog = {
   startAt: number;
   endAt?: number;
   durationMs?: number;
+  /** この試行が目標時間内なら true, 超過なら false, 目標なし等なら undefined */
+  success?: boolean;
 };
 
 type ProcrastinationLog = {
@@ -106,6 +111,15 @@ const fmtDur = (ms?: number | null) => {
   return `${h}時間${m}分${s}秒`;
 };
 
+/** targetSec(秒) を "mm:ss" 表記へ */
+const fmtTargetMmSs = (targetSec?: number) => {
+  if (targetSec == null) return "—";
+  const t = Math.max(0, Math.round(targetSec));
+  const m = Math.floor(t / 60);
+  const s = t % 60;
+  return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+};
+
 /* ===== localStorage 読み込み/保存 ===== */
 function loadLocal(): Store {
   try {
@@ -116,8 +130,26 @@ function loadLocal(): Store {
     if (!raw) return { sets: [], runs: [], version: 1 };
     const parsed = JSON.parse(raw) as Store;
     return {
-      sets: parsed.sets ?? [],
-      runs: parsed.runs ?? [],
+      sets: (parsed.sets ?? []).map((s) => ({
+        ...s,
+        actions: (s.actions ?? []).map((a) => ({
+          ...a,
+          isDone: a.isDone ?? false,
+          memo: a.memo ?? "",
+          targetSec:
+            typeof a.targetSec === "number" && !Number.isNaN(a.targetSec)
+              ? a.targetSec
+              : undefined,
+        })),
+      })),
+      runs: (parsed.runs ?? []).map((r) => ({
+        ...r,
+        actions: (r.actions ?? []).map((al) => ({
+          ...al,
+          success:
+            typeof al.success === "boolean" ? al.success : undefined,
+        })),
+      })),
       current: parsed.current,
       version: 1,
     };
@@ -143,6 +175,8 @@ type Row = {
   actionIndex: number;
   procrastIndex: number | null;
   actionTitle: string;
+  targetSec?: number;
+  success?: boolean;
   procrast: { startAt?: number; endAt?: number; durationMs?: number } | null;
   action: { startAt: number; endAt?: number; durationMs?: number };
 };
@@ -156,6 +190,19 @@ type RunView = {
   rows: Row[];
   sumAction: number;
   sumPro: number;
+  runAttempts: number; // このランで成功判定した行動数（目標時間あり）
+  runSuccesses: number; // このランで成功した件数
+};
+
+type ActionSuccessSummary = {
+  setId: ID;
+  setTitle: string;
+  actionId: ID;
+  actionTitle: string;
+  targetSec?: number;
+  successCount: number;
+  totalCount: number;
+  order: number;
 };
 
 export default function ChecklistLogs() {
@@ -179,8 +226,26 @@ export default function ChecklistLogs() {
         if (remote && typeof remote === "object") {
           const normalized: Store = {
             ...remote,
-            sets: remote.sets ?? [],
-            runs: remote.runs ?? [],
+            sets: (remote.sets ?? []).map((s) => ({
+              ...s,
+              actions: (s.actions ?? []).map((a) => ({
+                ...a,
+                isDone: a.isDone ?? false,
+                memo: a.memo ?? "",
+                targetSec:
+                  typeof a.targetSec === "number" && !Number.isNaN(a.targetSec)
+                    ? a.targetSec
+                    : undefined,
+              })),
+            })),
+            runs: (remote.runs ?? []).map((r) => ({
+              ...r,
+              actions: (r.actions ?? []).map((al) => ({
+                ...al,
+                success:
+                  typeof al.success === "boolean" ? al.success : undefined,
+              })),
+            })),
             version: 1,
           };
           setStore(normalized);
@@ -311,6 +376,8 @@ export default function ChecklistLogs() {
       const usedPro = new Set<number>();
 
       const rows: Row[] = [];
+      let runAttempts = 0;
+      let runSuccesses = 0;
 
       for (let i = 0; i < actions.length; i++) {
         const al = actions[i];
@@ -341,9 +408,22 @@ export default function ChecklistLogs() {
           al.durationMs ??
           (al.endAt != null ? Math.max(0, al.endAt - al.startAt) : undefined);
 
-        const title =
-          set?.actions.find((a) => a.id === al.actionId)?.title ??
-          "(不明な行動)";
+        const actionEntity = set?.actions.find(
+          (a) => a.id === al.actionId
+        );
+        const title = actionEntity?.title ?? "(不明な行動)";
+        const targetSec = actionEntity?.targetSec;
+
+        // success フラグ：ログにあればそれを優先、なければ duration + target から再計算
+        let success: boolean | undefined = al.success;
+        if (success == null && targetSec != null && actionDur != null) {
+          success = actionDur <= targetSec * 1000;
+        }
+
+        if (targetSec != null && actionDur != null) {
+          runAttempts += 1;
+          if (success) runSuccesses += 1;
+        }
 
         rows.push({
           rowId: `${run.id}:${i}`,
@@ -351,6 +431,8 @@ export default function ChecklistLogs() {
           actionIndex: i,
           procrastIndex,
           actionTitle: title,
+          targetSec,
+          success,
           procrast,
           action: {
             startAt: al.startAt,
@@ -388,6 +470,8 @@ export default function ChecklistLogs() {
         rows,
         sumAction,
         sumPro,
+        runAttempts,
+        runSuccesses,
       });
     }
 
@@ -399,7 +483,58 @@ export default function ChecklistLogs() {
     return order === "asc" ? vs : vs.slice().reverse();
   }, [store.runs, setMap, day, order]);
 
-  /* ===== 削除ハンドラ（Store.runs を直接編集） ===== */
+  /* ===== 全期間の成功率集計（チェックリスト全体） ===== */
+  const globalSuccess: ActionSuccessSummary[] = useMemo(() => {
+    const stats = new Map<string, ActionSuccessSummary>();
+    const setById = new Map(store.sets.map((s) => [s.id, s] as const));
+
+    for (const run of store.runs) {
+      const set = setById.get(run.setId);
+      if (!set) continue;
+
+      for (const al of run.actions) {
+        const action = set.actions.find((a) => a.id === al.actionId);
+        if (!action || action.targetSec == null) continue;
+
+        const durationMs =
+          al.durationMs ??
+          (al.endAt != null ? Math.max(0, al.endAt - al.startAt) : undefined);
+        if (durationMs == null) continue;
+
+        let success = al.success;
+        if (success == null) {
+          success = durationMs <= action.targetSec * 1000;
+        }
+
+        const key = `${set.id}:${action.id}`;
+        let s = stats.get(key);
+        if (!s) {
+          s = {
+            setId: set.id,
+            setTitle: set.title,
+            actionId: action.id,
+            actionTitle: action.title,
+            targetSec: action.targetSec,
+            successCount: 0,
+            totalCount: 0,
+            order: action.order ?? 0,
+          };
+          stats.set(key, s);
+        }
+        s.totalCount += 1;
+        if (success) s.successCount += 1;
+      }
+    }
+
+    return Array.from(stats.values()).sort((a, b) => {
+      if (a.setTitle !== b.setTitle) {
+        return a.setTitle.localeCompare(b.setTitle, "ja");
+      }
+      return a.order - b.order;
+    });
+  }, [store.sets, store.runs]);
+
+  /* ===== 削除 & 成功トグル ハンドラ ===== */
   const handleDeleteRow = (row: Row) => {
     if (!confirm("この行（合流した先延ばしを含む）を削除しますか？")) return;
 
@@ -436,13 +571,40 @@ export default function ChecklistLogs() {
   };
 
   const handleDeleteRun = (rv: RunView) => {
-    if (!confirm("このランの記録をすべて削除しますか？（取り消せません）")) return;
+    if (!confirm("このランの記録をすべて削除しますか？（取り消せません）"))
+      return;
 
     setStore((prev) => ({
       ...prev,
       runs: prev.runs.filter((r) => r.id !== rv.runId),
     }));
     setMsg("ランの記録を削除しました。");
+  };
+
+  const handleToggleSuccess = (row: Row) => {
+    setStore((prev) => {
+      const runs = prev.runs.map((run) => {
+        if (run.id !== row.runId) return run;
+        const actions = run.actions.slice();
+        const log = actions[row.actionIndex];
+        if (!log) return run;
+
+        const currentSuccess =
+          typeof log.success === "boolean"
+            ? log.success
+            : typeof row.success === "boolean"
+            ? row.success
+            : undefined;
+
+        const nextSuccess =
+          currentSuccess === true ? false : true; // undefined も true にする
+
+        actions[row.actionIndex] = { ...log, success: nextSuccess };
+        return { ...run, actions };
+      });
+      return { ...prev, runs };
+    });
+    setMsg("結果を更新しました。（○/× は手動で上書きできます）");
   };
 
   return (
@@ -452,9 +614,7 @@ export default function ChecklistLogs() {
           <h2 className="font-semibold">記録参照</h2>
           <div className="flex items-center gap-2">
             <button
-              onClick={() =>
-                setOrder((o) => (o === "asc" ? "desc" : "asc"))
-              }
+              onClick={() => setOrder((o) => (o === "asc" ? "desc" : "asc"))}
               className="rounded-xl border px-3 py-2 text-xs hover:bg-gray-50"
               title="チェックリスト使用順の並び替え"
             >
@@ -479,102 +639,186 @@ export default function ChecklistLogs() {
       </section>
 
       {views.length === 0 ? (
-        <p className="text-sm text-gray-500">
-          指定日の記録はありません。
-        </p>
+        <p className="text-sm text-gray-500">指定日の記録はありません。</p>
       ) : (
-        views.map((v) => (
-          <section
-            key={v.runKey}
-            className="rounded-2xl border p-4 shadow-sm"
-          >
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-3">
-                <h3 className="font-semibold">{v.setTitle}</h3>
-                {v.startedAt != null && (
-                  <span className="text-xs text-gray-500">
-                    開始: {fmtTime(v.startedAt)}
-                  </span>
-                )}
-              </div>
-              <button
-                onClick={() => handleDeleteRun(v)}
-                className="rounded-xl border px-3 py-1.5 text-sm hover:bg-gray-50"
-                title="このランに含まれる記録をすべて削除します"
-              >
-                ランを削除
-              </button>
-            </div>
+        views.map((v) => {
+          const rate =
+            v.runAttempts > 0
+              ? Math.round((v.runSuccesses / v.runAttempts) * 100)
+              : null;
 
-            <div className="overflow-x-auto">
-              <table className="min-w-[980px] w-full text-sm">
-                <thead>
-                  <tr className="text-left text-gray-600">
-                    <th className="py-2 pr-3">#</th>
-                    <th className="py-2 pr-3">行動</th>
-                    <th className="py-2 pr-3">先延ばし開始</th>
-                    <th className="py-2 pr-3">先延ばし終了</th>
-                    <th className="py-2 pr-3">先延ばし時間</th>
-                    <th className="py-2 pr-3">開始</th>
-                    <th className="py-2 pr-3">終了</th>
-                    <th className="py-2 pr-3">所要時間</th>
-                    <th className="py-2 pr-3"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {v.rows.map((r, i) => (
-                    <tr key={r.rowId} className="border-t">
-                      <td className="py-2 pr-3 tabular-nums">
-                        {i + 1}
+          return (
+            <section
+              key={v.runKey}
+              className="rounded-2xl border p-4 shadow-sm"
+            >
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center gap-3">
+                    <h3 className="font-semibold">{v.setTitle}</h3>
+                    {v.startedAt != null && (
+                      <span className="text-xs text-gray-500">
+                        開始: {fmtTime(v.startedAt)}
+                      </span>
+                    )}
+                  </div>
+                  {rate != null && (
+                    <span className="text-xs text-gray-600">
+                      このランの成功率: {v.runSuccesses}/{v.runAttempts}（
+                      {rate}%）
+                    </span>
+                  )}
+                </div>
+                <button
+                  onClick={() => handleDeleteRun(v)}
+                  className="rounded-xl border px-3 py-1.5 text-sm hover:bg-gray-50"
+                  title="このランに含まれる記録をすべて削除します"
+                >
+                  ランを削除
+                </button>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="min-w-[1040px] w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-gray-600">
+                      <th className="py-2 pr-3">#</th>
+                      <th className="py-2 pr-3">行動</th>
+                      <th className="py-2 pr-3">先延ばし開始</th>
+                      <th className="py-2 pr-3">先延ばし終了</th>
+                      <th className="py-2 pr-3">先延ばし時間</th>
+                      <th className="py-2 pr-3">開始</th>
+                      <th className="py-2 pr-3">終了</th>
+                      <th className="py-2 pr-3">所要時間</th>
+                      <th className="py-2 pr-3">結果</th>
+                      <th className="py-2 pr-3"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {v.rows.map((r, i) => {
+                      const mark =
+                        r.success == null
+                          ? "—"
+                          : r.success
+                          ? "○"
+                          : "×";
+                      return (
+                        <tr key={r.rowId} className="border-t">
+                          <td className="py-2 pr-3 tabular-nums">{i + 1}</td>
+                          <td className="py-2 pr-3">{r.actionTitle}</td>
+                          <td className="py-2 pr-3 tabular-nums">
+                            {fmtTime(r.procrast?.startAt)}
+                          </td>
+                          <td className="py-2 pr-3 tabular-nums">
+                            {fmtTime(r.procrast?.endAt)}
+                          </td>
+                          <td className="py-2 pr-3 tabular-nums">
+                            {fmtDur(r.procrast?.durationMs)}
+                          </td>
+                          <td className="py-2 pr-3 tabular-nums">
+                            {fmtTime(r.action.startAt)}
+                          </td>
+                          <td className="py-2 pr-3 tabular-nums">
+                            {fmtTime(r.action.endAt)}
+                          </td>
+                          <td className="py-2 pr-3 tabular-nums">
+                            {fmtDur(r.action.durationMs)}
+                          </td>
+                          <td className="py-2 pr-3">
+                            <button
+                              onClick={() => handleToggleSuccess(r)}
+                              className="rounded-lg border px-2 py-1 text-xs hover:bg-gray-50 tabular-nums"
+                              title="○/× を手動で切り替え（成功判定の最終調整）"
+                            >
+                              {mark}
+                            </button>
+                          </td>
+                          <td className="py-2 pr-3">
+                            <button
+                              onClick={() => handleDeleteRow(r)}
+                              className="rounded-lg border px-2 py-1 text-xs hover:bg-gray-50"
+                              title="この行（合流した先延ばしを含む）を削除"
+                            >
+                              行を削除
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    <tr className="border-t font-medium">
+                      <td className="py-2 pr-3" colSpan={4}>
+                        合計
                       </td>
-                      <td className="py-2 pr-3">{r.actionTitle}</td>
                       <td className="py-2 pr-3 tabular-nums">
-                        {fmtTime(r.procrast?.startAt)}
+                        {fmtDur(v.sumPro)}
+                      </td>
+                      <td className="py-2 pr-3" colSpan={2}></td>
+                      <td className="py-2 pr-3 tabular-nums">
+                        {fmtDur(v.sumAction)}
+                      </td>
+                      <td className="py-2 pr-3" colSpan={2}></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          );
+        })
+      )}
+
+      {/* 全体の成功率一覧 */}
+      {globalSuccess.length > 0 && (
+        <section className="rounded-2xl border p-4 shadow-sm">
+          <h3 className="font-semibold mb-2">
+            チェックリスト全体の各行動の成功率（全ラン通算）
+          </h3>
+          <p className="text-xs text-gray-500 mb-2">
+            目標時間が設定されている行動のみカウントしています。
+          </p>
+
+          <div className="overflow-x-auto">
+            <table className="min-w-[880px] w-full text-sm">
+              <thead>
+                <tr className="text-left text-gray-600">
+                  <th className="py-2 pr-3">チェックリスト</th>
+                  <th className="py-2 pr-3">行動</th>
+                  <th className="py-2 pr-3">目標時間</th>
+                  <th className="py-2 pr-3">成功回数</th>
+                  <th className="py-2 pr-3">試行回数</th>
+                  <th className="py-2 pr-3">成功率</th>
+                </tr>
+              </thead>
+              <tbody>
+                {globalSuccess.map((s) => {
+                  const rate =
+                    s.totalCount > 0
+                      ? Math.round(
+                          (s.successCount / s.totalCount) * 100
+                        )
+                      : 0;
+                  return (
+                    <tr key={`${s.setId}:${s.actionId}`} className="border-t">
+                      <td className="py-2 pr-3">{s.setTitle}</td>
+                      <td className="py-2 pr-3">{s.actionTitle}</td>
+                      <td className="py-2 pr-3 tabular-nums">
+                        {fmtTargetMmSs(s.targetSec)}
                       </td>
                       <td className="py-2 pr-3 tabular-nums">
-                        {fmtTime(r.procrast?.endAt)}
+                        {s.successCount}
                       </td>
                       <td className="py-2 pr-3 tabular-nums">
-                        {fmtDur(r.procrast?.durationMs)}
+                        {s.totalCount}
                       </td>
                       <td className="py-2 pr-3 tabular-nums">
-                        {fmtTime(r.action.startAt)}
-                      </td>
-                      <td className="py-2 pr-3 tabular-nums">
-                        {fmtTime(r.action.endAt)}
-                      </td>
-                      <td className="py-2 pr-3 tabular-nums">
-                        {fmtDur(r.action.durationMs)}
-                      </td>
-                      <td className="py-2 pr-3">
-                        <button
-                          onClick={() => handleDeleteRow(r)}
-                          className="rounded-lg border px-2 py-1 text-xs hover:bg-gray-50"
-                          title="この行（合流した先延ばしを含む）を削除"
-                        >
-                          行を削除
-                        </button>
+                        {rate}%
                       </td>
                     </tr>
-                  ))}
-                  <tr className="border-t font-medium">
-                    <td className="py-2 pr-3" colSpan={4}>
-                      合計
-                    </td>
-                    <td className="py-2 pr-3 tabular-nums">
-                      {fmtDur(v.sumPro)}
-                    </td>
-                    <td className="py-2 pr-3" colSpan={2}></td>
-                    <td className="py-2 pr-3 tabular-nums">
-                      {fmtDur(v.sumAction)}
-                    </td>
-                    <td className="py-2 pr-3"></td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </section>
-        ))
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </section>
       )}
     </div>
   );
