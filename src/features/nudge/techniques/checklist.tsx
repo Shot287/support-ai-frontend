@@ -13,6 +13,8 @@ type Action = {
   createdAt: number;
   order: number; // 並び順
   isDone?: boolean;
+  /** この行動で意識することのメモ欄 */
+  memo?: string;
 };
 
 type ChecklistSet = {
@@ -123,6 +125,7 @@ function loadLocal(): Store {
         createdAt: now(),
         order: i,
         isDone: false,
+        memo: "",
       }));
       return {
         sets: [{ id: setId, title: "ナイトルーティン", actions, createdAt: now() }],
@@ -134,12 +137,16 @@ function loadLocal(): Store {
 
     const parsed = JSON.parse(raw) as Store;
 
-    // 後方互換（isDoneが未定義の過去データに false を補う）
+    // 後方互換（isDone/memo が未定義の過去データを補う）
     const normalized: Store = {
       ...parsed,
       sets: (parsed.sets ?? []).map((s) => ({
         ...s,
-        actions: (s.actions ?? []).map((a) => ({ ...a, isDone: a.isDone ?? false })),
+        actions: (s.actions ?? []).map((a) => ({
+          ...a,
+          isDone: a.isDone ?? false,
+          memo: a.memo ?? "",
+        })),
       })),
       runs: parsed.runs ?? [],
       version: 1,
@@ -189,6 +196,7 @@ export default function Checklist() {
               actions: (s.actions ?? []).map((a) => ({
                 ...a,
                 isDone: a.isDone ?? false,
+                memo: a.memo ?? "",
               })),
             })),
             runs: remote.runs ?? [],
@@ -290,7 +298,7 @@ export default function Checklist() {
       window.removeEventListener("storage", onStorage);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // pullFromServer/pushToServer は安定参照でなくてOK（内部で state は参照しない）
+  }, []); // pullFromServer/pushToServer は内部で state を参照しないので依存なしでOK
 
   useEffect(() => {
     const t = setInterval(() => setTick((v) => v + 1), 1000);
@@ -378,7 +386,14 @@ export default function Checklist() {
               ...set,
               actions: [
                 ...set.actions,
-                { id: newId, title, createdAt: now(), order, isDone: false },
+                {
+                  id: newId,
+                  title,
+                  createdAt: now(),
+                  order,
+                  isDone: false,
+                  memo: "",
+                },
               ],
             }
       ),
@@ -398,7 +413,27 @@ export default function Checklist() {
           ? set
           : {
               ...set,
-              actions: set.actions.map((x) => (x.id === id ? { ...x, title } : x)),
+              actions: set.actions.map((x) =>
+                x.id === id ? { ...x, title } : x
+              ),
+            }
+      ),
+    }));
+  };
+
+  /** メモ更新用 */
+  const updateActionMemo = (id: ID, memo: string) => {
+    if (!currentSet) return;
+    setStore((s) => ({
+      ...s,
+      sets: s.sets.map((set) =>
+        set.id !== currentSet.id
+          ? set
+          : {
+              ...set,
+              actions: set.actions.map((a) =>
+                a.id === id ? { ...a, memo } : a
+              ),
             }
       ),
     }));
@@ -919,6 +954,19 @@ export default function Checklist() {
                 </span>
               )}
             </div>
+
+            {/* メモ欄 */}
+            <div className="mt-4">
+              <label className="block text-sm text-gray-600 mb-1">
+                メモ（この行動で意識すること）
+              </label>
+              <textarea
+                value={action.memo ?? ""}
+                onChange={(e) => updateActionMemo(action.id, e.target.value)}
+                className="w-full rounded-xl border px-3 py-2 text-sm min-h-[72px]"
+                placeholder="例：急がず丁寧に／姿勢を意識する など"
+              />
+            </div>
           </>
         ) : (
           <div className="text-sm text-gray-500">
@@ -941,45 +989,49 @@ export default function Checklist() {
         {actionsSorted.length === 0 ? (
           <p className="text-sm text-gray-500">まだ行動がありません。</p>
         ) : (
-          <ol className="space-y-1 list-decimal pl-5">
+          <ol className="space-y-2 list-decimal pl-5">
             {actionsSorted.map((a, i) => (
-              <li
-                key={a.id}
-                className="flex items-center justify-between gap-3"
-              >
-                <button
-                  onClick={() => go(i)}
-                  className="text-left underline-offset-2 hover:underline min-w-0 break-words"
-                >
-                  {a.title}
-                  {a.isDone ? "（完了）" : ""}
-                </button>
-                <div className="flex gap-1">
+              <li key={a.id} className="flex flex-col gap-1">
+                <div className="flex items-center justify-between gap-3">
                   <button
-                    onClick={() => moveAction(a.id, -1)}
-                    className="rounded-lg border px-2 py-1 text-xs"
+                    onClick={() => go(i)}
+                    className="text-left underline-offset-2 hover:underline min-w-0 break-words"
                   >
-                    ↑
+                    {a.title}
+                    {a.isDone ? "（完了）" : ""}
                   </button>
-                  <button
-                    onClick={() => moveAction(a.id, +1)}
-                    className="rounded-lg border px-2 py-1 text-xs"
-                  >
-                    ↓
-                  </button>
-                  <button
-                    onClick={() => renameAction(a.id)}
-                    className="rounded-lg border px-2 py-1 text-xs"
-                  >
-                    名
-                  </button>
-                  <button
-                    onClick={() => removeAction(a.id)}
-                    className="rounded-lg border px-2 py-1 text-xs"
-                  >
-                    削
-                  </button>
+                  <div className="flex gap-1">
+                    <button
+                      onClick={() => moveAction(a.id, -1)}
+                      className="rounded-lg border px-2 py-1 text-xs"
+                    >
+                      ↑
+                    </button>
+                    <button
+                      onClick={() => moveAction(a.id, +1)}
+                      className="rounded-lg border px-2 py-1 text-xs"
+                    >
+                      ↓
+                    </button>
+                    <button
+                      onClick={() => renameAction(a.id)}
+                      className="rounded-lg border px-2 py-1 text-xs"
+                    >
+                      名
+                    </button>
+                    <button
+                      onClick={() => removeAction(a.id)}
+                      className="rounded-lg border px-2 py-1 text-xs"
+                    >
+                      削
+                    </button>
+                  </div>
                 </div>
+                {a.memo && (
+                  <p className="ml-1 text-xs text-gray-500 whitespace-pre-line break-words">
+                    メモ: {a.memo}
+                  </p>
+                )}
               </li>
             ))}
           </ol>
