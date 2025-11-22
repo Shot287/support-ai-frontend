@@ -1,67 +1,144 @@
 // src/features/nudge/techniques/checklist-logs.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import {
-  startSmartSync,
-  pullBatch,
-  pushBatch,
-  type PullResponse,
-  type ChecklistSetRow,
-  type ChecklistActionRow,
-  type ChecklistActionLogRow,
-} from "@/lib/sync";
-import { getDeviceId } from "@/lib/device";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { loadUserDoc, saveUserDoc } from "@/lib/userDocStore";
 
 type ID = string;
 
-/* ===== ローカル表示用の型 ===== */
-type Action = { id: ID; title: string; order: number };
-type ChecklistSet = { id: ID; title: string; actions: Action[]; createdAt: number };
+/* ===== チェックリスト本体と同じ Store 型 ===== */
+type Action = {
+  id: ID;
+  title: string;
+  createdAt: number;
+  order: number;
+  isDone?: boolean;
+};
 
-/* ===== 同期ユーティリティ ===== */
-const USER_ID = "demo";
+type ChecklistSet = {
+  id: ID;
+  title: string;
+  actions: Action[];
+  createdAt: number;
+};
 
-/** ログ画面専用 since */
-const SINCE_KEY = `support-ai:sync:since:${USER_ID}:checklist-logs`;
-const getSince = () => (typeof window === "undefined" ? 0 : Number(localStorage.getItem(SINCE_KEY) ?? 0));
-const setSince = (ms: number) => { if (typeof window !== "undefined") localStorage.setItem(SINCE_KEY, String(ms)); };
-const resetSince = () => { if (typeof window !== "undefined") localStorage.setItem(SINCE_KEY, "0"); };
+type ActionLog = {
+  actionId: ID;
+  startAt: number;
+  endAt?: number;
+  durationMs?: number;
+};
 
-const uid = () =>
-  (typeof crypto !== "undefined" && "randomUUID" in crypto)
-    ? crypto.randomUUID()
-    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+type ProcrastinationLog = {
+  fromActionId: ID | null;
+  startAt: number;
+  endAt?: number;
+  durationMs?: number;
+};
+
+type Run = {
+  id: ID;
+  setId: ID;
+  startedAt: number;
+  endedAt?: number;
+  actions: ActionLog[];
+  procrastinations: ProcrastinationLog[];
+};
+
+type Store = {
+  sets: ChecklistSet[];
+  runs: Run[];
+  current?: {
+    setId: ID;
+    index: number;
+    running?: { actionId: ID; startAt: number };
+    procrastinating?: { fromActionId: ID | null; startAt: number };
+    runId: ID;
+  };
+  version: 1;
+};
+
+/* ===== 手動同期用 定数 ===== */
+const LOCAL_KEY = "checklist_v1";
+const DOC_KEY = "checklist_v1";
+
+const SYNC_CHANNEL = "support-ai-sync";
+const STORAGE_KEY_RESET_REQ = "support-ai:sync:reset:req";
+const LOCAL_APPLIED_TYPE = "LOCAL_DOC_APPLIED";
 
 /* ===== JST 日付ユーティリティ ===== */
 function dateToYmdJst(d: Date): string {
   const p = new Intl.DateTimeFormat("ja-JP", {
-    timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit", day: "2-digit",
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
   }).formatToParts(d);
   const y = p.find((x) => x.type === "year")!.value;
   const m = p.find((x) => x.type === "month")!.value;
   const da = p.find((x) => x.type === "day")!.value;
   return `${y}-${m}-${da}`;
 }
+
 function dayRangeJst(yyyyMmDd: string) {
   const start = Date.parse(`${yyyyMmDd}T00:00:00.000+09:00`);
   const end = Date.parse(`${yyyyMmDd}T23:59:59.999+09:00`);
   return { start, end };
 }
-const fmtTime = (t?: number | null) => (t == null ? "…" : new Date(t).toLocaleTimeString("ja-JP", { hour12: false }));
-const fmtDur = (ms?: number | null) =>
-  ms == null ? "—" : `${Math.floor(ms / 60000)}分${Math.floor((ms % 60000) / 1000)}秒`;
 
-/* ===== 表示行 ===== */
+const fmtTime = (t?: number | null) =>
+  t == null
+    ? "…"
+    : new Date(t).toLocaleTimeString("ja-JP", { hour12: false });
+
+const fmtDur = (ms?: number | null) =>
+  ms == null
+    ? "—"
+    : `${Math.floor(ms / 60000)}分${Math.floor((ms % 60000) / 1000)}秒`;
+
+/* ===== localStorage 読み込み/保存 ===== */
+function loadLocal(): Store {
+  try {
+    if (typeof window === "undefined") {
+      return { sets: [], runs: [], version: 1 };
+    }
+    const raw = localStorage.getItem(LOCAL_KEY);
+    if (!raw) return { sets: [], runs: [], version: 1 };
+    const parsed = JSON.parse(raw) as Store;
+    return {
+      sets: parsed.sets ?? [],
+      runs: parsed.runs ?? [],
+      current: parsed.current,
+      version: 1,
+    };
+  } catch {
+    return { sets: [], runs: [], version: 1 };
+  }
+}
+
+function saveLocal(store: Store) {
+  try {
+    if (typeof window !== "undefined") {
+      localStorage.setItem(LOCAL_KEY, JSON.stringify(store));
+    }
+  } catch {
+    // noop
+  }
+}
+
+/* ===== 表示用の型 ===== */
 type Row = {
+  rowId: string;
+  runId: ID;
+  actionIndex: number;
+  procrastIndex: number | null;
   actionTitle: string;
-  actionLogId: ID;                 // 行動ログの id（削除に使用）
-  maybeProcrastLogId?: ID;         // 1番目前の先延ばしログの id（合流している場合、一緒に削除）
   procrast: { startAt?: number; endAt?: number; durationMs?: number } | null;
   action: { startAt: number; endAt?: number; durationMs?: number };
 };
 
 type RunView = {
+  runId: ID;
   runKey: string;
   setId: ID;
   setTitle: string;
@@ -69,406 +146,263 @@ type RunView = {
   rows: Row[];
   sumAction: number;
   sumPro: number;
-  rawLogIds: ID[]; // run_start/run_end 含む
 };
 
-/* ===== state ===== */
-type SetsState = ChecklistSet[];
-type LogsState = ChecklistActionLogRow[];
-
-/* ===== API: ソフトデリート（pushBatch） ===== */
-async function pushSoftDelete(
-  userId: string,
-  deviceId: string,
-  targets: Array<{ id: ID; set_id: ID; action_id: ID; data?: any }>
-) {
-  if (targets.length === 0) return;
-  const updated_at = Date.now();
-  const updated_by =
-    (/Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) ? "9" : "5") + "|" + deviceId;
-
-  await pushBatch({
-    user_id: userId,
-    device_id: deviceId,
-    changes: {
-      checklist_sets: [],
-      checklist_actions: [],
-      checklist_action_logs: targets.map((t) => ({
-        id: t.id,
-        set_id: t.set_id,
-        action_id: t.action_id,
-        updated_at,
-        updated_by,
-        deleted_at: updated_at,
-        data: t.data ?? null,
-      })),
-    },
-  });
-}
-
 export default function ChecklistLogs() {
-  const [sets, setSets] = useState<SetsState>([]);
-  const [logs, setLogs] = useState<LogsState>([]);
+  const [store, setStore] = useState<Store>(() => loadLocal());
+  const storeRef = useRef(store);
   const [msg, setMsg] = useState<string | null>(null);
   const [date, setDate] = useState<string>(() => dateToYmdJst(new Date()));
   const [order, setOrder] = useState<"asc" | "desc">("asc");
 
-  // ---- diffs 反映（Set/Action） ----
-  const applySetDiffs = (rows: readonly ChecklistSetRow[] = []) => {
-    if (rows.length === 0) return;
-    setSets((prev) => {
-      const idx = new Map(prev.map((s, i) => [s.id, i] as const));
-      const next = prev.slice();
-      for (const r of rows) {
-        if (r.deleted_at) {
-          const i = idx.get(r.id);
-          if (i != null) {
-            next.splice(i, 1);
-            idx.clear(); next.forEach((s, k) => idx.set(s.id, k));
-          }
-          continue;
-        }
-        const i = idx.get(r.id);
-        if (i == null) {
-          next.push({ id: r.id, title: r.title, actions: [], createdAt: r.updated_at ?? Date.now() });
-          idx.set(r.id, next.length - 1);
-        } else {
-          next[i] = { ...next[i], title: r.title };
-        }
-      }
-      return next;
-    });
-  };
-
-  const applyActionDiffs = (rows: readonly ChecklistActionRow[] = []) => {
-    if (rows.length === 0) return;
-    setSets((prev) => {
-      const bySet = new Map<string, ChecklistActionRow[]>();
-      for (const r of rows) {
-        if (!bySet.has(r.set_id)) bySet.set(r.set_id, []);
-        bySet.get(r.set_id)!.push(r);
-      }
-      return prev.map((set) => {
-        const patches = bySet.get(set.id);
-        if (!patches || patches.length === 0) return set;
-
-        const idx = new Map(set.actions.map((a, i) => [a.id, i] as const));
-        let actions = set.actions.slice();
-
-        for (const r of patches) {
-          if (r.deleted_at) {
-            const i = idx.get(r.id);
-            if (i != null) {
-              actions.splice(i, 1);
-              idx.clear(); actions.forEach((a, k) => idx.set(a.id, k));
-            }
-            continue;
-          }
-          const i = idx.get(r.id);
-          if (i == null) {
-            actions.push({ id: r.id, title: r.title, order: (r as any).order ?? actions.length });
-            idx.set(r.id, actions.length - 1);
-          } else {
-            actions[i] = { ...actions[i], title: r.title, order: (r as any).order ?? actions[i].order };
-          }
-        }
-        actions = actions.slice().sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
-          .map((a, i) => ({ ...a, order: i }));
-        return { ...set, actions };
-      });
-    });
-  };
-
-  // ---- diffs 反映（Action Logs） ----
-  const applyLogDiffs = (rows: readonly ChecklistActionLogRow[] = []) => {
-    if (rows.length === 0) return;
-    setLogs((prev) => {
-      const map = new Map<string, ChecklistActionLogRow>();
-      for (const x of prev) if (!x.deleted_at) map.set(x.id, x);
-      for (const r of rows) {
-        if (r.deleted_at) map.delete(r.id);
-        else map.set(r.id, r as ChecklistActionLogRow);
-      }
-      return Array.from(map.values()).sort(
-        (a, b) =>
-          (a.start_at_ms ?? 0) - (b.start_at_ms ?? 0) ||
-          (a.updated_at ?? 0) - (b.updated_at ?? 0)
-      );
-    });
-  };
-
-  // ---- 初期 pull + スマート同期 ----
+  // store → localStorage
   useEffect(() => {
-    const abort = new AbortController();
+    storeRef.current = store;
+    saveLocal(store);
+  }, [store]);
 
-    (async () => {
+  // 手動同期購読（ホーム📥/☁ との連携）
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const doPull = async () => {
       try {
-        const json = await pullBatch(USER_ID, getSince(), [
-          "checklist_sets", "checklist_actions", "checklist_action_logs",
-        ]);
-        applySetDiffs(json.diffs.checklist_sets ?? []);
-        applyActionDiffs(json.diffs.checklist_actions ?? []);
-        applyLogDiffs(json.diffs.checklist_action_logs ?? []);
-        setSince(json.server_time_ms);
-      } catch {
-        setMsg("同期に失敗しました。しばらくしてから再度お試しください。");
+        const remote = await loadUserDoc<Store>(DOC_KEY);
+        if (remote && remote.version === 1) {
+          setStore(remote);
+          saveLocal(remote);
+        }
+      } catch (e) {
+        console.warn("[checklist-logs] manual PULL failed:", e);
       }
-    })();
+    };
 
-    const ctl = startSmartSync({
-      userId: USER_ID,
-      deviceId: getDeviceId(),
-      getSince, setSince,
-      applyDiffs: (diffs: PullResponse["diffs"]) => {
-        applySetDiffs(diffs.checklist_sets ?? []);
-        applyActionDiffs(diffs.checklist_actions ?? []);
-        applyLogDiffs(diffs.checklist_action_logs ?? []);
-      },
-      fallbackPolling: true,
-      pollingIntervalMs: 30000,
-      abortSignal: abort.signal,
-    });
+    const doPush = async () => {
+      try {
+        await saveUserDoc<Store>(DOC_KEY, storeRef.current);
+      } catch (e) {
+        console.warn("[checklist-logs] manual PUSH failed:", e);
+      }
+    };
 
-    return () => { abort.abort(); ctl.stop(); };
+    let bc: BroadcastChannel | null = null;
+    try {
+      if ("BroadcastChannel" in window) {
+        bc = new BroadcastChannel(SYNC_CHANNEL);
+        bc.onmessage = (ev) => {
+          const msg = ev?.data;
+          if (!msg || typeof msg.type !== "string") return;
+          const t = msg.type.toUpperCase();
+          if (t.includes("PULL")) doPull();
+          else if (t.includes("PUSH")) doPush();
+          else if (t.includes("RESET")) {
+            // since を使わないので noop
+          } else if (t === LOCAL_APPLIED_TYPE && msg.docKey === DOC_KEY) {
+            setStore(loadLocal());
+          }
+        };
+      }
+    } catch {
+      // noop
+    }
+
+    const onWinMsg = (ev: MessageEvent) => {
+      const msg = ev?.data;
+      if (!msg || typeof msg.type !== "string") return;
+      const t = msg.type.toUpperCase();
+      if (t.includes("PULL")) doPull();
+      else if (t.includes("PUSH")) doPush();
+      else if (t === LOCAL_APPLIED_TYPE && msg.docKey === DOC_KEY) {
+        setStore(loadLocal());
+      }
+    };
+    window.addEventListener("message", onWinMsg);
+
+    const onStorage = (ev: StorageEvent) => {
+      if (!ev.key) return;
+      if (ev.key === LOCAL_KEY && ev.newValue) {
+        try {
+          const parsed = JSON.parse(ev.newValue) as Store;
+          if (parsed && parsed.version === 1) {
+            setStore(parsed);
+          }
+        } catch {
+          // noop
+        }
+      }
+      if (ev.key === STORAGE_KEY_RESET_REQ) {
+        // noop（直後の PULL に期待）
+      }
+    };
+    window.addEventListener("storage", onStorage);
+
+    return () => {
+      try {
+        bc?.close();
+      } catch {}
+      window.removeEventListener("message", onWinMsg);
+      window.removeEventListener("storage", onStorage);
+    };
   }, []);
 
-  // 過去日バックフィル
-  useEffect(() => {
-    (async () => {
-      try {
-        const { end } = dayRangeJst(date);
-        const since = getSince();
-        const marginMs = 5 * 60 * 1000;
-        if (end + marginMs < since) {
-          const json = await pullBatch(USER_ID, 0, [
-            "checklist_sets", "checklist_actions", "checklist_action_logs",
-          ]);
-          applySetDiffs(json.diffs.checklist_sets ?? []);
-          applyActionDiffs(json.diffs.checklist_actions ?? []);
-          applyLogDiffs(json.diffs.checklist_action_logs ?? []);
-          setSince(json.server_time_ms);
-        }
-      } catch { /* noop */ }
-    })();
-  }, [date]);
-
   /* ===== 画面用の組み立て ===== */
-  const setMap = useMemo(() => new Map(sets.map((s) => [s.id, s] as const)), [sets]);
+  const setMap = useMemo(
+    () => new Map(store.sets.map((s) => [s.id, s] as const)),
+    [store.sets]
+  );
   const day = useMemo(() => dayRangeJst(date), [date]);
 
-  const dayLogs = useMemo(() => {
-    const { start, end } = day;
-    return logs.filter(
-      (l) =>
-        !l.deleted_at &&
-        (
-          (l.start_at_ms != null && l.start_at_ms >= start && l.start_at_ms <= end) ||
-          (l.end_at_ms != null && l.end_at_ms >= start && l.end_at_ms <= end)
-        )
-    );
-  }, [logs, day]);
-
-  const GAP_SPLIT_MS = 15 * 60 * 1000; // 15分
-
   const views: RunView[] = useMemo(() => {
-    const bySet = new Map<string, ChecklistActionLogRow[]>();
-    for (const r of dayLogs) {
-      if (!bySet.has(r.set_id)) bySet.set(r.set_id, []);
-      bySet.get(r.set_id)!.push(r);
-    }
+    const { start, end } = day;
+    const runsForDay = store.runs.filter((r) => {
+      const t = r.startedAt ?? r.actions[0]?.startAt ?? null;
+      if (t == null) return false;
+      return t >= start && t <= end;
+    });
 
-    const allRuns: RunView[] = [];
+    const vs: RunView[] = [];
 
-    for (const [setId, itemsRaw] of bySet.entries()) {
-      const set = setMap.get(setId);
-      const items = itemsRaw.slice().sort(
-        (a, b) =>
-          (a.start_at_ms ?? 0) - (b.start_at_ms ?? 0) ||
-          (a.updated_at ?? 0) - (b.updated_at ?? 0)
-      );
+    for (const run of runsForDay) {
+      const set = setMap.get(run.setId);
+      const actions = run.actions.slice();
+      const procs = run.procrastinations
+        .slice()
+        .sort((a, b) => (a.startAt ?? 0) - (b.startAt ?? 0));
+      const usedPro = new Set<number>();
 
-      let currentRunLogs: ChecklistActionLogRow[] = [];
-      let lastActionEnd: number | null = null;
+      const rows: Row[] = [];
 
-      const flush = () => {
-        if (currentRunLogs.length === 0) return;
+      for (let i = 0; i < actions.length; i++) {
+        const al = actions[i];
+        const prevActionId: ID | null =
+          i === 0 ? null : actions[i - 1].actionId;
 
-        const rows: Row[] = [];
-        let prevEnd: number | null = null;
-        let pendingFirstProcrast: { id: ID; startAt: number; endAt: number } | null = null;
-        let runStartedAt: number | null = null;
-        const rawIds: ID[] = [];
-
-        const pushRowFromAction = (log: ChecklistActionLogRow) => {
-          const title = set?.actions.find((x) => x.id === log.action_id)?.title ?? "(不明な行動)";
-          const actStart = log.start_at_ms ?? 0;
-          const actEnd = log.end_at_ms ?? undefined;
-          const actDur = log.duration_ms ?? (actEnd != null ? Math.max(0, actEnd - actStart) : undefined);
-
-          let procrast: Row["procrast"] = null;
-          let maybeProcrastLogId: ID | undefined;
-
-          if (pendingFirstProcrast) {
-            procrast = {
-              startAt: pendingFirstProcrast.startAt,
-              endAt: pendingFirstProcrast.endAt,
-              durationMs: Math.max(0, pendingFirstProcrast.endAt - pendingFirstProcrast.startAt),
-            };
-            maybeProcrastLogId = pendingFirstProcrast.id;
-            pendingFirstProcrast = null;
-          } else if (prevEnd != null && actStart > prevEnd) {
-            procrast = { startAt: prevEnd, endAt: actStart, durationMs: actStart - prevEnd };
+        let procrastIndex: number | null = null;
+        for (let j = 0; j < procs.length; j++) {
+          if (usedPro.has(j)) continue;
+          const p = procs[j];
+          if (p.fromActionId === prevActionId) {
+            procrastIndex = j;
+            usedPro.add(j);
+            break;
           }
-
-          rows.push({
-            actionTitle: title,
-            actionLogId: log.id,
-            maybeProcrastLogId,
-            procrast,
-            action: { startAt: actStart, endAt: actEnd, durationMs: actDur },
-          });
-
-          if (actEnd != null) prevEnd = actEnd;
-        };
-
-        for (const log of currentRunLogs) {
-          rawIds.push(log.id);
-          const kind = (log as any).data?.kind;
-
-          if (kind === "run_start") {
-            runStartedAt = log.start_at_ms ?? log.updated_at ?? runStartedAt ?? null;
-            continue;
-          }
-          if (kind === "procrastination_before_first") {
-            if (log.start_at_ms != null && log.end_at_ms != null) {
-              pendingFirstProcrast = { id: log.id, startAt: log.start_at_ms, endAt: log.end_at_ms };
-              if (runStartedAt == null) runStartedAt = log.start_at_ms ?? log.updated_at ?? null;
-            }
-            continue;
-          }
-          if (kind === "run_end") {
-            if (runStartedAt == null) {
-              runStartedAt = currentRunLogs[0]?.start_at_ms ?? currentRunLogs[0]?.updated_at ?? null;
-            }
-            continue;
-          }
-
-          if (runStartedAt == null) runStartedAt = log.start_at_ms ?? log.updated_at ?? null;
-          pushRowFromAction(log);
         }
 
-        const sumAction = rows.reduce((s, r) => s + (r.action.durationMs ?? 0), 0);
-        const sumPro = rows.reduce((s, r) => s + (r.procrast?.durationMs ?? 0), 0);
+        const procrast =
+          procrastIndex == null
+            ? null
+            : {
+                startAt: procs[procrastIndex].startAt,
+                endAt: procs[procrastIndex].endAt,
+                durationMs: procs[procrastIndex].durationMs,
+              };
 
-        if (rows.length > 0) {
-          allRuns.push({
-            runKey: uid(),
-            setId,
-            setTitle: set?.title ?? "(不明なセット)",
-            startedAt: runStartedAt ?? rows[0].action.startAt ?? null,
-            rows,
-            sumAction,
-            sumPro,
-            rawLogIds: rawIds,
-          });
-        }
+        const actionDur =
+          al.durationMs ??
+          (al.endAt != null ? Math.max(0, al.endAt - al.startAt) : undefined);
 
-        currentRunLogs = [];
-        lastActionEnd = null;
-      };
+        const title =
+          set?.actions.find((a) => a.id === al.actionId)?.title ??
+          "(不明な行動)";
 
-      for (const it of items) {
-        const kind = (it as any).data?.kind as string | undefined;
-
-        if (kind === "run_start" || kind === "procrastination_before_first") {
-          flush();
-          currentRunLogs.push(it);
-          lastActionEnd = null;
-          continue;
-        }
-
-        const nextStart = it.start_at_ms ?? it.updated_at ?? null;
-        if (lastActionEnd != null && nextStart != null && nextStart - lastActionEnd >= GAP_SPLIT_MS) {
-          flush();
-        }
-
-        currentRunLogs.push(it);
-
-        if (kind === "run_end") {
-          flush();
-          continue;
-        }
-
-        if (!kind) {
-          const endAt = it.end_at_ms ?? null;
-          if (endAt != null) lastActionEnd = endAt;
-        }
+        rows.push({
+          rowId: `${run.id}:${i}`,
+          runId: run.id,
+          actionIndex: i,
+          procrastIndex,
+          actionTitle: title,
+          procrast,
+          action: {
+            startAt: al.startAt,
+            endAt: al.endAt,
+            durationMs: actionDur,
+          },
+        });
       }
 
-      flush();
+      const sumAction = rows.reduce(
+        (s, r) => s + (r.action.durationMs ?? 0),
+        0
+      );
+      const sumPro = run.procrastinations.reduce((s, p) => {
+        const d =
+          p.durationMs ??
+          (p.endAt != null && p.startAt != null
+            ? Math.max(0, p.endAt - p.startAt)
+            : 0);
+        return s + d;
+      }, 0);
+
+      const startedAt =
+        run.startedAt ??
+        run.actions[0]?.startAt ??
+        run.procrastinations[0]?.startAt ??
+        null;
+
+      vs.push({
+        runId: run.id,
+        runKey: run.id,
+        setId: run.setId,
+        setTitle: set?.title ?? "(不明なセット)",
+        startedAt,
+        rows,
+        sumAction,
+        sumPro,
+      });
     }
 
-    const asc = allRuns.slice().sort(
+    vs.sort(
       (a, b) =>
         (a.startedAt ?? 0) - (b.startedAt ?? 0) ||
         a.setTitle.localeCompare(b.setTitle, "ja")
     );
-    return order === "asc" ? asc : asc.reverse();
-  }, [dayLogs, setMap, order]);
+    return order === "asc" ? vs : vs.slice().reverse();
+  }, [store.runs, setMap, day, order]);
 
-  /* ===== 削除ハンドラ（アプリ内で完結：即時除去→サーバ反映） ===== */
-
-  // dayLogsはメモ化されているので、**常に最新のlogsから検索**してIDを組み立てる
-  const findLogById = (id: ID) => logs.find((l) => l.id === id);
-
-  const handleDeleteRow = async (_rv: RunView, row: Row) => {
+  /* ===== 削除ハンドラ（Store.runs を直接編集） ===== */
+  const handleDeleteRow = (row: Row) => {
     if (!confirm("この行（合流した先延ばしを含む）を削除しますか？")) return;
-    const deviceId = getDeviceId();
 
-    // 1) 対象IDの確定（logs から検索）
-    const targets: Array<{ id: ID; set_id: ID; action_id: ID; data?: any }> = [];
-    const act = findLogById(row.actionLogId);
-    if (act) targets.push({ id: act.id, set_id: act.set_id, action_id: act.action_id, data: (act as any).data ?? null });
-    if (row.maybeProcrastLogId) {
-      const pro = findLogById(row.maybeProcrastLogId);
-      if (pro) targets.push({ id: pro.id, set_id: pro.set_id, action_id: pro.action_id, data: (pro as any).data ?? null });
-    }
-    const idsToRemove = new Set(targets.map(t => t.id));
+    setStore((prev) => {
+      const runs = prev.runs.slice();
+      const idx = runs.findIndex((r) => r.id === row.runId);
+      if (idx < 0) return prev;
 
-    // 2) 楽観的に即時除去（UIから即消す）
-    setLogs((prev) => prev.filter((l) => !idsToRemove.has(l.id)));
+      const run = runs[idx];
+      const actions = run.actions.slice();
+      const procs = run.procrastinations.slice();
 
-    // 3) サーバへ反映（失敗しても画面は戻さない）
-    try {
-      await pushSoftDelete(USER_ID, deviceId, targets);
-      setMsg("記録を削除しました。");
-    } catch {
-      setMsg("削除の反映に失敗しました（必要なら「全履歴を再取得」を実行してください）。");
-    }
+      if (row.actionIndex >= 0 && row.actionIndex < actions.length) {
+        actions.splice(row.actionIndex, 1);
+      }
+      if (
+        row.procrastIndex != null &&
+        row.procrastIndex >= 0 &&
+        row.procrastIndex < procs.length
+      ) {
+        procs.splice(row.procrastIndex, 1);
+      }
+
+      if (actions.length === 0 && procs.length === 0) {
+        runs.splice(idx, 1);
+      } else {
+        runs[idx] = { ...run, actions, procrastinations: procs };
+      }
+
+      return { ...prev, runs };
+    });
+
+    setMsg("行を削除しました。");
   };
 
-  const handleDeleteRun = async (rv: RunView) => {
+  const handleDeleteRun = (rv: RunView) => {
     if (!confirm("このランの記録をすべて削除しますか？（取り消せません）")) return;
-    const deviceId = getDeviceId();
 
-    // 1) ランに含むIDを logs から再構成（存在する分のみ）
-    const ids = new Set(rv.rawLogIds);
-    const targets = logs
-      .filter((l) => ids.has(l.id))
-      .map((l) => ({ id: l.id, set_id: l.set_id, action_id: l.action_id, data: (l as any).data ?? null }));
-
-    const idsToRemove = new Set(targets.map((t) => t.id));
-
-    // 2) 楽観的に即時除去
-    setLogs((prev) => prev.filter((l) => !idsToRemove.has(l.id)));
-
-    // 3) サーバへ反映
-    try {
-      await pushSoftDelete(USER_ID, deviceId, targets);
-      setMsg("ランの記録を削除しました。");
-    } catch {
-      setMsg("削除の反映に失敗しました（必要なら「全履歴を再取得」を実行してください）。");
-    }
+    setStore((prev) => ({
+      ...prev,
+      runs: prev.runs.filter((r) => r.id !== rv.runId),
+    }));
+    setMsg("ランの記録を削除しました。");
   };
 
   return (
@@ -478,7 +412,9 @@ export default function ChecklistLogs() {
           <h2 className="font-semibold">記録参照</h2>
           <div className="flex items-center gap-2">
             <button
-              onClick={() => setOrder((o) => (o === "asc" ? "desc" : "asc"))}
+              onClick={() =>
+                setOrder((o) => (o === "asc" ? "desc" : "asc"))
+              }
               className="rounded-xl border px-3 py-2 text-xs hover:bg-gray-50"
               title="チェックリスト使用順の並び替え"
             >
@@ -496,51 +432,35 @@ export default function ChecklistLogs() {
             className="rounded-xl border px-3 py-2"
           />
           {msg && <span className="text-xs text-gray-500">{msg}</span>}
-          <button
-            onClick={() => {
-              resetSince();
-              setMsg("履歴を含めて再取得しました。");
-              (async () => {
-                try {
-                  const json = await pullBatch(USER_ID, 0, [
-                    "checklist_sets", "checklist_actions", "checklist_action_logs",
-                  ]);
-                  applySetDiffs(json.diffs.checklist_sets ?? []);
-                  applyActionDiffs(json.diffs.checklist_actions ?? []);
-                  applyLogDiffs(json.diffs.checklist_action_logs ?? []);
-                  setSince(json.server_time_ms);
-                } catch {
-                  setMsg("再取得に失敗しました。");
-                }
-              })();
-            }}
-            className="rounded-xl border px-3 py-2 text-xs hover:bg-gray-50"
-            title="当日のみならず、過去分も含めて再取得します"
-          >
-            全履歴を再取得
-          </button>
         </div>
         <p className="text-xs text-gray-500 mt-2">
-          指定日のJSTに含まれる同期ログを表示します。使用（ラン）単位で区切り、下ほど新しい使用になります（トグルで反転可）。
+          指定日のJSTに開始したチェックリスト実行（ラン）を表示します。下ほど新しい使用になります（トグルで反転可）。
         </p>
       </section>
 
       {views.length === 0 ? (
-        <p className="text-sm text-gray-500">指定日の記録はありません。</p>
+        <p className="text-sm text-gray-500">
+          指定日の記録はありません。
+        </p>
       ) : (
         views.map((v) => (
-          <section key={v.runKey} className="rounded-2xl border p-4 shadow-sm">
+          <section
+            key={v.runKey}
+            className="rounded-2xl border p-4 shadow-sm"
+          >
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-3">
                 <h3 className="font-semibold">{v.setTitle}</h3>
                 {v.startedAt != null && (
-                  <span className="text-xs text-gray-500">開始: {fmtTime(v.startedAt)}</span>
+                  <span className="text-xs text-gray-500">
+                    開始: {fmtTime(v.startedAt)}
+                  </span>
                 )}
               </div>
               <button
-                onClick={() => void handleDeleteRun(v)}
+                onClick={() => handleDeleteRun(v)}
                 className="rounded-xl border px-3 py-1.5 text-sm hover:bg-gray-50"
-                title="このランに含まれるログ（run_start / run_end / 先延ばしマーカー含む）をすべて削除します"
+                title="このランに含まれる記録をすべて削除します"
               >
                 ランを削除
               </button>
@@ -563,18 +483,32 @@ export default function ChecklistLogs() {
                 </thead>
                 <tbody>
                   {v.rows.map((r, i) => (
-                    <tr key={r.actionLogId} className="border-t">
-                      <td className="py-2 pr-3 tabular-nums">{i + 1}</td>
+                    <tr key={r.rowId} className="border-t">
+                      <td className="py-2 pr-3 tabular-nums">
+                        {i + 1}
+                      </td>
                       <td className="py-2 pr-3">{r.actionTitle}</td>
-                      <td className="py-2 pr-3 tabular-nums">{fmtTime(r.procrast?.startAt)}</td>
-                      <td className="py-2 pr-3 tabular-nums">{fmtTime(r.procrast?.endAt)}</td>
-                      <td className="py-2 pr-3 tabular-nums">{fmtDur(r.procrast?.durationMs)}</td>
-                      <td className="py-2 pr-3 tabular-nums">{fmtTime(r.action.startAt)}</td>
-                      <td className="py-2 pr-3 tabular-nums">{fmtTime(r.action.endAt)}</td>
-                      <td className="py-2 pr-3 tabular-nums">{fmtDur(r.action.durationMs)}</td>
+                      <td className="py-2 pr-3 tabular-nums">
+                        {fmtTime(r.procrast?.startAt)}
+                      </td>
+                      <td className="py-2 pr-3 tabular-nums">
+                        {fmtTime(r.procrast?.endAt)}
+                      </td>
+                      <td className="py-2 pr-3 tabular-nums">
+                        {fmtDur(r.procrast?.durationMs)}
+                      </td>
+                      <td className="py-2 pr-3 tabular-nums">
+                        {fmtTime(r.action.startAt)}
+                      </td>
+                      <td className="py-2 pr-3 tabular-nums">
+                        {fmtTime(r.action.endAt)}
+                      </td>
+                      <td className="py-2 pr-3 tabular-nums">
+                        {fmtDur(r.action.durationMs)}
+                      </td>
                       <td className="py-2 pr-3">
                         <button
-                          onClick={() => void handleDeleteRow(v, r)}
+                          onClick={() => handleDeleteRow(r)}
                           className="rounded-lg border px-2 py-1 text-xs hover:bg-gray-50"
                           title="この行（合流した先延ばしを含む）を削除"
                         >
@@ -584,10 +518,16 @@ export default function ChecklistLogs() {
                     </tr>
                   ))}
                   <tr className="border-t font-medium">
-                    <td className="py-2 pr-3" colSpan={4}>合計</td>
-                    <td className="py-2 pr-3 tabular-nums">{fmtDur(v.sumPro)}</td>
+                    <td className="py-2 pr-3" colSpan={4}>
+                      合計
+                    </td>
+                    <td className="py-2 pr-3 tabular-nums">
+                      {fmtDur(v.sumPro)}
+                    </td>
                     <td className="py-2 pr-3" colSpan={2}></td>
-                    <td className="py-2 pr-3 tabular-nums">{fmtDur(v.sumAction)}</td>
+                    <td className="py-2 pr-3 tabular-nums">
+                      {fmtDur(v.sumAction)}
+                    </td>
                     <td className="py-2 pr-3"></td>
                   </tr>
                 </tbody>
