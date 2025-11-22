@@ -117,7 +117,9 @@ const fmtTargetMmSs = (targetSec?: number) => {
   const t = Math.max(0, Math.round(targetSec));
   const m = Math.floor(t / 60);
   const s = t % 60;
-  return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+  return `${m.toString().padStart(2, "0")}:${s
+    .toString()
+    .padStart(2, "0")}`;
 };
 
 /* ===== localStorage 読み込み/保存 ===== */
@@ -194,17 +196,6 @@ type RunView = {
   runSuccesses: number; // このランで成功した件数
 };
 
-type ActionSuccessSummary = {
-  setId: ID;
-  setTitle: string;
-  actionId: ID;
-  actionTitle: string;
-  targetSec?: number;
-  successCount: number;
-  totalCount: number;
-  order: number;
-};
-
 export default function ChecklistLogs() {
   const [store, setStore] = useState<Store>(() => loadLocal());
   const storeRef = useRef(store);
@@ -233,7 +224,8 @@ export default function ChecklistLogs() {
                 isDone: a.isDone ?? false,
                 memo: a.memo ?? "",
                 targetSec:
-                  typeof a.targetSec === "number" && !Number.isNaN(a.targetSec)
+                  typeof a.targetSec === "number" &&
+                  !Number.isNaN(a.targetSec)
                     ? a.targetSec
                     : undefined,
               })),
@@ -253,7 +245,10 @@ export default function ChecklistLogs() {
           return;
         }
       } catch (e) {
-        console.warn(`[checklist-logs] PULL failed for docKey=${key}:`, e);
+        console.warn(
+          `[checklist-logs] PULL failed for docKey=${key}:`,
+          e
+        );
       }
     }
   };
@@ -264,7 +259,10 @@ export default function ChecklistLogs() {
       try {
         await saveUserDoc<Store>(key, snapshot);
       } catch (e) {
-        console.warn(`[checklist-logs] PUSH failed for docKey=${key}:`, e);
+        console.warn(
+          `[checklist-logs] PUSH failed for docKey=${key}:`,
+          e
+        );
       }
     }
   };
@@ -483,57 +481,6 @@ export default function ChecklistLogs() {
     return order === "asc" ? vs : vs.slice().reverse();
   }, [store.runs, setMap, day, order]);
 
-  /* ===== 全期間の成功率集計（チェックリスト全体） ===== */
-  const globalSuccess: ActionSuccessSummary[] = useMemo(() => {
-    const stats = new Map<string, ActionSuccessSummary>();
-    const setById = new Map(store.sets.map((s) => [s.id, s] as const));
-
-    for (const run of store.runs) {
-      const set = setById.get(run.setId);
-      if (!set) continue;
-
-      for (const al of run.actions) {
-        const action = set.actions.find((a) => a.id === al.actionId);
-        if (!action || action.targetSec == null) continue;
-
-        const durationMs =
-          al.durationMs ??
-          (al.endAt != null ? Math.max(0, al.endAt - al.startAt) : undefined);
-        if (durationMs == null) continue;
-
-        let success = al.success;
-        if (success == null) {
-          success = durationMs <= action.targetSec * 1000;
-        }
-
-        const key = `${set.id}:${action.id}`;
-        let s = stats.get(key);
-        if (!s) {
-          s = {
-            setId: set.id,
-            setTitle: set.title,
-            actionId: action.id,
-            actionTitle: action.title,
-            targetSec: action.targetSec,
-            successCount: 0,
-            totalCount: 0,
-            order: action.order ?? 0,
-          };
-          stats.set(key, s);
-        }
-        s.totalCount += 1;
-        if (success) s.successCount += 1;
-      }
-    }
-
-    return Array.from(stats.values()).sort((a, b) => {
-      if (a.setTitle !== b.setTitle) {
-        return a.setTitle.localeCompare(b.setTitle, "ja");
-      }
-      return a.order - b.order;
-    });
-  }, [store.sets, store.runs]);
-
   /* ===== 削除 & 成功トグル ハンドラ ===== */
   const handleDeleteRow = (row: Row) => {
     if (!confirm("この行（合流した先延ばしを含む）を削除しますか？")) return;
@@ -684,6 +631,7 @@ export default function ChecklistLogs() {
                     <tr className="text-left text-gray-600">
                       <th className="py-2 pr-3">#</th>
                       <th className="py-2 pr-3">行動</th>
+                      <th className="py-2 pr-3">目標時間</th>
                       <th className="py-2 pr-3">先延ばし開始</th>
                       <th className="py-2 pr-3">先延ばし終了</th>
                       <th className="py-2 pr-3">先延ばし時間</th>
@@ -706,6 +654,9 @@ export default function ChecklistLogs() {
                         <tr key={r.rowId} className="border-t">
                           <td className="py-2 pr-3 tabular-nums">{i + 1}</td>
                           <td className="py-2 pr-3">{r.actionTitle}</td>
+                          <td className="py-2 pr-3 tabular-nums">
+                            {fmtTargetMmSs(r.targetSec)}
+                          </td>
                           <td className="py-2 pr-3 tabular-nums">
                             {fmtTime(r.procrast?.startAt)}
                           </td>
@@ -746,7 +697,7 @@ export default function ChecklistLogs() {
                       );
                     })}
                     <tr className="border-t font-medium">
-                      <td className="py-2 pr-3" colSpan={4}>
+                      <td className="py-2 pr-3" colSpan={5}>
                         合計
                       </td>
                       <td className="py-2 pr-3 tabular-nums">
@@ -764,61 +715,6 @@ export default function ChecklistLogs() {
             </section>
           );
         })
-      )}
-
-      {/* 全体の成功率一覧 */}
-      {globalSuccess.length > 0 && (
-        <section className="rounded-2xl border p-4 shadow-sm">
-          <h3 className="font-semibold mb-2">
-            チェックリスト全体の各行動の成功率（全ラン通算）
-          </h3>
-          <p className="text-xs text-gray-500 mb-2">
-            目標時間が設定されている行動のみカウントしています。
-          </p>
-
-          <div className="overflow-x-auto">
-            <table className="min-w-[880px] w-full text-sm">
-              <thead>
-                <tr className="text-left text-gray-600">
-                  <th className="py-2 pr-3">チェックリスト</th>
-                  <th className="py-2 pr-3">行動</th>
-                  <th className="py-2 pr-3">目標時間</th>
-                  <th className="py-2 pr-3">成功回数</th>
-                  <th className="py-2 pr-3">試行回数</th>
-                  <th className="py-2 pr-3">成功率</th>
-                </tr>
-              </thead>
-              <tbody>
-                {globalSuccess.map((s) => {
-                  const rate =
-                    s.totalCount > 0
-                      ? Math.round(
-                          (s.successCount / s.totalCount) * 100
-                        )
-                      : 0;
-                  return (
-                    <tr key={`${s.setId}:${s.actionId}`} className="border-t">
-                      <td className="py-2 pr-3">{s.setTitle}</td>
-                      <td className="py-2 pr-3">{s.actionTitle}</td>
-                      <td className="py-2 pr-3 tabular-nums">
-                        {fmtTargetMmSs(s.targetSec)}
-                      </td>
-                      <td className="py-2 pr-3 tabular-nums">
-                        {s.successCount}
-                      </td>
-                      <td className="py-2 pr-3 tabular-nums">
-                        {s.totalCount}
-                      </td>
-                      <td className="py-2 pr-3 tabular-nums">
-                        {rate}%
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </section>
       )}
     </div>
   );
