@@ -92,10 +92,19 @@ const fmtTime = (t?: number | null) =>
     ? "…"
     : new Date(t).toLocaleTimeString("ja-JP", { hour12: false });
 
-const fmtDur = (ms?: number | null) =>
-  ms == null
-    ? "—"
-    : `${Math.floor(ms / 60000)}分${Math.floor((ms % 60000) / 1000)}秒`;
+/**
+ * ○時間○分○秒 表記
+ * - 負の値は 0 とみなす
+ * - 必ず 3単位すべて表示（0時間0分30秒 など）
+ */
+const fmtDur = (ms?: number | null) => {
+  if (ms == null) return "—";
+  const totalSec = Math.max(0, Math.round(ms / 1000));
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  return `${h}時間${m}分${s}秒`;
+};
 
 /* ===== localStorage 読み込み/保存 ===== */
 function loadLocal(): Store {
@@ -170,7 +179,7 @@ export default function ChecklistLogs() {
         if (remote && typeof remote === "object") {
           const normalized: Store = {
             ...remote,
-            sets: (remote.sets ?? []),
+            sets: remote.sets ?? [],
             runs: remote.runs ?? [],
             version: 1,
           };
@@ -219,7 +228,11 @@ export default function ChecklistLogs() {
           else if (t.includes("PUSH")) doPush();
           else if (t.includes("RESET")) {
             // since を使わないので noop
-          } else if (t === LOCAL_APPLIED_TYPE && msg.docKey && DOC_KEYS.includes(msg.docKey)) {
+          } else if (
+            t === LOCAL_APPLIED_TYPE &&
+            msg.docKey &&
+            DOC_KEYS.includes(msg.docKey)
+          ) {
             setStore(loadLocal());
           }
         };
@@ -234,7 +247,11 @@ export default function ChecklistLogs() {
       const t = msg.type.toUpperCase();
       if (t.includes("PULL")) doPull();
       else if (t.includes("PUSH")) doPush();
-      else if (t === LOCAL_APPLIED_TYPE && msg.docKey && DOC_KEYS.includes(msg.docKey)) {
+      else if (
+        t === LOCAL_APPLIED_TYPE &&
+        msg.docKey &&
+        DOC_KEYS.includes(msg.docKey)
+      ) {
         setStore(loadLocal());
       }
     };
