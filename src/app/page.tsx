@@ -23,6 +23,7 @@ const DOCS = [
   { docKey: "process_goals_v1", localKey: "process_goals_v1" },
   { docKey: "reflection_note_v1", localKey: "reflection_note_v1" },
   { docKey: "math_formulas_v1", localKey: "math_formulas_v1" },
+  { docKey: "checklist_v1", localKey: "checklist_v1" },
 ] as const;
 
 // エラー表示用：できるだけ詳細に
