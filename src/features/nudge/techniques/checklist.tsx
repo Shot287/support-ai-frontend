@@ -60,7 +60,12 @@ type Store = {
 
 /* ========= 手動同期用 定数 ========= */
 const LOCAL_KEY = "checklist_v1";
-const DOC_KEY = "checklist_v1";
+/**
+ * ✅ 互換モード:
+ *   - "checklist_v1" と "nudge_checklist_v1" のどちらの docKey でも同期できるようにする
+ *   - DOCS 側がどちらでも、ここから両方に PUSH / どちらかから PULL する
+ */
+const DOC_KEYS = ["checklist_v1", "nudge_checklist_v1"] as const;
 
 const SYNC_CHANNEL = "support-ai-sync";
 const STORAGE_KEY_RESET_REQ = "support-ai:sync:reset:req";
@@ -170,28 +175,56 @@ export default function Checklist() {
     saveLocal(store);
   }, [store]);
 
+  // ==== 共通: サーバからの PULL / サーバへの PUSH ==== //
+  const pullFromServer = async () => {
+    // どちらか一方でも見つかればそれを採用
+    for (const key of DOC_KEYS) {
+      try {
+        const remote = await loadUserDoc<Store>(key);
+        if (remote && typeof remote === "object") {
+          const normalized: Store = {
+            ...remote,
+            sets: (remote.sets ?? []).map((s) => ({
+              ...s,
+              actions: (s.actions ?? []).map((a) => ({
+                ...a,
+                isDone: a.isDone ?? false,
+              })),
+            })),
+            runs: remote.runs ?? [],
+            version: 1,
+          };
+          setStore(normalized);
+          saveLocal(normalized);
+          return;
+        }
+      } catch (e) {
+        console.warn(`[checklist] PULL failed for docKey=${key}:`, e);
+      }
+    }
+  };
+
+  const pushToServer = async () => {
+    const snapshot = storeRef.current;
+    for (const key of DOC_KEYS) {
+      try {
+        await saveUserDoc<Store>(key, snapshot);
+      } catch (e) {
+        console.warn(`[checklist] PUSH failed for docKey=${key}:`, e);
+      }
+    }
+  };
+
   // 手動同期の合図を購読（ホームの📥/☁ と連携）
   useEffect(() => {
     if (typeof window === "undefined") return;
 
-    const doPull = async () => {
-      try {
-        const remote = await loadUserDoc<Store>(DOC_KEY);
-        if (remote && remote.version === 1) {
-          setStore(remote);
-          saveLocal(remote);
-        }
-      } catch (e) {
-        console.warn("[checklist] manual PULL failed:", e);
-      }
+    const doPull = () => {
+      void pullFromServer();
     };
 
-    const doPush = async () => {
-      try {
-        await saveUserDoc<Store>(DOC_KEY, storeRef.current);
-      } catch (e) {
-        console.warn("[checklist] manual PUSH failed:", e);
-      }
+    const doPush = () => {
+      void pushToServer();
     };
 
     // BroadcastChannel
@@ -207,7 +240,7 @@ export default function Checklist() {
           else if (t.includes("PUSH")) doPush();
           else if (t.includes("RESET")) {
             // since を使わないのでここは noop（直後の PULL に期待）
-          } else if (t === LOCAL_APPLIED_TYPE && msg.docKey === DOC_KEY) {
+          } else if (t === LOCAL_APPLIED_TYPE && msg.docKey && DOC_KEYS.includes(msg.docKey)) {
             // ホームが localStorage(LOCAL_KEY) を直接書き換えた合図
             setStore(loadLocal());
           }
@@ -224,7 +257,7 @@ export default function Checklist() {
       const t = msg.type.toUpperCase();
       if (t.includes("PULL")) doPull();
       else if (t.includes("PUSH")) doPush();
-      else if (t === LOCAL_APPLIED_TYPE && msg.docKey === DOC_KEY) {
+      else if (t === LOCAL_APPLIED_TYPE && msg.docKey && DOC_KEYS.includes(msg.docKey)) {
         setStore(loadLocal());
       }
     };
@@ -256,7 +289,8 @@ export default function Checklist() {
       window.removeEventListener("message", onWinMsg);
       window.removeEventListener("storage", onStorage);
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // pullFromServer/pushToServer は安定参照でなくてOK（内部で state は参照しない）
 
   useEffect(() => {
     const t = setInterval(() => setTick((v) => v + 1), 1000);
