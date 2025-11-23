@@ -20,6 +20,7 @@ type EmotionLeaf = {
   id: ID;
   parentId: ID;
   name: string;
+  description: string;
   createdAt: number;
 };
 
@@ -29,7 +30,7 @@ type SituationEmotionSelection = {
   parentId: ID;
   leafName: string;
   parentName: string;
-  intensity: number; // 0〜100。3つの合計が100になるように調整
+  intensity: number; // 0〜100
 };
 
 type Situation = {
@@ -90,7 +91,7 @@ function fmtTime(t: number | null | undefined) {
   });
 }
 
-/** ○時間○分○秒 表記 */
+/** ○時間○分○秒 表記（今のところ未使用だが残しておく） */
 function fmtDuration(ms: number): string {
   const s = Math.max(0, Math.round(ms / 1000));
   const h = Math.floor(s / 3600);
@@ -115,21 +116,93 @@ function createInitialEmotionData(): {
 
   const leaves: EmotionLeaf[] = [
     // 不安・焦り
-    { id: uid(), parentId: c1.id, name: "不安", createdAt: t },
-    { id: uid(), parentId: c1.id, name: "焦る", createdAt: t },
-    { id: uid(), parentId: c1.id, name: "緊張する", createdAt: t },
+    {
+      id: uid(),
+      parentId: c1.id,
+      name: "不安",
+      description: "先行きが分からず落ち着かない、ソワソワした感覚。",
+      createdAt: t,
+    },
+    {
+      id: uid(),
+      parentId: c1.id,
+      name: "焦る",
+      description: "時間や結果に追われて、急がなきゃと足掻くような感覚。",
+      createdAt: t,
+    },
+    {
+      id: uid(),
+      parentId: c1.id,
+      name: "緊張する",
+      description: "失敗できない場面で体が固くなる・心臓がドキドキする状態。",
+      createdAt: t,
+    },
     // 怒り・イライラ
-    { id: uid(), parentId: c2.id, name: "イライラ", createdAt: t },
-    { id: uid(), parentId: c2.id, name: "怒り", createdAt: t },
-    { id: uid(), parentId: c2.id, name: "納得がいかない", createdAt: t },
+    {
+      id: uid(),
+      parentId: c2.id,
+      name: "イライラ",
+      description: "小さなことが積み重なって、落ち着かず苛立っている状態。",
+      createdAt: t,
+    },
+    {
+      id: uid(),
+      parentId: c2.id,
+      name: "怒り",
+      description: "相手の言動や状況に対して、強い不満や攻撃したい気持ちが湧く。",
+      createdAt: t,
+    },
+    {
+      id: uid(),
+      parentId: c2.id,
+      name: "納得がいかない",
+      description: "理不尽さや不公平さに対して、受け入れられない気持ち。",
+      createdAt: t,
+    },
     // 悲しみ
-    { id: uid(), parentId: c3.id, name: "落ち込む", createdAt: t },
-    { id: uid(), parentId: c3.id, name: "さびしい", createdAt: t },
-    { id: uid(), parentId: c3.id, name: "がっかり", createdAt: t },
+    {
+      id: uid(),
+      parentId: c3.id,
+      name: "落ち込む",
+      description: "自信がなくなり、エネルギーが落ちてしまっている状態。",
+      createdAt: t,
+    },
+    {
+      id: uid(),
+      parentId: c3.id,
+      name: "さびしい",
+      description: "人とのつながりが薄く感じられ、心に穴が空いたような感覚。",
+      createdAt: t,
+    },
+    {
+      id: uid(),
+      parentId: c3.id,
+      name: "がっかり",
+      description: "期待していた結果にならず、力が抜けたような感じ。",
+      createdAt: t,
+    },
     // 喜び・安心
-    { id: uid(), parentId: c4.id, name: "うれしい", createdAt: t },
-    { id: uid(), parentId: c4.id, name: "ほっとする", createdAt: t },
-    { id: uid(), parentId: c4.id, name: "ワクワクする", createdAt: t },
+    {
+      id: uid(),
+      parentId: c4.id,
+      name: "うれしい",
+      description: "望んだことが叶って、心が明るく軽くなっている状態。",
+      createdAt: t,
+    },
+    {
+      id: uid(),
+      parentId: c4.id,
+      name: "ほっとする",
+      description: "緊張や不安がほどけて、胸をなでおろすような感覚。",
+      createdAt: t,
+    },
+    {
+      id: uid(),
+      parentId: c4.id,
+      name: "ワクワクする",
+      description: "これから起こることを楽しみに、前向きなエネルギーが湧く。",
+      createdAt: t,
+    },
   ];
 
   return { categories, leaves };
@@ -162,16 +235,26 @@ function loadLocal(): Store {
 
     const seed = createInitialEmotionData();
 
+    // description がない既存データに対応
+    const mergedLeavesSource =
+      parsed.leaves && parsed.leaves.length > 0 ? parsed.leaves : seed.leaves;
+
+    const mergedLeaves: EmotionLeaf[] = mergedLeavesSource.map((l: any) => ({
+      id: l.id ?? uid(),
+      parentId: l.parentId,
+      name: l.name,
+      description:
+        typeof l.description === "string" ? l.description : "",
+      createdAt: l.createdAt ?? now(),
+    }));
+
     return {
       situations: parsed.situations ?? [],
       categories:
         parsed.categories && parsed.categories.length > 0
           ? parsed.categories
           : seed.categories,
-      leaves:
-        parsed.leaves && parsed.leaves.length > 0
-          ? parsed.leaves
-          : seed.leaves,
+      leaves: mergedLeaves,
       version: 1,
     };
   } catch {
@@ -195,7 +278,7 @@ function saveLocal(store: Store) {
   }
 }
 
-/* ====== 強度（合計100％）調整ユーティリティ ====== */
+/* ====== 強度 初期配分ユーティリティ ====== */
 
 /** n 個の要素に一様に 100 を配分（端数は先頭から +1） */
 function distributeEven(n: number): number[] {
@@ -207,78 +290,6 @@ function distributeEven(n: number): number[] {
     arr[i] += 1;
   }
   return arr;
-}
-
-/**
- * スライダーで index の強度を newVal に変更したとき、
- * 他の要素をスケーリングして合計を100に保つ
- */
-function rebalanceIntensities(
-  intensities: number[],
-  index: number,
-  newVal: number
-): number[] {
-  const n = intensities.length;
-  if (n === 0) return [];
-  if (n === 1) return [100];
-
-  newVal = Math.max(0, Math.min(100, Math.round(newVal)));
-
-  const othersIdx: number[] = [];
-  for (let i = 0; i < n; i++) {
-    if (i !== index) othersIdx.push(i);
-  }
-
-  const remaining = Math.max(0, 100 - newVal);
-  if (remaining === 0) {
-    const res = Array(n).fill(0);
-    res[index] = newVal;
-    return res;
-  }
-
-  const currentOthersSum = othersIdx.reduce(
-    (sum, i) => sum + Math.max(0, intensities[i]),
-    0
-  );
-
-  const res = Array(n).fill(0);
-  res[index] = newVal;
-
-  if (currentOthersSum <= 0) {
-    // 他が全部0なら均等配分
-    const base = Math.floor(remaining / othersIdx.length);
-    let rest = remaining - base * othersIdx.length;
-    for (const i of othersIdx) {
-      res[i] = base + (rest > 0 ? 1 : 0);
-      if (rest > 0) rest -= 1;
-    }
-    return res;
-  }
-
-  // 比例配分
-  let allocated = 0;
-  for (let k = 0; k < othersIdx.length; k++) {
-    const i = othersIdx[k];
-    const ratio = intensities[i] / currentOthersSum;
-    if (k === othersIdx.length - 1) {
-      res[i] = remaining - allocated;
-    } else {
-      const v = Math.round(remaining * ratio);
-      res[i] = v;
-      allocated += v;
-    }
-  }
-
-  // 念のため合計100を保証
-  const sum = res.reduce((s, v) => s + v, 0);
-  if (sum !== 100) {
-    const diff = 100 - sum;
-    const adjustIdx =
-      othersIdx.length > 0 ? othersIdx[0] : index;
-    res[adjustIdx] = Math.max(0, res[adjustIdx] + diff);
-  }
-
-  return res;
 }
 
 /* ========= 本体コンポーネント ========= */
@@ -296,7 +307,7 @@ export default function EmotionLabeling() {
     saveLocal(store);
   }, [store]);
 
-  /* ====== サーバとの手動同期（簡易版） ====== */
+  /* ====== サーバとの手動同期（UIなし・合図のみ対応） ====== */
 
   const pullFromServer = async () => {
     for (const key of DOC_KEYS) {
@@ -304,16 +315,28 @@ export default function EmotionLabeling() {
         const remote = await loadUserDoc<Store>(key);
         if (remote && typeof remote === "object") {
           const seed = createInitialEmotionData();
+          const mergedLeavesSource =
+            remote.leaves && remote.leaves.length > 0
+              ? remote.leaves
+              : seed.leaves;
+          const mergedLeaves: EmotionLeaf[] = mergedLeavesSource.map(
+            (l: any) => ({
+              id: l.id ?? uid(),
+              parentId: l.parentId,
+              name: l.name,
+              description:
+                typeof l.description === "string" ? l.description : "",
+              createdAt: l.createdAt ?? now(),
+            })
+          );
+
           const normalized: Store = {
             situations: remote.situations ?? [],
             categories:
               remote.categories && remote.categories.length > 0
                 ? remote.categories
                 : seed.categories,
-            leaves:
-              remote.leaves && remote.leaves.length > 0
-                ? remote.leaves
-                : seed.leaves,
+            leaves: mergedLeaves,
             version: 1,
           };
           setStore(normalized);
@@ -418,36 +441,39 @@ export default function EmotionLabeling() {
 
   /* ====== ビュー用の値 ====== */
 
-  const situationsForDate = useMemo(
+  // ★ 全件の状況一覧（日時順）
+  const allSituations = useMemo(
     () =>
       store.situations
-        .filter((s) => s.date === date)
         .slice()
-        .sort((a, b) => a.createdAt - b.createdAt),
-    [store.situations, date]
+        .sort((a, b) => {
+          const d = a.date.localeCompare(b.date);
+          if (d !== 0) return d;
+          return a.createdAt - b.createdAt;
+        }),
+    [store.situations]
   );
 
   const selectedSituation =
-    situationsForDate.find((s) => s.id === selectedSituationId) ??
-    situationsForDate[0] ??
+    allSituations.find((s) => s.id === selectedSituationId) ??
+    allSituations[0] ??
     null;
 
   // 選択中状況が変わったら ID を同期
   useEffect(() => {
-    if (!selectedSituation && situationsForDate.length > 0) {
-      setSelectedSituationId(situationsForDate[0].id);
+    if (!selectedSituation && allSituations.length > 0) {
+      setSelectedSituationId(allSituations[0].id);
     } else if (
       selectedSituation &&
-      !situationsForDate.some((s) => s.id === selectedSituation.id)
+      !allSituations.some((s) => s.id === selectedSituation.id)
     ) {
-      // 別日付に変えたときなど
-      if (situationsForDate.length > 0) {
-        setSelectedSituationId(situationsForDate[0].id);
+      if (allSituations.length > 0) {
+        setSelectedSituationId(allSituations[0].id);
       } else {
         setSelectedSituationId(null);
       }
     }
-  }, [selectedSituation, situationsForDate]);
+  }, [selectedSituation, allSituations]);
 
   const categorySorted = useMemo(
     () => store.categories.slice().sort((a, b) => a.createdAt - b.createdAt),
@@ -469,7 +495,6 @@ export default function EmotionLabeling() {
   const activeCategoryId: ID | null =
     selectedCategoryId ?? categorySorted[0]?.id ?? null;
 
-  // ★ EmotionLeaf[] に固定
   const leavesOfActiveCategory: EmotionLeaf[] = useMemo(() => {
     if (!activeCategoryId) return [];
     const arr = leavesByCategory.get(activeCategoryId);
@@ -558,13 +583,18 @@ export default function EmotionLabeling() {
   const addLeaf = (parentId: ID) => {
     const cat = store.categories.find((c) => c.id === parentId);
     const name = prompt(
-      `「${cat?.name ?? "カテゴリ"}」に追加する細かい感情を入力してください。例：足掻く`
+      `「${cat?.name ?? "カテゴリ"}」に追加する細かい感情の名前を入力してください。例：足掻く`
     );
     if (!name) return;
+    const description =
+      prompt(
+        `「${name.trim()}」の説明文を入力してください（例：どんな身体感覚・考え方になるか）。`
+      ) ?? "";
     const leaf: EmotionLeaf = {
       id: uid(),
       parentId,
       name: name.trim(),
+      description: description.trim(),
       createdAt: now(),
     };
     setStore((prev) => ({
@@ -615,7 +645,7 @@ export default function EmotionLabeling() {
           parentId: leaf.parentId,
           leafName: leaf.name,
           parentName: parent?.name ?? "",
-          intensity: 0, // 後で調整
+          intensity: 0, // 後で均等配分
         },
       ];
 
@@ -640,6 +670,7 @@ export default function EmotionLabeling() {
     });
   };
 
+  // ★ 1本動かしても他は動かさないバージョン
   const updateEmotionIntensity = (index: number, newVal: number) => {
     if (!selectedSituation) return;
     setStore((prev) => {
@@ -647,12 +678,10 @@ export default function EmotionLabeling() {
       if (!sit) return prev;
       if (index < 0 || index >= sit.emotions.length) return prev;
 
-      const currentInts = sit.emotions.map((e) => e.intensity);
-      const nextInts = rebalanceIntensities(currentInts, index, newVal);
-      const newSelections = sit.emotions.map((e, i) => ({
-        ...e,
-        intensity: nextInts[i],
-      }));
+      const clamped = Math.max(0, Math.min(100, Math.round(newVal)));
+      const newSelections = sit.emotions.map((e, i) =>
+        i === index ? { ...e, intensity: clamped } : e
+      );
 
       const updated: Situation = {
         ...sit,
@@ -705,19 +734,21 @@ export default function EmotionLabeling() {
 
   return (
     <div className="space-y-4">
-      {/* 上段：日付＋同期ボタン */}
+      {/* 上段：日付＋新規状況追加（同期ボタンはホーム側に任せる） */}
       <section className="rounded-2xl border p-4 shadow-sm">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
             <h2 className="font-semibold text-lg">感情ラベリング</h2>
             <p className="text-xs text-gray-500 mt-1">
-              その日の「状況」をいくつでも登録し、それぞれの場面で感じていた感情を
-              3つまで、強度（合計100％）でラベリングします。
+              日付と状況を登録し、その場面で感じていた感情を
+              最大3つまで、強度（％）でラベリングします。
             </p>
           </div>
           <div className="flex flex-wrap gap-2 items-center">
             <div className="flex items-center gap-2">
-              <label className="text-sm text-gray-600">日付:</label>
+              <label className="text-sm text-gray-600">
+                新しい状況の日付:
+              </label>
               <input
                 type="date"
                 value={date}
@@ -729,49 +760,35 @@ export default function EmotionLabeling() {
               onClick={() => addSituation()}
               className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
             >
-              この日に新しい状況を追加
-            </button>
-            <button
-              onClick={() => pullFromServer()}
-              className="rounded-xl border px-3 py-2 text-xs hover:bg-gray-50"
-              title="サーバから同期して最新データを取得"
-            >
-              📥 サーバから取得
-            </button>
-            <button
-              onClick={() => pushToServer()}
-              className="rounded-xl border px-3 py-2 text-xs hover:bg-gray-50"
-              title="ローカルの内容をサーバに保存"
-            >
-              ☁ サーバに保存
+              この日付で新しい状況を追加
             </button>
           </div>
         </div>
         <p className="text-xs text-gray-500 mt-2">
-          同じ日付でも、授業・バイト・家庭…など複数の状況を登録できます。
+          登録された状況は、下の「状況一覧（全件）」に日付順で並びます。
         </p>
       </section>
 
       {/* 中段：左 = 状況一覧 / 右 = 選択中状況の編集 */}
       <section className="rounded-2xl border p-4 shadow-sm">
         <div className="flex flex-col lg:flex-row gap-4">
-          {/* 左：状況一覧 */}
+          {/* 左：全ての状況一覧 */}
           <div className="lg:w-1/3 space-y-2">
             <div className="flex items-center justify-between">
               <h3 className="font-semibold text-sm">
-                {date} の状況一覧
+                状況一覧（全件）
               </h3>
               <span className="text-xs text-gray-500">
-                {situationsForDate.length}件
+                {allSituations.length}件
               </span>
             </div>
-            {situationsForDate.length === 0 ? (
+            {allSituations.length === 0 ? (
               <p className="text-xs text-gray-500">
-                この日付の状況はまだありません。「新しい状況を追加」を押してください。
+                まだ状況がありません。「新しい状況を追加」から登録してください。
               </p>
             ) : (
               <ul className="space-y-2 max-h-72 overflow-y-auto pr-1">
-                {situationsForDate.map((s) => {
+                {allSituations.map((s) => {
                   const firstEmotions = s.emotions
                     .map((e) => e.leafName)
                     .slice(0, 3)
@@ -797,6 +814,9 @@ export default function EmotionLabeling() {
                             {fmtTime(s.createdAt)}
                           </span>
                         </div>
+                        <p className="mt-0.5 text-[10px] text-gray-400">
+                          日付: {s.date}
+                        </p>
                         {firstEmotions && (
                           <p className="mt-1 text-[11px] text-gray-500">
                             感情: {firstEmotions}
@@ -893,7 +913,12 @@ export default function EmotionLabeling() {
                         </div>
                       ))}
                       <p className="text-xs text-gray-500 text-right">
-                        合計: {totalIntensity}%
+                        合計: {totalIntensity}%{" "}
+                        {totalIntensity !== 100 && (
+                          <span className="text-red-500">
+                            （100%になるように調整してください）
+                          </span>
+                        )}
                       </p>
                     </div>
                   )}
@@ -901,7 +926,7 @@ export default function EmotionLabeling() {
               </div>
             ) : (
               <p className="text-xs text-gray-500">
-                左の「状況一覧」から1つ選ぶか、「この日に新しい状況を追加」を押してください。
+                左の「状況一覧」から1つ選ぶか、「この日付で新しい状況を追加」を押してください。
               </p>
             )}
           </div>
@@ -920,8 +945,8 @@ export default function EmotionLabeling() {
           </button>
         </div>
         <p className="text-xs text-gray-500">
-          まず大きな感情（カテゴリ）を選び、その中の細かい感情をクリックすると、上の状況に追加されます（最大3つ）。
-          感情パレット自体も好きなようにカスタマイズできます。
+          まず大きな感情（カテゴリ）を選び、その中の細かい感情カードをクリックすると、
+          上の状況に追加されます（最大3つ）。カード内の説明文を読みながら選べます。
         </p>
 
         {categorySorted.length === 0 ? (
@@ -957,12 +982,12 @@ export default function EmotionLabeling() {
               ))}
             </div>
 
-            {/* 細かい感情一覧 */}
+            {/* 細かい感情一覧（名前＋説明文） */}
             {activeCategoryId && (
               <div className="mt-1 space-y-2">
                 <div className="flex items-center justify-between">
                   <p className="text-xs text-gray-600">
-                    細かい感情（クリックで状況に追加）
+                    細かい感情（カードをクリックで状況に追加）
                   </p>
                   <button
                     onClick={() => addLeaf(activeCategoryId)}
@@ -976,26 +1001,34 @@ export default function EmotionLabeling() {
                     まだ細かい感情がありません。「細かい感情を追加」から作成してください。
                   </p>
                 ) : (
-                  <div className="flex flex-wrap gap-2">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     {leavesOfActiveCategory.map((leaf: EmotionLeaf) => (
                       <div
                         key={leaf.id}
-                        className="flex items-center gap-1 rounded-full border px-2 py-1 text-xs bg-white"
+                        className="rounded-xl border px-3 py-2 text-xs bg-white flex flex-col gap-1 hover:bg-gray-50 cursor-pointer"
+                        onClick={() => addEmotionToSituation(leaf)}
+                        title="この感情を選択中の状況に追加"
                       >
-                        <button
-                          className="hover:underline"
-                          onClick={() => addEmotionToSituation(leaf)}
-                          title="この感情を選択中の状況に追加"
-                        >
-                          {leaf.name}
-                        </button>
-                        <button
-                          onClick={() => deleteLeaf(leaf.id)}
-                          className="rounded-full px-1 text-[10px] text-gray-500 hover:bg-gray-50"
-                          title="パレットから削除"
-                        >
-                          ×
-                        </button>
+                        <div className="flex justify-between items-start gap-2">
+                          <span className="font-semibold">
+                            {leaf.name}
+                          </span>
+                          <button
+                            onClick={(ev) => {
+                              ev.stopPropagation();
+                              deleteLeaf(leaf.id);
+                            }}
+                            className="rounded-full px-1 text-[10px] text-gray-500 hover:bg-gray-100"
+                            title="パレットから削除"
+                          >
+                            ×
+                          </button>
+                        </div>
+                        {leaf.description && (
+                          <p className="text-[11px] text-gray-500 whitespace-pre-line">
+                            {leaf.description}
+                          </p>
+                        )}
                       </div>
                     ))}
                   </div>
