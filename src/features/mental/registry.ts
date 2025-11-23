@@ -42,4 +42,11 @@ export const mentalTools: MentalTool[] = [
       "自分や他者に向けて慈しみの言葉を書き、心を落ち着ける静的な1枚ノート。",
     href: "/mental/loving-kindness",
   },
+  {
+    id: "emotion-labeling",
+    title: "感情ラベリング",
+    description:
+      "状況を記録し、感情カテゴリ → 細かい感情を選んでラベリング。最大3つの感情を合計100％になるように強度を調整します。",
+    href: "/mental/emotion-labeling",
+  },
 ];
