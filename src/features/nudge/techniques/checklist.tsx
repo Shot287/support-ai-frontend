@@ -12,7 +12,6 @@ type Action = {
   title: string;
   createdAt: number;
   order: number; // 並び順
-  isDone?: boolean;
   /** この行動で意識することのメモ欄 */
   memo?: string;
   /** 目標時間（秒単位）。UI では mm:ss で編集。*/
@@ -85,15 +84,17 @@ const uid = () =>
 
 const now = () => Date.now();
 
+/**
+ * ○時間○分○秒 表記
+ * - 負の値は 0 とみなす
+ * - 必ず 3単位すべて表示（0時間0分30秒 など）
+ */
 function fmtDuration(ms: number) {
-  const s = Math.max(0, Math.round(ms / 1000));
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const sec = s % 60;
-  const hh = h > 0 ? `${h}時間` : "";
-  const mm = m > 0 ? `${m}分` : h > 0 && sec > 0 ? "0分" : "";
-  const ss = `${sec}秒`;
-  return `${hh}${mm}${ss}`;
+  const totalSec = Math.max(0, Math.round(ms / 1000));
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  return `${h}時間${m}分${s}秒`;
 }
 
 /** targetSec(秒) → "mm:ss" 文字列 */
@@ -162,7 +163,6 @@ function loadLocal(): Store {
         title: t,
         createdAt: now(),
         order: i,
-        isDone: false,
         memo: "",
         targetSec: undefined,
       }));
@@ -176,14 +176,13 @@ function loadLocal(): Store {
 
     const parsed = JSON.parse(raw) as Store;
 
-    // 後方互換（isDone/memo/targetSec が未定義の過去データを補う）
+    // 後方互換（memo/targetSec/success だけ補正。isDone は無視して放置）
     const normalized: Store = {
       ...parsed,
       sets: (parsed.sets ?? []).map((s) => ({
         ...s,
-        actions: (s.actions ?? []).map((a) => ({
+        actions: (s.actions ?? []).map((a: any) => ({
           ...a,
-          isDone: a.isDone ?? false,
           memo: a.memo ?? "",
           targetSec:
             typeof a.targetSec === "number" && !Number.isNaN(a.targetSec)
@@ -193,7 +192,7 @@ function loadLocal(): Store {
       })),
       runs: (parsed.runs ?? []).map((r) => ({
         ...r,
-        actions: (r.actions ?? []).map((al) => ({
+        actions: (r.actions ?? []).map((al: any) => ({
           ...al,
           success:
             typeof al.success === "boolean" ? al.success : undefined,
@@ -243,19 +242,19 @@ export default function Checklist() {
             ...remote,
             sets: (remote.sets ?? []).map((s) => ({
               ...s,
-              actions: (s.actions ?? []).map((a) => ({
+              actions: (s.actions ?? []).map((a: any) => ({
                 ...a,
-                isDone: a.isDone ?? false,
                 memo: a.memo ?? "",
                 targetSec:
-                  typeof a.targetSec === "number" && !Number.isNaN(a.targetSec)
+                  typeof a.targetSec === "number" &&
+                  !Number.isNaN(a.targetSec)
                     ? a.targetSec
                     : undefined,
               })),
             })),
             runs: (remote.runs ?? []).map((r) => ({
               ...r,
-              actions: (r.actions ?? []).map((al) => ({
+              actions: (r.actions ?? []).map((al: any) => ({
                 ...al,
                 success:
                   typeof al.success === "boolean" ? al.success : undefined,
@@ -394,6 +393,17 @@ export default function Checklist() {
   const running = store.current?.running;
   const procrastinating = store.current?.procrastinating;
 
+  // 目標時間合計（targetSec が設定されている行動のみ）
+  const totalTargetMs = useMemo(() => {
+    if (!currentSet) return 0;
+    return (currentSet.actions ?? []).reduce((sum, a) => {
+      if (typeof a.targetSec === "number" && !Number.isNaN(a.targetSec)) {
+        return sum + a.targetSec * 1000;
+      }
+      return sum;
+    }, 0);
+  }, [currentSet]);
+
   /* ====== セット操作 ====== */
   const addSet = () => {
     const title = prompt("新しいチェックリストのタイトル", "新しいルーティン");
@@ -466,7 +476,6 @@ export default function Checklist() {
                   title,
                   createdAt: now(),
                   order,
-                  isDone: false,
                   memo: "",
                   targetSec: undefined,
                 },
@@ -746,17 +755,6 @@ export default function Checklist() {
     const t = now();
     setStore((s) => ({
       ...s,
-      // 画面上の isDone を false に（開始＝未了）
-      sets: s.sets.map((set) =>
-        set.id !== currentSet!.id
-          ? set
-          : {
-              ...set,
-              actions: set.actions.map((x) =>
-                x.id === a.id ? { ...x, isDone: false } : x
-              ),
-            }
-      ),
       current: { ...s.current!, running: { actionId: a.id, startAt: t } },
       runs: s.runs.map((r) =>
         r.id !== s.current!.runId
@@ -850,22 +848,9 @@ export default function Checklist() {
         return next;
       });
 
-      // 終了したアクションを isDone=true に
-      const nextSets = prev.sets.map((set) =>
-        set.id !== cur.setId
-          ? set
-          : {
-              ...set,
-              actions: set.actions.map((a) =>
-                a.id === actionId ? { ...a, isDone: true } : a
-              ),
-            }
-      );
-
       if (isLast) {
         return {
           ...prev,
-          sets: nextSets,
           runs,
           current: { ...cur, running: undefined, procrastinating: undefined },
         };
@@ -877,7 +862,6 @@ export default function Checklist() {
       );
       return {
         ...prev,
-        sets: nextSets,
         runs,
         current: {
           ...cur,
@@ -1036,11 +1020,6 @@ export default function Checklist() {
             <div className="flex items-start justify-between gap-3">
               <h2 className="text-xl font-semibold break-words">
                 {action.title}
-                {action.isDone ? (
-                  <span className="ml-2 text-xs text-green-600 align-middle">
-                    （完了）
-                  </span>
-                ) : null}
               </h2>
               <div className="flex gap-2">
                 <button
@@ -1141,6 +1120,19 @@ export default function Checklist() {
                 例: 02:00 なら 2分。空欄にするとこの行動には目標時間を設定しません。
               </p>
             </div>
+
+            {/* 目標時間合計（チェックリスト全体） */}
+            <div className="mt-6 border-t pt-3 text-sm text-gray-700">
+              <div className="flex items-center justify-between">
+                <span>このチェックリストの目標時間合計</span>
+                <span className="tabular-nums font-medium">
+                  {totalTargetMs > 0 ? fmtDuration(totalTargetMs) : "—"}
+                </span>
+              </div>
+              <p className="mt-1 text-xs text-gray-500">
+                ※ 目標時間が設定されている行動のみの合計です。
+              </p>
+            </div>
           </>
         ) : (
           <div className="text-sm text-gray-500">
@@ -1172,7 +1164,6 @@ export default function Checklist() {
                     className="text-left underline-offset-2 hover:underline min-w-0 break-words"
                   >
                     {a.title}
-                    {a.isDone ? "（完了）" : ""}
                   </button>
                   <div className="flex gap-1">
                     <button
