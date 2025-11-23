@@ -8,11 +8,14 @@ type ID = string;
 
 /* ========= 型 ========= */
 
+type EmotionValence = "positive" | "negative" | "other";
+
 // 大きな感情カテゴリ
 type EmotionCategory = {
   id: ID;
   name: string;
   createdAt: number;
+  valence: EmotionValence; // ポジティブ / ネガティブ / その他
 };
 
 // 細かい感情（カテゴリの子）
@@ -82,15 +85,6 @@ function todayYmdJst(): string {
   return `${y}-${m}-${da}`;
 }
 
-function fmtTime(t: number | null | undefined) {
-  if (t == null) return "";
-  return new Date(t).toLocaleTimeString("ja-JP", {
-    hour12: false,
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
 /** ○時間○分○秒 表記（今のところ未使用だが残しておく） */
 function fmtDuration(ms: number): string {
   const s = Math.max(0, Math.round(ms / 1000));
@@ -108,10 +102,30 @@ function createInitialEmotionData(): {
 } {
   const t = now();
 
-  const c1: EmotionCategory = { id: uid(), name: "不安・焦り", createdAt: t };
-  const c2: EmotionCategory = { id: uid(), name: "怒り・イライラ", createdAt: t };
-  const c3: EmotionCategory = { id: uid(), name: "悲しみ", createdAt: t };
-  const c4: EmotionCategory = { id: uid(), name: "喜び・安心", createdAt: t };
+  const c1: EmotionCategory = {
+    id: uid(),
+    name: "不安・焦り",
+    createdAt: t,
+    valence: "negative",
+  };
+  const c2: EmotionCategory = {
+    id: uid(),
+    name: "怒り・イライラ",
+    createdAt: t,
+    valence: "negative",
+  };
+  const c3: EmotionCategory = {
+    id: uid(),
+    name: "悲しみ",
+    createdAt: t,
+    valence: "negative",
+  };
+  const c4: EmotionCategory = {
+    id: uid(),
+    name: "喜び・安心",
+    createdAt: t,
+    valence: "positive",
+  };
   const categories = [c1, c2, c3, c4];
 
   const leaves: EmotionLeaf[] = [
@@ -210,6 +224,30 @@ function createInitialEmotionData(): {
 
 /* ====== localStorage 読み込み/保存 ====== */
 
+// valence 正規化（既存データ用）
+function normalizeValence(raw: any): EmotionValence {
+  if (raw && (raw.valence === "positive" || raw.valence === "negative" || raw.valence === "other")) {
+    return raw.valence;
+  }
+  const name: string = (raw && typeof raw.name === "string" && raw.name) || "";
+  if (name.includes("喜") || name.includes("安心") || name.includes("楽") || name.includes("ワクワク")) {
+    return "positive";
+  }
+  if (
+    name.includes("不安") ||
+    name.includes("焦") ||
+    name.includes("怒") ||
+    name.includes("イライラ") ||
+    name.includes("悲") ||
+    name.includes("落ち込") ||
+    name.includes("さび") ||
+    name.includes("がっかり")
+  ) {
+    return "negative";
+  }
+  return "other";
+}
+
 function loadLocal(): Store {
   try {
     if (typeof window === "undefined") {
@@ -235,7 +273,22 @@ function loadLocal(): Store {
 
     const seed = createInitialEmotionData();
 
-    // description がない既存データに対応
+    // categories（valence付与）
+    const mergedCategoriesSource =
+      parsed.categories && parsed.categories.length > 0
+        ? parsed.categories
+        : seed.categories;
+
+    const mergedCategories: EmotionCategory[] = mergedCategoriesSource.map(
+      (c: any) => ({
+        id: c.id ?? uid(),
+        name: c.name,
+        createdAt: c.createdAt ?? now(),
+        valence: normalizeValence(c),
+      })
+    );
+
+    // leaves（description がない既存データに対応）
     const mergedLeavesSource =
       parsed.leaves && parsed.leaves.length > 0 ? parsed.leaves : seed.leaves;
 
@@ -250,10 +303,7 @@ function loadLocal(): Store {
 
     return {
       situations: parsed.situations ?? [],
-      categories:
-        parsed.categories && parsed.categories.length > 0
-          ? parsed.categories
-          : seed.categories,
+      categories: mergedCategories,
       leaves: mergedLeaves,
       version: 1,
     };
@@ -301,6 +351,8 @@ export default function EmotionLabeling() {
     null
   );
   const [selectedCategoryId, setSelectedCategoryId] = useState<ID | null>(null);
+  const [selectedValence, setSelectedValence] =
+    useState<EmotionValence>("negative");
 
   // store → localStorage
   useEffect(() => {
@@ -315,6 +367,19 @@ export default function EmotionLabeling() {
         const remote = await loadUserDoc<Store>(key);
         if (remote && typeof remote === "object") {
           const seed = createInitialEmotionData();
+
+          const mergedCategoriesSource =
+            remote.categories && remote.categories.length > 0
+              ? remote.categories
+              : seed.categories;
+          const mergedCategories: EmotionCategory[] =
+            mergedCategoriesSource.map((c: any) => ({
+              id: c.id ?? uid(),
+              name: c.name,
+              createdAt: c.createdAt ?? now(),
+              valence: normalizeValence(c),
+            }));
+
           const mergedLeavesSource =
             remote.leaves && remote.leaves.length > 0
               ? remote.leaves
@@ -332,10 +397,7 @@ export default function EmotionLabeling() {
 
           const normalized: Store = {
             situations: remote.situations ?? [],
-            categories:
-              remote.categories && remote.categories.length > 0
-                ? remote.categories
-                : seed.categories,
+            categories: mergedCategories,
             leaves: mergedLeaves,
             version: 1,
           };
@@ -480,6 +542,18 @@ export default function EmotionLabeling() {
     [store.categories]
   );
 
+  const categoriesByValence = useMemo(() => {
+    const base = {
+      positive: [] as EmotionCategory[],
+      negative: [] as EmotionCategory[],
+      other: [] as EmotionCategory[],
+    };
+    for (const c of categorySorted) {
+      base[c.valence].push(c);
+    }
+    return base;
+  }, [categorySorted]);
+
   const leavesByCategory = useMemo(() => {
     const map = new Map<ID, EmotionLeaf[]>();
     for (const leaf of store.leaves) {
@@ -492,8 +566,19 @@ export default function EmotionLabeling() {
     return map;
   }, [store.leaves]);
 
-  const activeCategoryId: ID | null =
-    selectedCategoryId ?? categorySorted[0]?.id ?? null;
+  const activeCategories = categoriesByValence[selectedValence];
+
+  // 現在のバレンス内で有効なカテゴリID
+  const activeCategoryId: ID | null = useMemo(() => {
+    if (
+      selectedCategoryId &&
+      activeCategories.some((c) => c.id === selectedCategoryId)
+    ) {
+      return selectedCategoryId;
+    }
+    if (activeCategories.length > 0) return activeCategories[0].id;
+    return null;
+  }, [selectedCategoryId, activeCategories]);
 
   const leavesOfActiveCategory: EmotionLeaf[] = useMemo(() => {
     if (!activeCategoryId) return [];
@@ -546,15 +631,21 @@ export default function EmotionLabeling() {
 
   /* ====== 感情カテゴリ・細かい感情の編集 ====== */
 
-  const addCategory = () => {
+  const addCategory = (valence: EmotionValence) => {
     const name = prompt(
-      "追加する大きな感情（カテゴリ）名を入力してください。例：不安・焦り"
+      `追加する大きな感情（${valence === "positive"
+        ? "ポジティブ"
+        : valence === "negative"
+        ? "ネガティブ"
+        : "その他"
+      }）の名前を入力してください。例：不安・焦り`
     );
     if (!name) return;
     const cat: EmotionCategory = {
       id: uid(),
       name: name.trim(),
       createdAt: now(),
+      valence,
     };
     setStore((prev) => ({
       ...prev,
@@ -670,7 +761,7 @@ export default function EmotionLabeling() {
     });
   };
 
-  // ★ 1本動かしても他は動かさないバージョン
+  // 1本動かしても他は動かさない
   const updateEmotionIntensity = (index: number, newVal: number) => {
     if (!selectedSituation) return;
     setStore((prev) => {
@@ -810,9 +901,6 @@ export default function EmotionLabeling() {
                                 (s.context.trim().length > 24 ? "…" : "")
                               : "（内容未入力）"}
                           </span>
-                          <span className="text-[10px] text-gray-400">
-                            {fmtTime(s.createdAt)}
-                          </span>
                         </div>
                         <p className="mt-0.5 text-[10px] text-gray-400">
                           日付: {s.date}
@@ -933,20 +1021,54 @@ export default function EmotionLabeling() {
         </div>
       </section>
 
-      {/* 下段：感情パレット（大きな感情＋細かい感情の追加/削除＋選択） */}
+      {/* 下段：感情パレット（ポジティブ / ネガティブ / その他 → 大きな感情 → 細かい感情） */}
       <section className="rounded-2xl border p-4 shadow-sm space-y-3">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <h3 className="font-semibold text-sm">感情パレット</h3>
-          <button
-            onClick={addCategory}
-            className="rounded-xl border px-3 py-1.5 text-xs hover:bg-gray-50"
-          >
-            大きな感情を追加
-          </button>
+          <div className="flex flex-wrap gap-2 items-center">
+            <span className="text-xs text-gray-500 mr-1">グループ:</span>
+            <button
+              className={`rounded-full border px-3 py-1 text-xs ${
+                selectedValence === "positive"
+                  ? "border-green-500 bg-green-50"
+                  : "hover:bg-gray-50"
+              }`}
+              onClick={() => setSelectedValence("positive")}
+            >
+              ポジティブ
+            </button>
+            <button
+              className={`rounded-full border px-3 py-1 text-xs ${
+                selectedValence === "negative"
+                  ? "border-red-500 bg-red-50"
+                  : "hover:bg-gray-50"
+              }`}
+              onClick={() => setSelectedValence("negative")}
+            >
+              ネガティブ
+            </button>
+            <button
+              className={`rounded-full border px-3 py-1 text-xs ${
+                selectedValence === "other"
+                  ? "border-gray-500 bg-gray-100"
+                  : "hover:bg-gray-50"
+              }`}
+              onClick={() => setSelectedValence("other")}
+            >
+              その他
+            </button>
+            <button
+              onClick={() => addCategory(selectedValence)}
+              className="rounded-xl border px-3 py-1.5 text-xs hover:bg-gray-50 ml-1"
+            >
+              このグループに大きな感情を追加
+            </button>
+          </div>
         </div>
         <p className="text-xs text-gray-500">
-          まず大きな感情（カテゴリ）を選び、その中の細かい感情カードをクリックすると、
-          上の状況に追加されます（最大3つ）。カード内の説明文を読みながら選べます。
+          まず「ポジティブ / ネガティブ / その他」のグループを選び、その中の
+          大きな感情（カテゴリ）→細かい感情カードを選びます。
+          カードをクリックすると、上の状況に追加されます（最大3つ）。
         </p>
 
         {categorySorted.length === 0 ? (
@@ -955,31 +1077,37 @@ export default function EmotionLabeling() {
           </p>
         ) : (
           <div className="space-y-3">
-            {/* カテゴリタブ */}
+            {/* カテゴリタブ（選択中グループ内のみ） */}
             <div className="flex flex-wrap gap-2">
-              {categorySorted.map((c) => (
-                <div
-                  key={c.id}
-                  className={`flex items-center rounded-full border px-2 py-1 text-xs cursor-pointer ${
-                    activeCategoryId === c.id
-                      ? "border-blue-500 bg-blue-50"
-                      : "hover:bg-gray-50"
-                  }`}
-                  onClick={() => setSelectedCategoryId(c.id)}
-                >
-                  <span>{c.name}</span>
-                  <button
-                    onClick={(ev) => {
-                      ev.stopPropagation();
-                      deleteCategory(c.id);
-                    }}
-                    className="ml-1 rounded-full px-1 text-[10px] text-gray-500 hover:bg-white"
-                    title="このカテゴリを削除（パレットのみ）"
+              {activeCategories.length === 0 ? (
+                <p className="text-xs text-gray-500">
+                  このグループにはまだ大きな感情がありません。「このグループに大きな感情を追加」から作成してください。
+                </p>
+              ) : (
+                activeCategories.map((c) => (
+                  <div
+                    key={c.id}
+                    className={`flex items-center rounded-full border px-2 py-1 text-xs cursor-pointer ${
+                      activeCategoryId === c.id
+                        ? "border-blue-500 bg-blue-50"
+                        : "hover:bg-gray-50"
+                    }`}
+                    onClick={() => setSelectedCategoryId(c.id)}
                   >
-                    ×
-                  </button>
-                </div>
-              ))}
+                    <span>{c.name}</span>
+                    <button
+                      onClick={(ev) => {
+                        ev.stopPropagation();
+                        deleteCategory(c.id);
+                      }}
+                      className="ml-1 rounded-full px-1 text-[10px] text-gray-500 hover:bg-white"
+                      title="このカテゴリを削除（パレットのみ）"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))
+              )}
             </div>
 
             {/* 細かい感情一覧（名前＋説明文） */}
