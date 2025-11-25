@@ -92,6 +92,14 @@ export default function StudyPage() {
       type: "link" as const,
     },
     {
+      id: "math-dictionary",
+      title: "数学記号・用語辞典",
+      description:
+        "数学の記号・用語を登録・検索。Gemini対応入力欄でLaTeXを含む回答をそのまま貼り付けできます。",
+      href: "/study/math-dictionary",
+      type: "link" as const,
+    },
+    {
       id: "sapuri-wordbook",
       title: "スタディサプリ対応英単語帳",
       description:
