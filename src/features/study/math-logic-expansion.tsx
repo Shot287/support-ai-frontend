@@ -103,7 +103,7 @@ function createDefaultStore(): Store {
   const rootId = uid();
   const rootNode: Node = {
     id: rootId,
-    name: "数学論理展開",
+    name: "数学",
     parentId: null,
     kind: "folder",
   };
@@ -544,7 +544,7 @@ export default function MathLogicExpansion() {
       <div className="grid gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
         {/* 左：フォルダ＆ファイルツリー（code-reading と同じUIベース） */}
         <section className="rounded-2xl border p-4 shadow-sm">
-          <h2 className="font-semibold mb-3">数学論理展開</h2>
+          <h2 className="font-semibold mb-3">数学</h2>
 
           <div className="mb-3 text-xs text-gray-600">
             <div className="mb-1 font-medium">現在のフォルダ</div>
