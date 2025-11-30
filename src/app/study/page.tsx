@@ -76,6 +76,14 @@ export default function StudyPage() {
       type: "link" as const,
     },
     {
+      id: "lisp-dictionary",
+      title: "Lisp用語辞典",
+      description:
+        "Lispの用語や特殊形式・マクロなどを登録できる専用辞典。",
+      href: "/study/lisp-dictionary",
+      type: "link" as const,
+    },
+    {
       id: "math-logic-expansion",
       title: "数学",
       description:
