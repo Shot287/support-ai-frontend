@@ -165,6 +165,7 @@ export default function MathLogicExpansion() {
 
   // セットごとの「入力エリアを開く/隠す」状態
   type EditState = {
+    problem: boolean;
     my: boolean;
     ai: boolean;
     steps: boolean;
@@ -478,7 +479,8 @@ export default function MathLogicExpansion() {
 
   const toggleEdit = (setId: ID, key: keyof EditState) => {
     setEditMap((prev) => {
-      const st = prev[setId] ?? { my: false, ai: false, steps: false };
+      const st =
+        prev[setId] ?? { problem: false, my: false, ai: false, steps: false };
       return {
         ...prev,
         [setId]: {
@@ -677,11 +679,13 @@ export default function MathLogicExpansion() {
                       ai: false,
                       steps: false,
                     };
-                    const edit = editMap[set.id] ?? {
-                      my: false,
-                      ai: false,
-                      steps: false,
-                    };
+                    const edit =
+                      editMap[set.id] ?? {
+                        problem: false,
+                        my: false,
+                        ai: false,
+                        steps: false,
+                      };
 
                     // 旧データ互換：problemText が無い場合は空文字扱い
                     const problemText = (set as any).problemText ?? "";
@@ -704,23 +708,34 @@ export default function MathLogicExpansion() {
                           </button>
                         </div>
 
-                        {/* 問題文：テキスト入力 + LaTeX対応プレビュー */}
+                        {/* 問題文：テキスト入力 + LaTeX対応プレビュー（入力欄は折りたたみ） */}
                         <div className="space-y-1">
-                          <label className="text-xs font-semibold text-gray-700">
-                            問題文
-                          </label>
-                          <textarea
-                            value={problemText}
-                            onChange={(e) =>
-                              updateSet(set.id, (prev) => ({
-                                ...prev,
-                                problemText: e.target.value,
-                              }))
-                            }
-                            rows={4}
-                            className="w-full rounded-lg border px-3 py-2 text-xs font-mono"
-                            placeholder="ここに問題文を入力してください。LaTeX も使用できます：例）$y'' + \frac{9}{4}y = 0$"
-                          />
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-xs font-semibold text-gray-700">
+                              問題文
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => toggleEdit(set.id, "problem")}
+                              className="text-xs rounded-lg border px-2 py-1 hover:bg-gray-50"
+                            >
+                              {edit.problem ? "入力を隠す" : "入力を開く"}
+                            </button>
+                          </div>
+                          {edit.problem && (
+                            <textarea
+                              value={problemText}
+                              onChange={(e) =>
+                                updateSet(set.id, (prev) => ({
+                                  ...prev,
+                                  problemText: e.target.value,
+                                }))
+                              }
+                              rows={4}
+                              className="w-full rounded-lg border px-3 py-2 text-xs font-mono"
+                              placeholder="ここに問題文を入力してください。LaTeX も使用できます：例）$y'' + \frac{9}{4}y = 0$"
+                            />
+                          )}
                           <div className="mt-2 rounded-xl border px-3 py-2 bg-gray-50">
                             <MathMarkdown text={problemText} />
                           </div>
