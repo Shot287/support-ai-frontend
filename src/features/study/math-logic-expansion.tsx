@@ -2,7 +2,6 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ClipboardEvent } from "react";
 import { loadUserDoc, saveUserDoc } from "@/lib/userDocStore";
 import { registerManualSync } from "@/lib/manual-sync";
 
@@ -25,7 +24,8 @@ type Node = {
 
 type MathSet = {
   id: ID;
-  imageUrl: string; // data URL or http(s) URL
+  /** 問題文（テキスト / LaTeX 含む） */
+  problemText: string;
   myNote: string;
   aiNote: string;
   stepsNote: string;
@@ -174,9 +174,6 @@ export default function MathLogicExpansion() {
   // 左側：フォルダ／ファイル作成用
   const [newFolderName, setNewFolderName] = useState("");
   const [newFileName, setNewFileName] = useState("");
-
-  // 画像拡大用
-  const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
 
   const currentFile = store.currentFileId
     ? store.files[store.currentFileId] ?? null
@@ -404,7 +401,7 @@ export default function MathLogicExpansion() {
     if (!currentFile) return;
     const newSet: MathSet = {
       id: uid(),
-      imageUrl: "",
+      problemText: "",
       myNote: "",
       aiNote: "",
       stepsNote: "",
@@ -490,53 +487,6 @@ export default function MathLogicExpansion() {
         },
       };
     });
-  };
-
-  // 画像ペーストハンドラ（画像 or URL）
-  const handleImagePaste = (setId: ID, e: ClipboardEvent<HTMLDivElement>) => {
-    const clipboard = e.clipboardData;
-    if (!clipboard) return;
-
-    let handled = false;
-
-    // 1) 画像データがあれば data URL として保存
-    const items = clipboard.items;
-    for (let i = 0; i < items.length; i++) {
-      const item = items[i];
-      if (item.type.startsWith("image/")) {
-        const file = item.getAsFile();
-        if (file) {
-          const reader = new FileReader();
-          reader.onload = () => {
-            const result = reader.result;
-            if (typeof result === "string") {
-              updateSet(setId, (prev) => ({
-                ...prev,
-                imageUrl: result, // data URL
-              }));
-            }
-          };
-          reader.readAsDataURL(file);
-          handled = true;
-        }
-      }
-    }
-
-    // 2) 画像が無ければ、テキストを URL として扱う
-    if (!handled) {
-      const text = clipboard.getData("text");
-      if (text && text.trim()) {
-        updateSet(setId, (prev) => ({
-          ...prev,
-          imageUrl: text.trim(),
-        }));
-        handled = true;
-      }
-    }
-
-    if (handled) {
-      e.preventDefault();
-    }
   };
 
   return (
@@ -717,7 +667,7 @@ export default function MathLogicExpansion() {
 
               {currentFile.sets.length === 0 ? (
                 <p className="text-sm text-gray-500">
-                  まだセットがありません。「＋ セットを追加」から、問題画像＋解釈ノートを追加してください。
+                  まだセットがありません。「＋ セットを追加」から、問題文＋解釈ノートを追加してください。
                 </p>
               ) : (
                 <div className="space-y-4">
@@ -732,6 +682,9 @@ export default function MathLogicExpansion() {
                       ai: false,
                       steps: false,
                     };
+
+                    // 旧データ互換：problemText が無い場合は空文字扱い
+                    const problemText = (set as any).problemText ?? "";
 
                     return (
                       <div
@@ -751,51 +704,26 @@ export default function MathLogicExpansion() {
                           </button>
                         </div>
 
-                        {/* 問題画像：ペースト対応 + クリック拡大 */}
+                        {/* 問題文：テキスト入力 + LaTeX対応プレビュー */}
                         <div className="space-y-1">
                           <label className="text-xs font-semibold text-gray-700">
-                            問題画像
+                            問題文
                           </label>
-                          <div
-                            className="w-full rounded-lg border px-3 py-2 text-xs bg-white cursor-text"
-                            tabIndex={0}
-                            onPaste={(e) => handleImagePaste(set.id, e)}
-                          >
-                            <p className="text-[11px] text-gray-500">
-                              ここをクリックしてから Ctrl+V で問題画像を貼り付け
-                              （画像そのもの or 画像URL）
-                            </p>
+                          <textarea
+                            value={problemText}
+                            onChange={(e) =>
+                              updateSet(set.id, (prev) => ({
+                                ...prev,
+                                problemText: e.target.value,
+                              }))
+                            }
+                            rows={4}
+                            className="w-full rounded-lg border px-3 py-2 text-xs font-mono"
+                            placeholder="ここに問題文を入力してください。LaTeX も使用できます：例）$y'' + \frac{9}{4}y = 0$"
+                          />
+                          <div className="mt-2 rounded-xl border px-3 py-2 bg-gray-50">
+                            <MathMarkdown text={problemText} />
                           </div>
-                          {set.imageUrl && (
-                            <div className="mt-2 border rounded-lg overflow-hidden max-h-64 flex flex-col items-center justify-center bg-gray-50 gap-1">
-                              {/* eslint-disable-next-line @next/next/no-img-element */}
-                              <img
-                                src={set.imageUrl}
-                                alt="問題画像プレビュー"
-                                className="max-h-64 max-w-full object-contain cursor-zoom-in"
-                                onClick={() =>
-                                  setPreviewImageUrl(set.imageUrl || null)
-                                }
-                              />
-                              <div className="mb-2 flex gap-2 text-[11px]">
-                                <span className="text-gray-500">
-                                  画像をクリックすると拡大表示できます。
-                                </span>
-                                <button
-                                  type="button"
-                                  className="text-gray-500 hover:underline"
-                                  onClick={() =>
-                                    updateSet(set.id, (prev) => ({
-                                      ...prev,
-                                      imageUrl: "",
-                                    }))
-                                  }
-                                >
-                                  画像を削除する
-                                </button>
-                              </div>
-                            </div>
-                          )}
                         </div>
 
                         {/* 自分の解釈ノート */}
@@ -840,8 +768,8 @@ export default function MathLogicExpansion() {
                               <MathMarkdown text={set.myNote} />
                             ) : (
                               <p className="text-xs text-gray-400">
-                                （裏面）「めくる」を押すと、MathMarkdown + KaTeX
-                                で表示されます。
+                                （裏面）「めくる」を押すと、MathMarkdown +
+                                KaTeX で表示されます。
                               </p>
                             )}
                           </div>
@@ -951,35 +879,6 @@ export default function MathLogicExpansion() {
           )}
         </section>
       </div>
-
-      {/* 画像拡大オーバーレイ */}
-      {previewImageUrl && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70"
-          onClick={() => setPreviewImageUrl(null)}
-        >
-          <div
-            className="max-w-[min(100vw-2rem,920px)] max-h-[min(100vh-4rem,720px)]"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={previewImageUrl}
-              alt="拡大画像"
-              className="max-w-full max-h-[calc(100vh-6rem)] object-contain rounded-xl bg-black"
-            />
-            <div className="mt-2 flex justify-end">
-              <button
-                type="button"
-                onClick={() => setPreviewImageUrl(null)}
-                className="rounded-lg bg-white/90 px-3 py-1 text-xs shadow"
-              >
-                閉じる
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </>
   );
 }
