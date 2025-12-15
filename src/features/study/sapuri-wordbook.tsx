@@ -14,6 +14,7 @@ type WordItem = {
   word: string;    // 英単語
   meaning: string; // 日本語の意味
   marked: boolean; // マーク対象かどうか
+  struck: boolean; // 取り消し線（英単語に線を引く）
 };
 
 type Folder = {
@@ -65,6 +66,7 @@ function loadLocal(): Store {
             word: String(w.word ?? ""),
             meaning: String(w.meaning ?? ""),
             marked: Boolean(w.marked),
+            struck: Boolean(w.struck), // 旧データ互換（無ければ false）
           }));
           return {
             id: typeof f.id === "string" ? f.id : uid(),
@@ -137,14 +139,15 @@ export default function SapuriWordbook() {
         try {
           const remote = await loadUserDoc<Store>(DOC_KEY);
           if (remote && remote.version === 1) {
-            // remote 側にも pos が無い可能性に軽く対応
+            // remote 側にも pos / struck が無い可能性に軽く対応
             const fixed: Store = {
               ...remote,
               folders: remote.folders.map((f) => ({
                 ...f,
-                words: f.words.map((w) => ({
+                words: f.words.map((w: any) => ({
                   ...w,
                   pos: typeof w.pos === "string" ? w.pos : "",
+                  struck: Boolean(w.struck),
                 })),
               })),
             };
@@ -242,19 +245,6 @@ export default function SapuriWordbook() {
   };
 
   // ---- JSON インポート ----
-  /**
-   * 期待フォーマット（例）:
-   * [
-   *   { "no": 1, "pos": "名", "word": "department", "meaning": "部門" },
-   *   { "no": 2, "pos": "副", "word": "simply",     "meaning": "単に" }
-   * ]
-   *
-   * キー名は多少ゆるく対応:
-   * - 番号: no / number / id
-   * - 品詞: pos / partOfSpeech / part / 品詞
-   * - 英語: word / term / english / en / 英単語
-   * - 意味: meaning / jp / japanese / translation / 意味
-   */
   const handleImportJson = () => {
     if (!currentFolder) {
       alert("フォルダを選択してください。");
@@ -286,7 +276,7 @@ export default function SapuriWordbook() {
       const no =
         typeof noRaw === "number"
           ? noRaw
-          : i + 1; // 番号が無い場合は 1,2,3,... と振る
+          : i + 1;
 
       const pos =
         row.pos ??
@@ -322,6 +312,7 @@ export default function SapuriWordbook() {
         word: String(word),
         meaning: String(meaning),
         marked: false,
+        struck: false, // インポート時はOFF
       });
     }
 
@@ -330,7 +321,6 @@ export default function SapuriWordbook() {
       return;
     }
 
-    // 番号順に並べ替え
     newWords.sort((a, b) => a.no - b.no);
 
     setStore((s) => ({
@@ -365,7 +355,6 @@ export default function SapuriWordbook() {
       return;
     }
 
-    // 番号順（必要ならここでシャッフルも可）
     const wordIds = sourceWords
       .slice()
       .sort((a, b) => a.no - b.no)
@@ -389,8 +378,14 @@ export default function SapuriWordbook() {
     const folder = store.folders.find((f) => f.id === session.folderId);
     if (!folder) return null;
     const wordId = session.wordIds[session.currentIndex];
-    const word = folder.words.find((w) => w.id === wordId) ?? null;
-    return word;
+    const word = folder.words.find((w: any) => w.id === wordId) ?? null;
+    if (!word) return null;
+
+    // 旧データ互換（struck が無い可能性）
+    return {
+      ...word,
+      struck: Boolean((word as any).struck),
+    } as WordItem;
   }, [session, store]);
 
   const handleShowAnswer = () => {
@@ -410,8 +405,29 @@ export default function SapuriWordbook() {
           ? f
           : {
               ...f,
-              words: f.words.map((w) =>
-                w.id === word.id ? { ...w, marked: !w.marked } : w
+              words: f.words.map((w: any) =>
+                w.id === word.id ? { ...w, marked: !Boolean(w.marked) } : w
+              ),
+            }
+      ),
+    }));
+  };
+
+  // ★ 取り消し線トグル
+  const handleStrikethroughToggle = () => {
+    if (!session || session.finished) return;
+    const word = currentSessionWord;
+    if (!word) return;
+
+    setStore((s) => ({
+      ...s,
+      folders: s.folders.map((f) =>
+        f.id !== session.folderId
+          ? f
+          : {
+              ...f,
+              words: f.words.map((w: any) =>
+                w.id === word.id ? { ...w, struck: !Boolean(w.struck) } : w
               ),
             }
       ),
@@ -439,17 +455,9 @@ export default function SapuriWordbook() {
     });
   };
 
-  const handleCorrect = () => {
-    answerCommon(true);
-  };
-
-  const handleWrong = () => {
-    answerCommon(false);
-  };
-
-  const handleResetSession = () => {
-    setSession(null);
-  };
+  const handleCorrect = () => answerCommon(true);
+  const handleWrong = () => answerCommon(false);
+  const handleResetSession = () => setSession(null);
 
   const totalQuestions =
     session && session.wordIds ? session.wordIds.length : 0;
@@ -639,8 +647,7 @@ export default function SapuriWordbook() {
                   不正解：{session.wrongCount} / {totalQuestions}
                 </p>
                 <p className="text-sm font-semibold mt-1">
-                  正解率：
-                  {accuracy !== null ? `${accuracy}%` : "-"}
+                  正解率：{accuracy !== null ? `${accuracy}%` : "-"}
                 </p>
                 <div className="mt-3 flex flex-wrap gap-2">
                   <button
@@ -683,14 +690,47 @@ export default function SapuriWordbook() {
                 </div>
 
                 {/* 単語表示（問題側: 品詞 + 英単語） */}
-                <div className="text-center space-y-1">
+                <div className="text-center space-y-2">
                   <div className="text-[11px] text-gray-400">
                     No.{currentSessionWord.no}
                   </div>
+
+                  {/* ★ 取り消し線ボタン */}
+                  <div className="flex justify-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleStrikethroughToggle}
+                      className={
+                        "rounded-xl border px-3 py-1.5 text-xs " +
+                        (currentSessionWord.struck
+                          ? "bg-gray-100 border-gray-400"
+                          : "hover:bg-gray-50")
+                      }
+                      title="英単語に取り消し線を付ける"
+                    >
+                      {currentSessionWord.struck ? "取り消し線ON" : "取り消し線"}
+                    </button>
+                  </div>
+
                   <div className="text-2xl font-bold tracking-wide">
-                    {currentSessionWord.pos
-                      ? `${currentSessionWord.pos} ${currentSessionWord.word}`
-                      : currentSessionWord.word}
+                    {currentSessionWord.pos ? (
+                      <>
+                        <span>{currentSessionWord.pos} </span>
+                        <span
+                          className={
+                            currentSessionWord.struck ? "line-through" : ""
+                          }
+                        >
+                          {currentSessionWord.word}
+                        </span>
+                      </>
+                    ) : (
+                      <span
+                        className={currentSessionWord.struck ? "line-through" : ""}
+                      >
+                        {currentSessionWord.word}
+                      </span>
+                    )}
                   </div>
                 </div>
 
