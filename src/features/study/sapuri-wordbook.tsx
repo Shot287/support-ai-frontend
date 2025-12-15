@@ -32,6 +32,14 @@ type Store = {
 const LOCAL_KEY = "study_sapuri_words_v1";
 const DOC_KEY = "study_sapuri_words_v1";
 
+// ★ 自動学習の解答表示待ち（ms）を保存するキー
+const AUTO_DELAY_LOCAL_KEY = "study_sapuri_words_auto_delay_ms_v1";
+// ★ スライダーの範囲（ms）
+const AUTO_DELAY_MIN = 300;
+const AUTO_DELAY_MAX = 3000;
+const AUTO_DELAY_STEP = 100;
+const AUTO_DELAY_DEFAULT = 1000;
+
 const uid = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
@@ -99,6 +107,31 @@ function saveLocal(store: Store) {
   }
 }
 
+function clamp(n: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, n));
+}
+
+function loadAutoDelayMs(): number {
+  try {
+    if (typeof window === "undefined") return AUTO_DELAY_DEFAULT;
+    const raw = localStorage.getItem(AUTO_DELAY_LOCAL_KEY);
+    const n = raw ? Number(raw) : NaN;
+    if (!Number.isFinite(n)) return AUTO_DELAY_DEFAULT;
+    return clamp(Math.round(n), AUTO_DELAY_MIN, AUTO_DELAY_MAX);
+  } catch {
+    return AUTO_DELAY_DEFAULT;
+  }
+}
+
+function saveAutoDelayMs(ms: number) {
+  try {
+    if (typeof window === "undefined") return;
+    localStorage.setItem(AUTO_DELAY_LOCAL_KEY, String(ms));
+  } catch {
+    // noop
+  }
+}
+
 // ===== 学習セッション用型 =====
 type StudyMode = "all" | "marked";
 
@@ -125,6 +158,9 @@ export default function SapuriWordbook() {
 
   // 学習セッション
   const [session, setSession] = useState<StudySession | null>(null);
+
+  // ★ 自動学習の解答表示待ち時間（ms）
+  const [autoDelayMs, setAutoDelayMs] = useState<number>(() => loadAutoDelayMs());
 
   // ★ 単語一覧UI
   const [showWordList, setShowWordList] = useState(true);
@@ -155,6 +191,16 @@ export default function SapuriWordbook() {
     storeRef.current = store;
     saveLocal(store);
   }, [store]);
+
+  // ---- 自動待ち時間：変更時に保存 ----
+  useEffect(() => {
+    const ms = clamp(Math.round(autoDelayMs), AUTO_DELAY_MIN, AUTO_DELAY_MAX);
+    if (ms !== autoDelayMs) {
+      setAutoDelayMs(ms);
+      return;
+    }
+    saveAutoDelayMs(ms);
+  }, [autoDelayMs]);
 
   // ---- 手動同期への登録 ----
   useEffect(() => {
@@ -641,7 +687,7 @@ export default function SapuriWordbook() {
     } as WordItem;
   }, [session, store]);
 
-  // ★ 自動学習：単語が切り替わったら「音声→1秒後に解答表示」
+  // ★ 自動学習：単語が切り替わったら「音声→(スライダーms)後に解答表示」
   useEffect(() => {
     const w = currentSessionWord;
     if (!session || session.finished || !w) return;
@@ -669,6 +715,8 @@ export default function SapuriWordbook() {
       await speakWordOnceAsync(w.id, w.word);
       if (cancelled) return;
 
+      const waitMs = clamp(Math.round(autoDelayMs), AUTO_DELAY_MIN, AUTO_DELAY_MAX);
+
       autoTimerRef.current = window.setTimeout(() => {
         setSession((s) => {
           if (!s || s.finished) return s;
@@ -680,14 +728,21 @@ export default function SapuriWordbook() {
           return { ...s, showAnswer: true };
         });
         autoTimerRef.current = null;
-      }, 1000);
+      }, waitMs);
     })();
 
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session?.auto, session?.currentIndex, session?.finished, session?.showAnswer, currentSessionWord?.id]);
+  }, [
+    session?.auto,
+    session?.currentIndex,
+    session?.finished,
+    session?.showAnswer,
+    currentSessionWord?.id,
+    autoDelayMs, // ★ スライダー変更も反映
+  ]);
 
   const handleShowAnswer = () => {
     if (!session || session.finished) return;
@@ -746,7 +801,9 @@ export default function SapuriWordbook() {
   const totalQuestions = session && session.wordIds ? session.wordIds.length : 0;
   const answeredCount = session ? session.correctCount + session.wrongCount : 0;
   const accuracy =
-    answeredCount > 0 ? ((session!.correctCount / answeredCount) * 100).toFixed(1) : null;
+    answeredCount > 0
+      ? ((session!.correctCount / answeredCount) * 100).toFixed(1)
+      : null;
 
   // ===== 単語一覧（検索・フィルタ）=====
   const listWords = useMemo(() => {
@@ -1038,7 +1095,43 @@ export default function SapuriWordbook() {
             {/* 学習モード選択 */}
             <div className="rounded-xl border bg-white px-3 py-3 space-y-2">
               <h3 className="text-xs font-semibold text-gray-700 mb-1">学習モード</h3>
-              <div className="flex flex-wrap gap-2">
+
+              {/* ★ 自動モード待ち時間スライダー */}
+              <div className="rounded-xl border bg-gray-50 px-3 py-3">
+                <div className="flex items-center justify-between">
+                  <div className="text-xs font-semibold text-gray-700">
+                    自動：解答表示までの待ち時間
+                  </div>
+                  <div className="text-xs text-gray-600 tabular-nums">
+                    {(autoDelayMs / 1000).toFixed(1)} 秒（{autoDelayMs}ms）
+                  </div>
+                </div>
+                <div className="mt-2 flex items-center gap-3">
+                  <input
+                    type="range"
+                    min={AUTO_DELAY_MIN}
+                    max={AUTO_DELAY_MAX}
+                    step={AUTO_DELAY_STEP}
+                    value={autoDelayMs}
+                    onChange={(e) => setAutoDelayMs(Number(e.target.value))}
+                    className="w-full"
+                    aria-label="自動学習 解答表示までの待ち時間"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setAutoDelayMs(AUTO_DELAY_DEFAULT)}
+                    className="shrink-0 text-[11px] rounded-lg border px-2 py-1 text-gray-600 hover:bg-gray-100"
+                    title="1.0秒に戻す"
+                  >
+                    リセット
+                  </button>
+                </div>
+                <p className="mt-2 text-[11px] text-gray-500">
+                  ※ 自動学習モードON時、「音声終了後 → この秒数」で解答が自動表示されます。
+                </p>
+              </div>
+
+              <div className="flex flex-wrap gap-2 mt-2">
                 <button
                   type="button"
                   onClick={() => startSession("all", false)}
@@ -1052,7 +1145,7 @@ export default function SapuriWordbook() {
                   onClick={() => startSession("all", true)}
                   className="rounded-xl border px-3 py-1.5 text-xs hover:bg-gray-50"
                   disabled={currentFolder.words.length === 0}
-                  title="音声→1秒後に解答自動表示"
+                  title={`音声→${(autoDelayMs / 1000).toFixed(1)}秒後に解答自動表示`}
                 >
                   すべて（自動）
                 </button>
@@ -1070,7 +1163,7 @@ export default function SapuriWordbook() {
                   onClick={() => startSession("marked", true)}
                   className="rounded-xl border px-3 py-1.5 text-xs hover:bg-gray-50"
                   disabled={totalMarkedInCurrent === 0}
-                  title="音声→1秒後に解答自動表示"
+                  title={`音声→${(autoDelayMs / 1000).toFixed(1)}秒後に解答自動表示`}
                 >
                   マーク（自動）
                 </button>
@@ -1085,9 +1178,7 @@ export default function SapuriWordbook() {
                   </button>
                 )}
               </div>
-              <p className="mt-1 text-[11px] text-gray-500">
-                ※ 自動学習モードは「音声が終わった1秒後」に解答が自動で開きます（瞬時の和訳訓練用）。
-              </p>
+
               <p className="mt-1 text-[11px] text-gray-500">
                 ※ 不正解のときは、先に「マーク」ボタンを押してから「不正解」を押すと、マーク単語モードで復習できます。
               </p>
@@ -1144,7 +1235,9 @@ export default function SapuriWordbook() {
                 <div className="flex items-center justify-between gap-2">
                   <div className="text-xs text-gray-500">
                     {session.mode === "all" ? "モード: すべて" : "モード: マークのみ"}
-                    {session.auto ? " / 自動ON" : " / 手動"}
+                    {session.auto
+                      ? ` / 自動ON（${(autoDelayMs / 1000).toFixed(1)}s）`
+                      : " / 手動"}
                   </div>
                   <div className="text-xs text-gray-500">
                     {session.currentIndex + 1} / {totalQuestions}
@@ -1207,7 +1300,7 @@ export default function SapuriWordbook() {
                   ) : (
                     <span className="text-sm text-gray-400">
                       {session.auto
-                        ? "自動学習中：音声終了後に自動で解答が表示されます。"
+                        ? `自動学習中：音声終了後 ${(autoDelayMs / 1000).toFixed(1)} 秒で解答が表示されます。`
                         : "「解答をチェック」を押すと意味が表示されます。"}
                     </span>
                   )}
