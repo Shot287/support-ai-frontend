@@ -66,7 +66,7 @@ function loadLocal(): Store {
             word: String(w.word ?? ""),
             meaning: String(w.meaning ?? ""),
             marked: Boolean(w.marked),
-            struck: Boolean(w.struck), // 旧データ互換（無ければ false）
+            struck: Boolean(w.struck),
           }));
           return {
             id: typeof f.id === "string" ? f.id : uid(),
@@ -105,6 +105,7 @@ type StudyMode = "all" | "marked";
 type StudySession = {
   folderId: ID;
   mode: StudyMode;
+  auto: boolean; // ★ 自動学習モード
   wordIds: ID[];
   currentIndex: number;
   showAnswer: boolean;
@@ -137,6 +138,18 @@ export default function SapuriWordbook() {
   const voicesRef = useRef<SpeechSynthesisVoice[]>([]);
   const utterRef = useRef<SpeechSynthesisUtterance | null>(null);
 
+  // ★ 自動学習：二重発火防止 & タイマー管理
+  const lastAutoWordIdRef = useRef<ID | null>(null);
+  const autoTimerRef = useRef<number | null>(null);
+
+  const clearAutoTimer = () => {
+    if (typeof window === "undefined") return;
+    if (autoTimerRef.current != null) {
+      window.clearTimeout(autoTimerRef.current);
+      autoTimerRef.current = null;
+    }
+  };
+
   // ---- Store 変更時：localStorage に即保存（サーバ同期は manual-sync 任せ） ----
   useEffect(() => {
     storeRef.current = store;
@@ -146,12 +159,10 @@ export default function SapuriWordbook() {
   // ---- 手動同期への登録 ----
   useEffect(() => {
     const unsubscribe = registerManualSync({
-      // サーバ → ローカル
       pull: async () => {
         try {
           const remote = await loadUserDoc<Store>(DOC_KEY);
           if (remote && remote.version === 1) {
-            // remote 側にも pos / struck が無い可能性に軽く対応
             const fixed: Store = {
               ...remote,
               folders: remote.folders.map((f) => ({
@@ -170,7 +181,6 @@ export default function SapuriWordbook() {
           console.warn("[sapuri-wordbook] manual PULL failed:", e);
         }
       },
-      // ローカル → サーバ
       push: async () => {
         try {
           await saveUserDoc<Store>(DOC_KEY, storeRef.current);
@@ -208,7 +218,6 @@ export default function SapuriWordbook() {
     synth.onvoiceschanged = () => loadVoices();
 
     return () => {
-      // 終了時に読み上げ停止
       try {
         synth.cancel();
       } catch {
@@ -232,17 +241,18 @@ export default function SapuriWordbook() {
   };
 
   const pickEnglishVoice = (voices: SpeechSynthesisVoice[]) => {
-    // 優先: en-US / en-GB / en
     const prefers = ["en-US", "en-GB", "en"];
     for (const lang of prefers) {
-      const v = voices.find((x) => (x.lang || "").toLowerCase() === lang.toLowerCase());
+      const v = voices.find(
+        (x) => (x.lang || "").toLowerCase() === lang.toLowerCase()
+      );
       if (v) return v;
     }
-    // fallback: "en" を含むもの
     const v2 = voices.find((x) => (x.lang || "").toLowerCase().startsWith("en"));
     return v2 ?? null;
   };
 
+  // ★ 通常の「押したら読む」用（既存）
   const speakWord = (wordId: ID, text: string) => {
     if (typeof window === "undefined") return;
     const synth = window.speechSynthesis;
@@ -270,23 +280,19 @@ export default function SapuriWordbook() {
     const u = new SpeechSynthesisUtterance(clean);
     utterRef.current = u;
 
-    // 言語・速度など
     u.lang = "en-US";
-    u.rate = 0.95; // 少しゆっくり
+    u.rate = 0.95;
     u.pitch = 1.0;
     u.volume = 1.0;
 
-    // 音声選択（あれば）
     const voices = voicesRef.current || [];
     const voice = pickEnglishVoice(voices);
     if (voice) {
       u.voice = voice;
-      // voiceの言語が取れるなら合わせる
       if (voice.lang) u.lang = voice.lang;
     }
 
     u.onend = () => {
-      // 次に進むなどの操作があっても必ず解除
       setSpeakingWordId((prev) => (prev === wordId ? null : prev));
       utterRef.current = null;
     };
@@ -312,6 +318,67 @@ export default function SapuriWordbook() {
       utterRef.current = null;
       alert("音声再生に失敗しました。");
     }
+  };
+
+  // ★ 自動学習用：読み上げ完了を Promise で待てる版
+  const speakWordOnceAsync = (wordId: ID, text: string) => {
+    return new Promise<void>((resolve) => {
+      if (typeof window === "undefined") return resolve();
+      const synth = window.speechSynthesis;
+      if (!synth) return resolve();
+
+      const clean = String(text ?? "").trim();
+      if (!clean) return resolve();
+
+      try {
+        synth.cancel();
+      } catch {
+        // noop
+      }
+
+      const u = new SpeechSynthesisUtterance(clean);
+      utterRef.current = u;
+
+      u.lang = "en-US";
+      u.rate = 0.95;
+      u.pitch = 1.0;
+      u.volume = 1.0;
+
+      const voices = voicesRef.current || [];
+      const voice = pickEnglishVoice(voices);
+      if (voice) {
+        u.voice = voice;
+        if (voice.lang) u.lang = voice.lang;
+      }
+
+      u.onend = () => {
+        setSpeakingWordId((prev) => (prev === wordId ? null : prev));
+        utterRef.current = null;
+        resolve();
+      };
+      u.onerror = (e) => {
+        console.warn("[sapuri-wordbook] speech error:", e);
+        setSpeakingWordId(null);
+        utterRef.current = null;
+        try {
+          synth.cancel();
+        } catch {
+          // noop
+        }
+        resolve(); // 自動学習は「失敗しても次へ」できるよう resolve
+      };
+
+      setSpeakingWordId(wordId);
+
+      try {
+        synth.speak(u);
+      } catch (e) {
+        console.warn("[sapuri-wordbook] speak() failed:", e);
+        setSpeakingWordId(null);
+        utterRef.current = null;
+        resolve();
+      }
+    });
   };
 
   const folders = store.folders;
@@ -349,7 +416,10 @@ export default function SapuriWordbook() {
   };
 
   const selectFolder = (id: ID) => {
+    clearAutoTimer();
+    lastAutoWordIdRef.current = null;
     stopSpeak();
+
     setStore((s) => ({
       ...s,
       currentFolderId: id,
@@ -375,7 +445,11 @@ export default function SapuriWordbook() {
   const deleteFolder = (id: ID) => {
     if (!confirm("このフォルダと中の単語をすべて削除します。よろしいですか？"))
       return;
+
+    clearAutoTimer();
+    lastAutoWordIdRef.current = null;
     stopSpeak();
+
     setStore((s) => {
       const nextFolders = s.folders.filter((f) => f.id !== id);
       const nextCurrent =
@@ -391,7 +465,11 @@ export default function SapuriWordbook() {
   };
 
   // ---- 単語更新（共通）----
-  const updateWord = (folderId: ID, wordId: ID, updater: (w: WordItem) => WordItem) => {
+  const updateWord = (
+    folderId: ID,
+    wordId: ID,
+    updater: (w: WordItem) => WordItem
+  ) => {
     setStore((s) => ({
       ...s,
       folders: s.folders.map((f) =>
@@ -458,11 +536,15 @@ export default function SapuriWordbook() {
       const no = typeof noRaw === "number" ? noRaw : i + 1;
 
       const pos = row.pos ?? row.partOfSpeech ?? row.part ?? row["品詞"] ?? "";
-
       const word =
         row.word ?? row.term ?? row.english ?? row.en ?? row["英単語"] ?? "";
       const meaning =
-        row.meaning ?? row.jp ?? row.japanese ?? row.translation ?? row["意味"] ?? "";
+        row.meaning ??
+        row.jp ??
+        row.japanese ??
+        row.translation ??
+        row["意味"] ??
+        "";
 
       if (!word || !meaning) {
         console.warn("スキップされた行:", row);
@@ -500,12 +582,16 @@ export default function SapuriWordbook() {
   };
 
   // ---- 学習セッション開始 ----
-  const startSession = (mode: StudyMode) => {
+  const startSession = (mode: StudyMode, auto: boolean) => {
+    clearAutoTimer();
+    lastAutoWordIdRef.current = null;
     stopSpeak();
+
     if (!currentFolder) {
       alert("フォルダを選択してください。");
       return;
     }
+
     const sourceWords =
       mode === "all"
         ? currentFolder.words
@@ -528,6 +614,7 @@ export default function SapuriWordbook() {
     const newSession: StudySession = {
       folderId: currentFolder.id,
       mode,
+      auto,
       wordIds,
       currentIndex: 0,
       showAnswer: false,
@@ -554,8 +641,57 @@ export default function SapuriWordbook() {
     } as WordItem;
   }, [session, store]);
 
+  // ★ 自動学習：単語が切り替わったら「音声→1秒後に解答表示」
+  useEffect(() => {
+    const w = currentSessionWord;
+    if (!session || session.finished || !w) return;
+
+    // 自動OFFなら何もしない（過去のタイマーは消す）
+    if (!session.auto) {
+      clearAutoTimer();
+      lastAutoWordIdRef.current = null;
+      return;
+    }
+
+    // すでに解答が開いてるなら何もしない
+    if (session.showAnswer) return;
+
+    // 同じ単語で二重に走らないように
+    if (lastAutoWordIdRef.current === w.id) return;
+    lastAutoWordIdRef.current = w.id;
+
+    clearAutoTimer();
+    stopSpeak();
+
+    let cancelled = false;
+
+    (async () => {
+      await speakWordOnceAsync(w.id, w.word);
+      if (cancelled) return;
+
+      autoTimerRef.current = window.setTimeout(() => {
+        setSession((s) => {
+          if (!s || s.finished) return s;
+          // セッションが進んでいたら何もしない
+          const nowWordId = s.wordIds[s.currentIndex];
+          if (nowWordId !== w.id) return s;
+          // 自動がOFFに切り替わっていたら何もしない
+          if (!s.auto) return s;
+          return { ...s, showAnswer: true };
+        });
+        autoTimerRef.current = null;
+      }, 1000);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.auto, session?.currentIndex, session?.finished, session?.showAnswer, currentSessionWord?.id]);
+
   const handleShowAnswer = () => {
     if (!session || session.finished) return;
+    clearAutoTimer();
     setSession((s) => (s ? { ...s, showAnswer: true } : s));
   };
 
@@ -576,7 +712,9 @@ export default function SapuriWordbook() {
   const answerCommon = (isCorrect: boolean) => {
     if (!session || session.finished) return;
 
+    clearAutoTimer();
     stopSpeak();
+    lastAutoWordIdRef.current = null; // 次の単語で再び自動発火させる
 
     const total = session.wordIds.length;
     const isLast = session.currentIndex >= total - 1;
@@ -599,6 +737,8 @@ export default function SapuriWordbook() {
   const handleCorrect = () => answerCommon(true);
   const handleWrong = () => answerCommon(false);
   const handleResetSession = () => {
+    clearAutoTimer();
+    lastAutoWordIdRef.current = null;
     stopSpeak();
     setSession(null);
   };
@@ -715,7 +855,10 @@ export default function SapuriWordbook() {
               {speakingWordId && (
                 <button
                   type="button"
-                  onClick={stopSpeak}
+                  onClick={() => {
+                    clearAutoTimer();
+                    stopSpeak();
+                  }}
                   className="ml-auto text-[11px] rounded-lg border px-2 py-1 text-gray-600 hover:bg-gray-50"
                   title="読み上げ停止"
                 >
@@ -898,20 +1041,40 @@ export default function SapuriWordbook() {
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
-                  onClick={() => startSession("all")}
+                  onClick={() => startSession("all", false)}
                   className="rounded-xl border px-3 py-1.5 text-xs hover:bg-gray-50"
                   disabled={currentFolder.words.length === 0}
                 >
-                  すべての単語から学習
+                  すべて（手動）
                 </button>
                 <button
                   type="button"
-                  onClick={() => startSession("marked")}
+                  onClick={() => startSession("all", true)}
+                  className="rounded-xl border px-3 py-1.5 text-xs hover:bg-gray-50"
+                  disabled={currentFolder.words.length === 0}
+                  title="音声→1秒後に解答自動表示"
+                >
+                  すべて（自動）
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => startSession("marked", false)}
                   className="rounded-xl border px-3 py-1.5 text-xs hover:bg-gray-50"
                   disabled={totalMarkedInCurrent === 0}
                 >
-                  マークした単語だけ学習
+                  マーク（手動）
                 </button>
+                <button
+                  type="button"
+                  onClick={() => startSession("marked", true)}
+                  className="rounded-xl border px-3 py-1.5 text-xs hover:bg-gray-50"
+                  disabled={totalMarkedInCurrent === 0}
+                  title="音声→1秒後に解答自動表示"
+                >
+                  マーク（自動）
+                </button>
+
                 {session && (
                   <button
                     type="button"
@@ -923,15 +1086,17 @@ export default function SapuriWordbook() {
                 )}
               </div>
               <p className="mt-1 text-[11px] text-gray-500">
-                ※ 不正解のときは、先に「マーク」ボタンを押してから「不正解」を押すと、
-                マーク単語モードで復習できます。
+                ※ 自動学習モードは「音声が終わった1秒後」に解答が自動で開きます（瞬時の和訳訓練用）。
+              </p>
+              <p className="mt-1 text-[11px] text-gray-500">
+                ※ 不正解のときは、先に「マーク」ボタンを押してから「不正解」を押すと、マーク単語モードで復習できます。
               </p>
             </div>
 
             {/* 学習カードエリア */}
             {!session ? (
               <p className="text-sm text-gray-500">
-                モードボタン（すべて / マークだけ）から学習を開始してください。
+                モードボタン（手動 / 自動）から学習を開始してください。
               </p>
             ) : session.finished ? (
               <div className="rounded-2xl border bg-white px-4 py-4 space-y-2">
@@ -948,14 +1113,14 @@ export default function SapuriWordbook() {
                 <div className="mt-3 flex flex-wrap gap-2">
                   <button
                     type="button"
-                    onClick={() => startSession(session.mode)}
+                    onClick={() => startSession(session.mode, session.auto)}
                     className="rounded-xl border px-3 py-1.5 text-xs hover:bg-gray-50"
                   >
                     同じモードでやり直す
                   </button>
                   <button
                     type="button"
-                    onClick={() => startSession("marked")}
+                    onClick={() => startSession("marked", session.auto)}
                     className="rounded-xl border px-3 py-1.5 text-xs hover:bg-gray-50"
                     disabled={totalMarkedInCurrent === 0}
                   >
@@ -979,13 +1144,14 @@ export default function SapuriWordbook() {
                 <div className="flex items-center justify-between gap-2">
                   <div className="text-xs text-gray-500">
                     {session.mode === "all" ? "モード: すべて" : "モード: マークのみ"}
+                    {session.auto ? " / 自動ON" : " / 手動"}
                   </div>
                   <div className="text-xs text-gray-500">
                     {session.currentIndex + 1} / {totalQuestions}
                   </div>
                 </div>
 
-                {/* 単語表示（問題側: 品詞 + 英単語） */}
+                {/* 単語表示 */}
                 <div className="text-center space-y-2">
                   <div className="text-[11px] text-gray-400">No.{currentSessionWord.no}</div>
 
@@ -1040,7 +1206,9 @@ export default function SapuriWordbook() {
                     <span className="text-base font-medium">{currentSessionWord.meaning}</span>
                   ) : (
                     <span className="text-sm text-gray-400">
-                      「解答をチェック」を押すと意味が表示されます。
+                      {session.auto
+                        ? "自動学習中：音声終了後に自動で解答が表示されます。"
+                        : "「解答をチェック」を押すと意味が表示されます。"}
                     </span>
                   )}
                 </div>
