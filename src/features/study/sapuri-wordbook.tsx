@@ -132,6 +132,11 @@ export default function SapuriWordbook() {
     "all"
   );
 
+  // ★ 音声（TTS）
+  const [speakingWordId, setSpeakingWordId] = useState<ID | null>(null);
+  const voicesRef = useRef<SpeechSynthesisVoice[]>([]);
+  const utterRef = useRef<SpeechSynthesisUtterance | null>(null);
+
   // ---- Store 変更時：localStorage に即保存（サーバ同期は manual-sync 任せ） ----
   useEffect(() => {
     storeRef.current = store;
@@ -173,7 +178,6 @@ export default function SapuriWordbook() {
           console.warn("[sapuri-wordbook] manual PUSH failed:", e);
         }
       },
-      // 今回は特にリセット処理なし
       reset: async () => {
         /* no-op */
       },
@@ -181,6 +185,134 @@ export default function SapuriWordbook() {
 
     return unsubscribe;
   }, []);
+
+  // ---- 音声（TTS）初期化 ----
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const synth = window.speechSynthesis;
+    if (!synth) {
+      console.warn("[sapuri-wordbook] speechSynthesis is not supported.");
+      return;
+    }
+
+    const loadVoices = () => {
+      try {
+        voicesRef.current = synth.getVoices() || [];
+      } catch {
+        voicesRef.current = [];
+      }
+    };
+
+    loadVoices();
+    synth.onvoiceschanged = () => loadVoices();
+
+    return () => {
+      // 終了時に読み上げ停止
+      try {
+        synth.cancel();
+      } catch {
+        // noop
+      }
+    };
+  }, []);
+
+  const stopSpeak = () => {
+    if (typeof window === "undefined") return;
+    const synth = window.speechSynthesis;
+    if (!synth) return;
+
+    try {
+      synth.cancel();
+    } catch {
+      // noop
+    }
+    utterRef.current = null;
+    setSpeakingWordId(null);
+  };
+
+  const pickEnglishVoice = (voices: SpeechSynthesisVoice[]) => {
+    // 優先: en-US / en-GB / en
+    const prefers = ["en-US", "en-GB", "en"];
+    for (const lang of prefers) {
+      const v = voices.find((x) => (x.lang || "").toLowerCase() === lang.toLowerCase());
+      if (v) return v;
+    }
+    // fallback: "en" を含むもの
+    const v2 = voices.find((x) => (x.lang || "").toLowerCase().startsWith("en"));
+    return v2 ?? null;
+  };
+
+  const speakWord = (wordId: ID, text: string) => {
+    if (typeof window === "undefined") return;
+    const synth = window.speechSynthesis;
+    if (!synth) {
+      alert("このブラウザでは音声読み上げに対応していません。");
+      return;
+    }
+
+    const clean = String(text ?? "").trim();
+    if (!clean) return;
+
+    // 同じ単語が再生中なら停止
+    if (speakingWordId === wordId && synth.speaking) {
+      stopSpeak();
+      return;
+    }
+
+    // 既存再生を止めてから新規
+    try {
+      synth.cancel();
+    } catch {
+      // noop
+    }
+
+    const u = new SpeechSynthesisUtterance(clean);
+    utterRef.current = u;
+
+    // 言語・速度など
+    u.lang = "en-US";
+    u.rate = 0.95; // 少しゆっくり
+    u.pitch = 1.0;
+    u.volume = 1.0;
+
+    // 音声選択（あれば）
+    const voices = voicesRef.current || [];
+    const voice = pickEnglishVoice(voices);
+    if (voice) {
+      u.voice = voice;
+      // voiceの言語が取れるなら合わせる
+      if (voice.lang) u.lang = voice.lang;
+    }
+
+    u.onend = () => {
+      // 次に進むなどの操作があっても必ず解除
+      setSpeakingWordId((prev) => (prev === wordId ? null : prev));
+      utterRef.current = null;
+    };
+    u.onerror = (e) => {
+      console.warn("[sapuri-wordbook] speech error:", e);
+      setSpeakingWordId(null);
+      utterRef.current = null;
+      try {
+        synth.cancel();
+      } catch {
+        // noop
+      }
+      alert("音声再生に失敗しました（端末/ブラウザの制限の可能性があります）。");
+    };
+
+    setSpeakingWordId(wordId);
+
+    try {
+      synth.speak(u);
+    } catch (e) {
+      console.warn("[sapuri-wordbook] speak() failed:", e);
+      setSpeakingWordId(null);
+      utterRef.current = null;
+      alert("音声再生に失敗しました。");
+    }
+  };
 
   const folders = store.folders;
   const currentFolder =
@@ -217,13 +349,13 @@ export default function SapuriWordbook() {
   };
 
   const selectFolder = (id: ID) => {
+    stopSpeak();
     setStore((s) => ({
       ...s,
       currentFolderId: id,
     }));
     setJsonText("");
     setSession(null);
-    // フォルダ切替時は一覧を開いておく（好みなら外してOK）
     setShowWordList(true);
   };
 
@@ -243,12 +375,11 @@ export default function SapuriWordbook() {
   const deleteFolder = (id: ID) => {
     if (!confirm("このフォルダと中の単語をすべて削除します。よろしいですか？"))
       return;
+    stopSpeak();
     setStore((s) => {
       const nextFolders = s.folders.filter((f) => f.id !== id);
       const nextCurrent =
-        s.currentFolderId === id
-          ? nextFolders[0]?.id ?? null
-          : s.currentFolderId;
+        s.currentFolderId === id ? nextFolders[0]?.id ?? null : s.currentFolderId;
       return {
         ...s,
         folders: nextFolders,
@@ -331,12 +462,7 @@ export default function SapuriWordbook() {
       const word =
         row.word ?? row.term ?? row.english ?? row.en ?? row["英単語"] ?? "";
       const meaning =
-        row.meaning ??
-        row.jp ??
-        row.japanese ??
-        row.translation ??
-        row["意味"] ??
-        "";
+        row.meaning ?? row.jp ?? row.japanese ?? row.translation ?? row["意味"] ?? "";
 
       if (!word || !meaning) {
         console.warn("スキップされた行:", row);
@@ -350,7 +476,7 @@ export default function SapuriWordbook() {
         word: String(word),
         meaning: String(meaning),
         marked: false,
-        struck: false, // インポート時はOFF
+        struck: false,
       });
     }
 
@@ -375,6 +501,7 @@ export default function SapuriWordbook() {
 
   // ---- 学習セッション開始 ----
   const startSession = (mode: StudyMode) => {
+    stopSpeak();
     if (!currentFolder) {
       alert("フォルダを選択してください。");
       return;
@@ -449,6 +576,8 @@ export default function SapuriWordbook() {
   const answerCommon = (isCorrect: boolean) => {
     if (!session || session.finished) return;
 
+    stopSpeak();
+
     const total = session.wordIds.length;
     const isLast = session.currentIndex >= total - 1;
 
@@ -469,14 +598,15 @@ export default function SapuriWordbook() {
 
   const handleCorrect = () => answerCommon(true);
   const handleWrong = () => answerCommon(false);
-  const handleResetSession = () => setSession(null);
+  const handleResetSession = () => {
+    stopSpeak();
+    setSession(null);
+  };
 
   const totalQuestions = session && session.wordIds ? session.wordIds.length : 0;
   const answeredCount = session ? session.correctCount + session.wrongCount : 0;
   const accuracy =
-    answeredCount > 0
-      ? ((session!.correctCount / answeredCount) * 100).toFixed(1)
-      : null;
+    answeredCount > 0 ? ((session!.correctCount / answeredCount) * 100).toFixed(1) : null;
 
   // ===== 単語一覧（検索・フィルタ）=====
   const listWords = useMemo(() => {
@@ -525,9 +655,7 @@ export default function SapuriWordbook() {
                   >
                     <div className="flex items-center justify-between gap-2">
                       <span>{f.name}</span>
-                      <span className="text-[11px] text-gray-400">
-                        {f.words.length} 語
-                      </span>
+                      <span className="text-[11px] text-gray-400">{f.words.length} 語</span>
                     </div>
                   </button>
                   <button
@@ -584,9 +712,19 @@ export default function SapuriWordbook() {
                 単語数: {currentFolder.words.length} 語 / マーク:{totalMarkedInCurrent} 語 /
                 取り消し線:{totalStruckInCurrent} 語
               </span>
+              {speakingWordId && (
+                <button
+                  type="button"
+                  onClick={stopSpeak}
+                  className="ml-auto text-[11px] rounded-lg border px-2 py-1 text-gray-600 hover:bg-gray-50"
+                  title="読み上げ停止"
+                >
+                  🔇 停止
+                </button>
+              )}
             </div>
 
-            {/* ★ 単語一覧（追加） */}
+            {/* 単語一覧 */}
             <div className="rounded-xl border bg-white px-3 py-3 space-y-2">
               <div className="flex items-center justify-between gap-2">
                 <h3 className="text-xs font-semibold text-gray-700">単語一覧</h3>
@@ -654,8 +792,8 @@ export default function SapuriWordbook() {
                     <p className="text-xs text-gray-500">条件に一致する単語がありません。</p>
                   ) : (
                     <div className="mt-2 max-h-[320px] overflow-auto rounded-xl border">
-                      <div className="min-w-[520px]">
-                        <div className="grid grid-cols-[72px_70px_1fr_1fr_160px] gap-2 px-3 py-2 text-[11px] text-gray-500 bg-gray-50 border-b">
+                      <div className="min-w-[620px]">
+                        <div className="grid grid-cols-[72px_70px_1fr_1fr_220px] gap-2 px-3 py-2 text-[11px] text-gray-500 bg-gray-50 border-b">
                           <div>No</div>
                           <div>品詞</div>
                           <div>英単語</div>
@@ -666,17 +804,26 @@ export default function SapuriWordbook() {
                         {listWords.map((w) => (
                           <div
                             key={w.id}
-                            className="grid grid-cols-[72px_70px_1fr_1fr_160px] gap-2 px-3 py-2 text-xs items-center border-b last:border-b-0"
+                            className="grid grid-cols-[72px_70px_1fr_1fr_220px] gap-2 px-3 py-2 text-xs items-center border-b last:border-b-0"
                           >
                             <div className="text-gray-500">No.{w.no}</div>
                             <div className="text-gray-600">{w.pos || "-"}</div>
                             <div className="font-medium">
-                              <span className={w.struck ? "line-through" : ""}>
-                                {w.word}
-                              </span>
+                              <span className={w.struck ? "line-through" : ""}>{w.word}</span>
                             </div>
                             <div className="text-gray-700">{w.meaning}</div>
                             <div className="flex justify-end gap-1">
+                              <button
+                                type="button"
+                                onClick={() => speakWord(w.id, w.word)}
+                                className={
+                                  "text-[11px] rounded-lg border px-2 py-1 hover:bg-gray-50 " +
+                                  (speakingWordId === w.id ? "bg-black text-white" : "")
+                                }
+                                title="発音（読み上げ）"
+                              >
+                                {speakingWordId === w.id ? "🔇 停止" : "🔊"}
+                              </button>
                               <button
                                 type="button"
                                 onClick={() => toggleWordMarked(currentFolder.id, w.id)}
@@ -840,12 +987,22 @@ export default function SapuriWordbook() {
 
                 {/* 単語表示（問題側: 品詞 + 英単語） */}
                 <div className="text-center space-y-2">
-                  <div className="text-[11px] text-gray-400">
-                    No.{currentSessionWord.no}
-                  </div>
+                  <div className="text-[11px] text-gray-400">No.{currentSessionWord.no}</div>
 
-                  {/* 取り消し線ボタン */}
-                  <div className="flex justify-center gap-2">
+                  {/* 発音 + 取り消し線 */}
+                  <div className="flex justify-center gap-2 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={() => speakWord(currentSessionWord.id, currentSessionWord.word)}
+                      className={
+                        "rounded-xl border px-3 py-1.5 text-xs hover:bg-gray-50 " +
+                        (speakingWordId === currentSessionWord.id ? "bg-black text-white" : "")
+                      }
+                      title="発音（読み上げ）"
+                    >
+                      {speakingWordId === currentSessionWord.id ? "🔇 停止" : "🔊 発音"}
+                    </button>
+
                     <button
                       type="button"
                       onClick={handleStrikethroughToggle}
@@ -880,9 +1037,7 @@ export default function SapuriWordbook() {
                 {/* 解答（意味） */}
                 <div className="mt-3 rounded-xl border bg-gray-50 px-3 py-3 min-h-[56px] flex items-center justify-center">
                   {session.showAnswer ? (
-                    <span className="text-base font-medium">
-                      {currentSessionWord.meaning}
-                    </span>
+                    <span className="text-base font-medium">{currentSessionWord.meaning}</span>
                   ) : (
                     <span className="text-sm text-gray-400">
                       「解答をチェック」を押すと意味が表示されます。
