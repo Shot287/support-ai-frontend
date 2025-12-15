@@ -9,9 +9,9 @@ type ID = string;
 
 type WordItem = {
   id: ID;
-  no: number;      // スタディサプリの番号（1〜100 など）
-  pos: string;     // 品詞（例: "名", "動", "副" など）
-  word: string;    // 英単語
+  no: number; // スタディサプリの番号（1〜100 など）
+  pos: string; // 品詞（例: "名", "動", "副" など）
+  word: string; // 英単語
   meaning: string; // 日本語の意味
   marked: boolean; // マーク対象かどうか
   struck: boolean; // 取り消し線（英単語に線を引く）
@@ -125,6 +125,13 @@ export default function SapuriWordbook() {
   // 学習セッション
   const [session, setSession] = useState<StudySession | null>(null);
 
+  // ★ 単語一覧UI
+  const [showWordList, setShowWordList] = useState(true);
+  const [listQuery, setListQuery] = useState("");
+  const [listFilter, setListFilter] = useState<"all" | "marked" | "struck">(
+    "all"
+  );
+
   // ---- Store 変更時：localStorage に即保存（サーバ同期は manual-sync 任せ） ----
   useEffect(() => {
     storeRef.current = store;
@@ -183,6 +190,10 @@ export default function SapuriWordbook() {
     ? currentFolder.words.filter((w) => w.marked).length
     : 0;
 
+  const totalStruckInCurrent = currentFolder
+    ? currentFolder.words.filter((w) => w.struck).length
+    : 0;
+
   // ---- フォルダ操作 ----
   const addFolder = () => {
     const name = newFolderName.trim();
@@ -212,6 +223,8 @@ export default function SapuriWordbook() {
     }));
     setJsonText("");
     setSession(null);
+    // フォルダ切替時は一覧を開いておく（好みなら外してOK）
+    setShowWordList(true);
   };
 
   const renameFolder = (id: ID) => {
@@ -233,7 +246,9 @@ export default function SapuriWordbook() {
     setStore((s) => {
       const nextFolders = s.folders.filter((f) => f.id !== id);
       const nextCurrent =
-        s.currentFolderId === id ? nextFolders[0]?.id ?? null : s.currentFolderId;
+        s.currentFolderId === id
+          ? nextFolders[0]?.id ?? null
+          : s.currentFolderId;
       return {
         ...s,
         folders: nextFolders,
@@ -242,6 +257,42 @@ export default function SapuriWordbook() {
     });
     setJsonText("");
     setSession(null);
+  };
+
+  // ---- 単語更新（共通）----
+  const updateWord = (folderId: ID, wordId: ID, updater: (w: WordItem) => WordItem) => {
+    setStore((s) => ({
+      ...s,
+      folders: s.folders.map((f) =>
+        f.id !== folderId
+          ? f
+          : {
+              ...f,
+              words: f.words.map((w: any) => {
+                if (w.id !== wordId) return w;
+                const fixed: WordItem = {
+                  ...w,
+                  marked: Boolean(w.marked),
+                  struck: Boolean(w.struck),
+                  pos: typeof w.pos === "string" ? w.pos : "",
+                  word: String(w.word ?? ""),
+                  meaning: String(w.meaning ?? ""),
+                  no: typeof w.no === "number" ? w.no : 0,
+                  id: String(w.id),
+                };
+                return updater(fixed);
+              }),
+            }
+      ),
+    }));
+  };
+
+  const toggleWordMarked = (folderId: ID, wordId: ID) => {
+    updateWord(folderId, wordId, (w) => ({ ...w, marked: !w.marked }));
+  };
+
+  const toggleWordStruck = (folderId: ID, wordId: ID) => {
+    updateWord(folderId, wordId, (w) => ({ ...w, struck: !w.struck }));
   };
 
   // ---- JSON インポート ----
@@ -273,25 +324,12 @@ export default function SapuriWordbook() {
       const row = parsed[i] ?? {};
       const noRaw =
         row.no ?? row.number ?? (typeof row.id === "number" ? row.id : undefined);
-      const no =
-        typeof noRaw === "number"
-          ? noRaw
-          : i + 1;
+      const no = typeof noRaw === "number" ? noRaw : i + 1;
 
-      const pos =
-        row.pos ??
-        row.partOfSpeech ??
-        row.part ??
-        row["品詞"] ??
-        "";
+      const pos = row.pos ?? row.partOfSpeech ?? row.part ?? row["品詞"] ?? "";
 
       const word =
-        row.word ??
-        row.term ??
-        row.english ??
-        row.en ??
-        row["英単語"] ??
-        "";
+        row.word ?? row.term ?? row.english ?? row.en ?? row["英単語"] ?? "";
       const meaning =
         row.meaning ??
         row.jp ??
@@ -381,10 +419,11 @@ export default function SapuriWordbook() {
     const word = folder.words.find((w: any) => w.id === wordId) ?? null;
     if (!word) return null;
 
-    // 旧データ互換（struck が無い可能性）
     return {
       ...word,
       struck: Boolean((word as any).struck),
+      marked: Boolean((word as any).marked),
+      pos: typeof (word as any).pos === "string" ? (word as any).pos : "",
     } as WordItem;
   }, [session, store]);
 
@@ -396,42 +435,15 @@ export default function SapuriWordbook() {
   const handleMarkToggle = () => {
     if (!session || session.finished) return;
     const word = currentSessionWord;
-    if (!word) return;
-
-    setStore((s) => ({
-      ...s,
-      folders: s.folders.map((f) =>
-        f.id !== session.folderId
-          ? f
-          : {
-              ...f,
-              words: f.words.map((w: any) =>
-                w.id === word.id ? { ...w, marked: !Boolean(w.marked) } : w
-              ),
-            }
-      ),
-    }));
+    if (!word || !session) return;
+    toggleWordMarked(session.folderId, word.id);
   };
 
-  // ★ 取り消し線トグル
   const handleStrikethroughToggle = () => {
     if (!session || session.finished) return;
     const word = currentSessionWord;
-    if (!word) return;
-
-    setStore((s) => ({
-      ...s,
-      folders: s.folders.map((f) =>
-        f.id !== session.folderId
-          ? f
-          : {
-              ...f,
-              words: f.words.map((w: any) =>
-                w.id === word.id ? { ...w, struck: !Boolean(w.struck) } : w
-              ),
-            }
-      ),
-    }));
+    if (!word || !session) return;
+    toggleWordStruck(session.folderId, word.id);
   };
 
   const answerCommon = (isCorrect: boolean) => {
@@ -459,14 +471,31 @@ export default function SapuriWordbook() {
   const handleWrong = () => answerCommon(false);
   const handleResetSession = () => setSession(null);
 
-  const totalQuestions =
-    session && session.wordIds ? session.wordIds.length : 0;
-  const answeredCount =
-    session ? session.correctCount + session.wrongCount : 0;
+  const totalQuestions = session && session.wordIds ? session.wordIds.length : 0;
+  const answeredCount = session ? session.correctCount + session.wrongCount : 0;
   const accuracy =
     answeredCount > 0
       ? ((session!.correctCount / answeredCount) * 100).toFixed(1)
       : null;
+
+  // ===== 単語一覧（検索・フィルタ）=====
+  const listWords = useMemo(() => {
+    if (!currentFolder) return [];
+    const q = listQuery.trim().toLowerCase();
+
+    let base = currentFolder.words.slice().sort((a, b) => a.no - b.no);
+
+    if (listFilter === "marked") base = base.filter((w) => Boolean(w.marked));
+    if (listFilter === "struck") base = base.filter((w) => Boolean(w.struck));
+
+    if (q) {
+      base = base.filter((w) => {
+        const hay = `${w.no} ${w.pos} ${w.word} ${w.meaning}`.toLowerCase();
+        return hay.includes(q);
+      });
+    }
+    return base;
+  }, [currentFolder, listQuery, listFilter]);
 
   return (
     <div className="grid gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
@@ -483,10 +512,7 @@ export default function SapuriWordbook() {
           ) : (
             <ul className="space-y-1 text-sm">
               {folders.map((f) => (
-                <li
-                  key={f.id}
-                  className="flex items-center justify-between gap-2"
-                >
+                <li key={f.id} className="flex items-center justify-between gap-2">
                   <button
                     type="button"
                     onClick={() => selectFolder(f.id)}
@@ -553,21 +579,146 @@ export default function SapuriWordbook() {
         ) : (
           <div className="space-y-4">
             <div className="flex flex-wrap items-center gap-3">
-              <h2 className="font-semibold text-base">
-                フォルダ：{currentFolder.name}
-              </h2>
+              <h2 className="font-semibold text-base">フォルダ：{currentFolder.name}</h2>
               <span className="text-xs text-gray-500">
-                単語数: {currentFolder.words.length} 語 / マーク:
-                {totalMarkedInCurrent} 語
+                単語数: {currentFolder.words.length} 語 / マーク:{totalMarkedInCurrent} 語 /
+                取り消し線:{totalStruckInCurrent} 語
               </span>
+            </div>
+
+            {/* ★ 単語一覧（追加） */}
+            <div className="rounded-xl border bg-white px-3 py-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="text-xs font-semibold text-gray-700">単語一覧</h3>
+                <button
+                  type="button"
+                  onClick={() => setShowWordList((v) => !v)}
+                  className="text-[11px] rounded-lg border px-2 py-1 text-gray-600 hover:bg-gray-50"
+                >
+                  {showWordList ? "閉じる" : "開く"}
+                </button>
+              </div>
+
+              {showWordList && (
+                <>
+                  <div className="flex flex-wrap gap-2 items-center">
+                    <input
+                      value={listQuery}
+                      onChange={(e) => setListQuery(e.target.value)}
+                      className="flex-1 min-w-[180px] rounded-xl border px-3 py-2 text-xs"
+                      placeholder="検索: 単語 / 意味 / 品詞 / No..."
+                    />
+                    <div className="flex gap-1">
+                      <button
+                        type="button"
+                        onClick={() => setListFilter("all")}
+                        className={
+                          "text-[11px] rounded-lg border px-2 py-1 " +
+                          (listFilter === "all" ? "bg-black text-white" : "hover:bg-gray-50")
+                        }
+                      >
+                        全て
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setListFilter("marked")}
+                        className={
+                          "text-[11px] rounded-lg border px-2 py-1 " +
+                          (listFilter === "marked"
+                            ? "bg-yellow-100 border-yellow-400"
+                            : "hover:bg-gray-50")
+                        }
+                      >
+                        マーク
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setListFilter("struck")}
+                        className={
+                          "text-[11px] rounded-lg border px-2 py-1 " +
+                          (listFilter === "struck"
+                            ? "bg-gray-100 border-gray-400"
+                            : "hover:bg-gray-50")
+                        }
+                      >
+                        取り消し線
+                      </button>
+                    </div>
+                  </div>
+
+                  {currentFolder.words.length === 0 ? (
+                    <p className="text-xs text-gray-500">
+                      まだ単語がありません。下の「JSON インポート」で追加してください。
+                    </p>
+                  ) : listWords.length === 0 ? (
+                    <p className="text-xs text-gray-500">条件に一致する単語がありません。</p>
+                  ) : (
+                    <div className="mt-2 max-h-[320px] overflow-auto rounded-xl border">
+                      <div className="min-w-[520px]">
+                        <div className="grid grid-cols-[72px_70px_1fr_1fr_160px] gap-2 px-3 py-2 text-[11px] text-gray-500 bg-gray-50 border-b">
+                          <div>No</div>
+                          <div>品詞</div>
+                          <div>英単語</div>
+                          <div>意味</div>
+                          <div className="text-right">操作</div>
+                        </div>
+
+                        {listWords.map((w) => (
+                          <div
+                            key={w.id}
+                            className="grid grid-cols-[72px_70px_1fr_1fr_160px] gap-2 px-3 py-2 text-xs items-center border-b last:border-b-0"
+                          >
+                            <div className="text-gray-500">No.{w.no}</div>
+                            <div className="text-gray-600">{w.pos || "-"}</div>
+                            <div className="font-medium">
+                              <span className={w.struck ? "line-through" : ""}>
+                                {w.word}
+                              </span>
+                            </div>
+                            <div className="text-gray-700">{w.meaning}</div>
+                            <div className="flex justify-end gap-1">
+                              <button
+                                type="button"
+                                onClick={() => toggleWordMarked(currentFolder.id, w.id)}
+                                className={
+                                  "text-[11px] rounded-lg border px-2 py-1 " +
+                                  (w.marked
+                                    ? "bg-yellow-100 border-yellow-400"
+                                    : "hover:bg-gray-50")
+                                }
+                              >
+                                {w.marked ? "マーク解除" : "マーク"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => toggleWordStruck(currentFolder.id, w.id)}
+                                className={
+                                  "text-[11px] rounded-lg border px-2 py-1 " +
+                                  (w.struck
+                                    ? "bg-gray-100 border-gray-400"
+                                    : "hover:bg-gray-50")
+                                }
+                              >
+                                {w.struck ? "線ON" : "取り消し線"}
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <p className="text-[11px] text-gray-500">
+                    ※ 一覧での変更（マーク/取り消し線）は、学習カードにも即反映されます。
+                  </p>
+                </>
+              )}
             </div>
 
             {/* JSON インポート */}
             <div className="rounded-xl border bg-gray-50 px-3 py-3 space-y-2">
               <div className="flex items-center justify-between gap-2">
-                <h3 className="text-xs font-semibold text-gray-700">
-                  JSON インポート
-                </h3>
+                <h3 className="text-xs font-semibold text-gray-700">JSON インポート</h3>
                 <span className="text-[11px] text-gray-500">
                   インポートすると、このフォルダの単語は置き換えられます。
                 </span>
@@ -596,9 +747,7 @@ export default function SapuriWordbook() {
 
             {/* 学習モード選択 */}
             <div className="rounded-xl border bg-white px-3 py-3 space-y-2">
-              <h3 className="text-xs font-semibold text-gray-700 mb-1">
-                学習モード
-              </h3>
+              <h3 className="text-xs font-semibold text-gray-700 mb-1">学習モード</h3>
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
@@ -695,7 +844,7 @@ export default function SapuriWordbook() {
                     No.{currentSessionWord.no}
                   </div>
 
-                  {/* ★ 取り消し線ボタン */}
+                  {/* 取り消し線ボタン */}
                   <div className="flex justify-center gap-2">
                     <button
                       type="button"
@@ -716,18 +865,12 @@ export default function SapuriWordbook() {
                     {currentSessionWord.pos ? (
                       <>
                         <span>{currentSessionWord.pos} </span>
-                        <span
-                          className={
-                            currentSessionWord.struck ? "line-through" : ""
-                          }
-                        >
+                        <span className={currentSessionWord.struck ? "line-through" : ""}>
                           {currentSessionWord.word}
                         </span>
                       </>
                     ) : (
-                      <span
-                        className={currentSessionWord.struck ? "line-through" : ""}
-                      >
+                      <span className={currentSessionWord.struck ? "line-through" : ""}>
                         {currentSessionWord.word}
                       </span>
                     )}
@@ -792,8 +935,7 @@ export default function SapuriWordbook() {
                 {/* 途中の正解率 */}
                 {answeredCount > 0 && (
                   <div className="mt-2 text-center text-xs text-gray-500">
-                    現在の正解率：{accuracy}%（
-                    {session.correctCount}/{answeredCount}）
+                    現在の正解率：{accuracy}%（{session.correctCount}/{answeredCount}）
                   </div>
                 )}
               </div>
