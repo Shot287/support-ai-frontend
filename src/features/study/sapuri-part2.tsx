@@ -10,32 +10,23 @@ type ChoiceKey = "A" | "B" | "C";
 
 type Choice = {
   key: ChoiceKey;
-  text?: string; // 任意（表示用）
-  ja?: string; // 任意（表示用）
-  audioUrl?: string; // 例: "/audio/part2/q001_A.mp3" など
+  text?: string; // 英文（読み上げ対象）
+  ja?: string; // 日本語（表示のみ）
+  audioUrl?: string; // 今後使わないが互換のため残す
 };
 
 type Part2Question = {
   id: ID;
 
-  // 表示テキスト（音声だけで運用するなら空でもOK）
-  qText?: string;
-  qJa?: string;
+  qText?: string; // 英文（読み上げ対象）
+  qJa?: string; // 日本語（表示のみ）
 
-  // 問題音声（必須推奨）
-  qAudioUrl?: string;
-
-  // 選択肢（A/B/C）
+  qAudioUrl?: string; // 今後使わないが互換のため残す
   choices: Choice[];
 
-  // 正解
   correct: ChoiceKey;
-
-  // 解説
   explanation?: string;
-
-  // 任意メタ
-  speaker?: { q?: string; a?: string }; // 例: { q:"イギリス", a:"オーストラリア" }
+  speaker?: { q?: string; a?: string };
 };
 
 type StoreV1 = {
@@ -75,7 +66,6 @@ function normalizeChoiceKey(k: any): ChoiceKey | null {
 }
 
 function migrate(raw: any): StoreV1 {
-  // v1のみ（将来version増えたらここに足す）
   const base: StoreV1 = {
     version: 1,
     updatedAt: Date.now(),
@@ -92,6 +82,7 @@ function migrate(raw: any): StoreV1 {
     .map((q: any) => {
       const id = typeof q.id === "string" && q.id ? q.id : uid();
       const correct = normalizeChoiceKey(q.correct) ?? "A";
+
       const choicesRaw = Array.isArray(q.choices) ? q.choices : [];
       const choices: Choice[] = choicesRaw
         .map((c: any) => {
@@ -99,8 +90,7 @@ function migrate(raw: any): StoreV1 {
           if (!key) return null;
           const text = typeof c.text === "string" ? c.text : undefined;
           const ja = typeof c.ja === "string" ? c.ja : undefined;
-          const audioUrl =
-            typeof c.audioUrl === "string" ? c.audioUrl : undefined;
+          const audioUrl = typeof c.audioUrl === "string" ? c.audioUrl : undefined;
           return { key, text, ja, audioUrl } as Choice;
         })
         .filter(Boolean) as Choice[];
@@ -116,29 +106,23 @@ function migrate(raw: any): StoreV1 {
         id,
         qText: typeof q.qText === "string" ? q.qText : undefined,
         qJa: typeof q.qJa === "string" ? q.qJa : undefined,
-        qAudioUrl:
-          typeof q.qAudioUrl === "string" ? q.qAudioUrl : undefined,
+        qAudioUrl: typeof q.qAudioUrl === "string" ? q.qAudioUrl : undefined, // 互換用
         choices: (["A", "B", "C"] as ChoiceKey[]).map((k) => byKey.get(k)!),
         correct,
-        explanation:
-          typeof q.explanation === "string" ? q.explanation : undefined,
+        explanation: typeof q.explanation === "string" ? q.explanation : undefined,
         speaker:
           q.speaker && typeof q.speaker === "object"
             ? {
-                q:
-                  typeof q.speaker.q === "string" ? q.speaker.q : undefined,
-                a:
-                  typeof q.speaker.a === "string" ? q.speaker.a : undefined,
+                q: typeof q.speaker.q === "string" ? q.speaker.q : undefined,
+                a: typeof q.speaker.a === "string" ? q.speaker.a : undefined,
               }
             : undefined,
       } as Part2Question;
     })
     .filter(Boolean);
 
-  const settings =
-    raw.settings && typeof raw.settings === "object" ? raw.settings : {};
-  const progress =
-    raw.progress && typeof raw.progress === "object" ? raw.progress : {};
+  const settings = raw.settings && typeof raw.settings === "object" ? raw.settings : {};
+  const progress = raw.progress && typeof raw.progress === "object" ? raw.progress : {};
 
   const merged: StoreV1 = {
     version: 1,
@@ -150,24 +134,16 @@ function migrate(raw: any): StoreV1 {
           ? settings.autoplaySequence
           : base.settings.autoplaySequence,
       showText:
-        typeof settings.showText === "boolean"
-          ? settings.showText
-          : base.settings.showText,
+        typeof settings.showText === "boolean" ? settings.showText : base.settings.showText,
     },
     progress: {
       currentIndex:
-        typeof progress.currentIndex === "number"
-          ? Math.max(0, progress.currentIndex)
-          : 0,
+        typeof progress.currentIndex === "number" ? Math.max(0, progress.currentIndex) : 0,
       lastAnswered:
         progress.lastAnswered && typeof progress.lastAnswered === "object"
           ? {
-              qid:
-                typeof progress.lastAnswered.qid === "string"
-                  ? progress.lastAnswered.qid
-                  : "",
-              selected: (normalizeChoiceKey(progress.lastAnswered.selected) ??
-                "A") as ChoiceKey,
+              qid: typeof progress.lastAnswered.qid === "string" ? progress.lastAnswered.qid : "",
+              selected: (normalizeChoiceKey(progress.lastAnswered.selected) ?? "A") as ChoiceKey,
               correct: !!progress.lastAnswered.correct,
               answeredAt:
                 typeof progress.lastAnswered.answeredAt === "number"
@@ -178,13 +154,8 @@ function migrate(raw: any): StoreV1 {
     },
   };
 
-  // currentIndexが範囲外なら丸める
   if (merged.questions.length === 0) merged.progress.currentIndex = 0;
-  else
-    merged.progress.currentIndex = Math.min(
-      merged.progress.currentIndex,
-      merged.questions.length - 1
-    );
+  else merged.progress.currentIndex = Math.min(merged.progress.currentIndex, merged.questions.length - 1);
 
   return merged;
 }
@@ -207,52 +178,22 @@ function saveLocal(store: StoreV1) {
   }
 }
 
-async function playUrl(
-  url: string,
-  audioRef: React.MutableRefObject<HTMLAudioElement | null>
-) {
-  if (!url) return;
-  const a = audioRef.current ?? new Audio();
-  audioRef.current = a;
-
-  // 前の再生を止める
-  try {
-    a.pause();
-    a.currentTime = 0;
-  } catch {}
-
-  return new Promise<void>((resolve, reject) => {
-    a.onended = () => resolve();
-    a.onerror = () => reject(new Error("audio error"));
-    a.src = url;
-    a.play().catch(reject);
-  });
-}
-
-function isLikelyEnglish(s: string) {
-  // 雑判定：ASCII比率がそこそこ高いなら英語扱い
-  const ascii = (s.match(/[\x00-\x7F]/g) ?? []).length;
-  return s.length > 0 && ascii / s.length > 0.6;
-}
-
-async function speakText(text: string, langHint?: "en" | "ja") {
+/** ✅ 英文のみ読み上げ（Web Speech API） */
+async function speakEnglish(text: string) {
   if (typeof window === "undefined") return;
+
   const synth = window.speechSynthesis;
   if (!synth || typeof SpeechSynthesisUtterance === "undefined") {
     throw new Error("speechSynthesis not supported");
   }
 
-  // 既存キュー停止
+  // いったん停止してから読み上げ
   try {
     synth.cancel();
   } catch {}
 
   const u = new SpeechSynthesisUtterance(text);
-
-  const lang =
-    langHint ??
-    (isLikelyEnglish(text) ? "en" : "ja"); // ざっくり英/日切替
-  u.lang = lang === "en" ? "en-US" : "ja-JP";
+  u.lang = "en-US";
 
   return new Promise<void>((resolve, reject) => {
     u.onend = () => resolve();
@@ -272,8 +213,6 @@ export default function SapuriPart2() {
   });
   const storeRef = useRef(store);
 
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-
   const q = useMemo(() => {
     const list = store.questions;
     if (!list.length) return null;
@@ -282,10 +221,7 @@ export default function SapuriPart2() {
   }, [store.questions, store.progress.currentIndex]);
 
   const [selected, setSelected] = useState<ChoiceKey | null>(null);
-  const [result, setResult] = useState<null | {
-    correct: boolean;
-    correctKey: ChoiceKey;
-  }>(null);
+  const [result, setResult] = useState<null | { correct: boolean; correctKey: ChoiceKey }>(null);
   const [busy, setBusy] = useState(false);
 
   // ✅ ペースト用UI
@@ -374,16 +310,10 @@ export default function SapuriPart2() {
     };
   }, []);
 
-  // 問題切り替え時に表示状態をリセット
+  // 問題切り替え時に表示状態をリセット + TTS停止
   useEffect(() => {
     setSelected(null);
     setResult(null);
-
-    // 再生中の音声を止める（Audio/TTS）
-    try {
-      audioRef.current?.pause();
-      if (audioRef.current) audioRef.current.currentTime = 0;
-    } catch {}
     try {
       window.speechSynthesis?.cancel();
     } catch {}
@@ -391,37 +321,21 @@ export default function SapuriPart2() {
 
   const canPlay = !!q;
 
-  // ✅ audioUrlが無い場合はTTSで読み上げる
+  // ✅ 今後は「英文のみ」読み上げ（audioUrl/qAudioUrl は完全無視）
   const playQuestion = async () => {
     if (!q) return;
-
-    // まず音声ファイルがあるならそれを使う
-    if (q.qAudioUrl) {
-      await playUrl(q.qAudioUrl, audioRef);
-      return;
-    }
-
-    // 無いならテキスト読み上げ（英→無ければ日）
-    const t = q.qText?.trim() || q.qJa?.trim() || "";
+    const t = q.qText?.trim() || "";
     if (!t) return;
-
-    await speakText(t, q.qText ? "en" : "ja");
+    await speakEnglish(t);
   };
 
   const playChoiceAny = async (key: ChoiceKey) => {
     if (!q) return;
     const c = q.choices.find((x) => x.key === key);
     if (!c) return;
-
-    if (c.audioUrl) {
-      await playUrl(c.audioUrl, audioRef);
-      return;
-    }
-
-    const t = c.text?.trim() || c.ja?.trim() || "";
+    const t = c.text?.trim() || "";
     if (!t) return;
-
-    await speakText(t, c.text ? "en" : "ja");
+    await speakEnglish(t);
   };
 
   const playSequence = async () => {
@@ -489,22 +403,14 @@ export default function SapuriPart2() {
       const n = prev.questions.length;
       if (!n) return prev;
       const ni = Math.min(prev.progress.currentIndex + 1, n - 1);
-      return {
-        ...prev,
-        updatedAt: Date.now(),
-        progress: { ...prev.progress, currentIndex: ni },
-      };
+      return { ...prev, updatedAt: Date.now(), progress: { ...prev.progress, currentIndex: ni } };
     });
   };
 
   const prevQ = () => {
     setStore((prev) => {
       const ni = Math.max(prev.progress.currentIndex - 1, 0);
-      return {
-        ...prev,
-        updatedAt: Date.now(),
-        progress: { ...prev.progress, currentIndex: ni },
-      };
+      return { ...prev, updatedAt: Date.now(), progress: { ...prev.progress, currentIndex: ni } };
     });
   };
 
@@ -516,12 +422,8 @@ export default function SapuriPart2() {
     }));
   };
 
-  // ✅ 共通：JSON → questions を取り込む（file/importText 両方で使用）
   const applyImported = (parsed: any) => {
-    const incoming = Array.isArray(parsed)
-      ? { version: 1, questions: parsed }
-      : parsed;
-
+    const incoming = Array.isArray(parsed) ? { version: 1, questions: parsed } : parsed;
     const m = migrate(incoming);
 
     setStore((prev) => ({
@@ -556,16 +458,14 @@ export default function SapuriPart2() {
       applyImported(parsed);
       setImportError(null);
       setImportText("");
-    } catch (e: any) {
+    } catch (e) {
       setImportError("JSONの解析に失敗しました（カンマ/括弧/引用符などを確認）。");
       console.warn(e);
     }
   };
 
   const exportJson = () => {
-    const blob = new Blob([JSON.stringify(store, null, 2)], {
-      type: "application/json",
-    });
+    const blob = new Blob([JSON.stringify(store, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -597,7 +497,6 @@ export default function SapuriPart2() {
         </div>
       </div>
 
-      {/* ✅ ペーストインポート */}
       <div className="rounded border p-3 space-y-2">
         <div className="text-sm font-semibold">JSONをペーストしてインポート</div>
         <textarea
@@ -621,23 +520,15 @@ export default function SapuriPart2() {
           >
             クリア
           </button>
-          {importError && (
-            <div className="text-sm text-red-700">{importError}</div>
-          )}
+          {importError && <div className="text-sm text-red-700">{importError}</div>}
         </div>
       </div>
 
       <div className="rounded border p-3 text-sm flex flex-wrap gap-3 items-center">
-        <button
-          className="px-3 py-1 rounded border"
-          onClick={() => toggle("autoplaySequence")}
-        >
+        <button className="px-3 py-1 rounded border" onClick={() => toggle("autoplaySequence")}>
           自動再生: {store.settings.autoplaySequence ? "ON" : "OFF"}
         </button>
-        <button
-          className="px-3 py-1 rounded border"
-          onClick={() => toggle("showText")}
-        >
+        <button className="px-3 py-1 rounded border" onClick={() => toggle("showText")}>
           テキスト表示: {store.settings.showText ? "ON" : "OFF"}
         </button>
         <div className="ml-auto text-gray-600">
@@ -656,21 +547,13 @@ export default function SapuriPart2() {
               else playQuestionOnly();
             }}
           >
-            ▶ 再生（問題{store.settings.autoplaySequence ? "→ABC" : ""}）
+            ▶ 再生（英文のみ{store.settings.autoplaySequence ? "：問題→ABC" : ""}）
           </button>
 
-          <button
-            className="px-3 py-2 rounded border disabled:opacity-50"
-            disabled={!q || busy}
-            onClick={prevQ}
-          >
+          <button className="px-3 py-2 rounded border disabled:opacity-50" disabled={!q || busy} onClick={prevQ}>
             ← 前へ
           </button>
-          <button
-            className="px-3 py-2 rounded border disabled:opacity-50"
-            disabled={!q || busy}
-            onClick={next}
-          >
+          <button className="px-3 py-2 rounded border disabled:opacity-50" disabled={!q || busy} onClick={next}>
             次へ →
           </button>
         </div>
@@ -695,32 +578,22 @@ export default function SapuriPart2() {
               const isSel = selected === c.key;
               const isCorrect = result && c.key === result.correctKey;
 
-              // ✅ 音声URLが無くても、text/jaがあれば読み上げ可能
-              const canSpeak = !!(c.audioUrl || c.text || c.ja);
+              // ✅ 英文(text)がある時だけ読み上げボタンを有効化
+              const canSpeakEnglish = !!(c.text && c.text.trim().length > 0);
 
               return (
                 <div key={c.key} className="rounded border p-3">
                   <div className="flex items-center gap-2 flex-wrap">
                     <button
                       className="px-3 py-1 rounded border disabled:opacity-50"
-                      disabled={busy || !canSpeak}
+                      disabled={busy || !canSpeakEnglish}
                       onClick={() => playChoice(c.key)}
-                      title={
-                        c.audioUrl
-                          ? "選択肢音声を再生（ファイル）"
-                          : canSpeak
-                          ? "選択肢を読み上げ（TTS）"
-                          : "text/ja/audioUrl がありません"
-                      }
+                      title={canSpeakEnglish ? "英文を読み上げ（TTS）" : "英文(text)がありません"}
                     >
                       🔊 {c.key}
                     </button>
 
-                    <button
-                      className="px-3 py-1 rounded border"
-                      onClick={() => answer(c.key)}
-                      disabled={busy}
-                    >
+                    <button className="px-3 py-1 rounded border" onClick={() => answer(c.key)} disabled={busy}>
                       選択
                     </button>
 
@@ -731,28 +604,18 @@ export default function SapuriPart2() {
                         ) : (
                           <span className="text-gray-400">(textなし)</span>
                         )}
-                        {c.ja ? (
-                          <span className="text-gray-700">　/　{c.ja}</span>
-                        ) : null}
+                        {c.ja ? <span className="text-gray-700">　/　{c.ja}</span> : null}
                       </div>
                     )}
 
                     {result && (
                       <div className="ml-auto text-sm">
                         {isSel && (
-                          <span
-                            className={
-                              result.correct ? "text-green-700" : "text-red-700"
-                            }
-                          >
+                          <span className={result.correct ? "text-green-700" : "text-red-700"}>
                             {result.correct ? "正解" : "不正解"}
                           </span>
                         )}
-                        {isCorrect && (
-                          <span className="ml-2 text-green-700">
-                            ← 正解 {result.correctKey}
-                          </span>
-                        )}
+                        {isCorrect && <span className="ml-2 text-green-700">← 正解 {result.correctKey}</span>}
                       </div>
                     )}
                   </div>
@@ -767,17 +630,12 @@ export default function SapuriPart2() {
             <div className="text-sm">
               あなたの解答: <b>{selected}</b> / 正解: <b>{result.correctKey}</b>
             </div>
-            {q.explanation && (
-              <div className="text-sm text-gray-800 whitespace-pre-wrap">
-                {q.explanation}
-              </div>
-            )}
+            {q.explanation && <div className="text-sm text-gray-800 whitespace-pre-wrap">{q.explanation}</div>}
           </div>
         )}
 
-        {/* TTSが使えないブラウザ向けの注意（表示だけ） */}
         <div className="text-xs text-gray-500">
-          ※ 音声ファイルが無い場合はブラウザの読み上げ機能（TTS）を使用します。iOSの一部環境などで動かない場合があります。
+          ※ 音声ファイルは使用しません。読み上げはブラウザのTTS（英文のみ）です。
         </div>
       </div>
     </div>
