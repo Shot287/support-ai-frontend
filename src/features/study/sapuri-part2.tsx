@@ -183,7 +183,6 @@ async function speakEnglish(text: string) {
     throw new Error("speechSynthesis not supported");
   }
 
-  // いったん停止してから読み上げ
   try {
     synth.cancel();
   } catch {}
@@ -203,8 +202,13 @@ async function speakEnglish(text: string) {
 }
 
 function labelSpeakText(key: ChoiceKey, english: string) {
-  // 「A」→英文（より自然にするため "A." を使う）
   return `${key}. ${english}`;
+}
+
+function normQuestionKey(qText?: string) {
+  // 重複排除用キー：空白正規化＋lower（英文が無い場合は空）
+  const s = (qText ?? "").trim().replace(/\s+/g, " ");
+  return s.toLowerCase();
 }
 
 export default function SapuriPart2() {
@@ -228,6 +232,10 @@ export default function SapuriPart2() {
   // ✅ ペースト用UI
   const [importText, setImportText] = useState("");
   const [importError, setImportError] = useState<string | null>(null);
+  const [importInfo, setImportInfo] = useState<string | null>(null);
+
+  // ✅ 一覧 表示
+  const [showList, setShowList] = useState(true);
 
   // ローカルへ即時保存（サーバ保存はしない）
   useEffect(() => {
@@ -335,8 +343,6 @@ export default function SapuriPart2() {
     if (!c) return;
     const t = c.text?.trim() || "";
     if (!t) return;
-
-    // ✅ 「A」→英文 の形で読み上げ
     await speakEnglish(labelSpeakText(key, t));
   };
 
@@ -424,16 +430,85 @@ export default function SapuriPart2() {
     }));
   };
 
+  // ✅ 一覧からジャンプ
+  const goToIndex = (i: number) => {
+    setStore((prev) => {
+      const n = prev.questions.length;
+      if (!n) return prev;
+      const ni = Math.max(0, Math.min(i, n - 1));
+      return { ...prev, updatedAt: Date.now(), progress: { ...prev.progress, currentIndex: ni } };
+    });
+  };
+
+  // ✅ 一覧から削除（番号は自動で詰まる）
+  const deleteAt = (i: number) => {
+    setStore((prev) => {
+      const n = prev.questions.length;
+      if (i < 0 || i >= n) return prev;
+
+      const nextQuestions = prev.questions.slice();
+      const deleted = nextQuestions.splice(i, 1)[0];
+
+      let nextIndex = prev.progress.currentIndex;
+      // 削除位置が現在より前なら、現在位置を1つ戻す
+      if (i < nextIndex) nextIndex = Math.max(0, nextIndex - 1);
+      // 現在そのものを削除した場合、同じインデックスに次が来るが、末尾超えたら詰める
+      if (nextIndex >= nextQuestions.length) nextIndex = Math.max(0, nextQuestions.length - 1);
+
+      const lastAnswered =
+        prev.progress.lastAnswered?.qid && prev.progress.lastAnswered.qid === deleted?.id
+          ? undefined
+          : prev.progress.lastAnswered;
+
+      return {
+        ...prev,
+        updatedAt: Date.now(),
+        questions: nextQuestions,
+        progress: { ...prev.progress, currentIndex: nextIndex, lastAnswered },
+      };
+    });
+  };
+
+  // ✅ インポート：既存に「追記」＋ 同じ問題文(qText)を重複スキップ
   const applyImported = (parsed: any) => {
     const incoming = Array.isArray(parsed) ? { version: 1, questions: parsed } : parsed;
     const m = migrate(incoming);
 
-    setStore((prev) => ({
-      ...prev,
-      updatedAt: Date.now(),
-      questions: m.questions,
-      progress: { ...prev.progress, currentIndex: 0 },
-    }));
+    setStore((prev) => {
+      const existingKeys = new Set<string>();
+      for (const qq of prev.questions) {
+        const k = normQuestionKey(qq.qText);
+        if (k) existingKeys.add(k);
+      }
+
+      let added = 0;
+      let skipped = 0;
+      const mergedQuestions = prev.questions.slice();
+
+      for (const qq of m.questions) {
+        const k = normQuestionKey(qq.qText);
+        if (k && existingKeys.has(k)) {
+          skipped++;
+          continue;
+        }
+        if (k) existingKeys.add(k);
+        mergedQuestions.push(qq);
+        added++;
+      }
+
+      // currentIndexは基本維持（最初の導入時だけ0に）
+      const nextIndex =
+        prev.questions.length === 0 && mergedQuestions.length > 0 ? 0 : Math.min(prev.progress.currentIndex, Math.max(0, mergedQuestions.length - 1));
+
+      // 画面に結果表示
+      setImportInfo(`インポート完了：追加 ${added} 件 / 重複スキップ ${skipped} 件`);
+      return {
+        ...prev,
+        updatedAt: Date.now(),
+        questions: mergedQuestions,
+        progress: { ...prev.progress, currentIndex: nextIndex },
+      };
+    });
   };
 
   const onImportJson = async (file: File | null) => {
@@ -502,8 +577,80 @@ export default function SapuriPart2() {
         </div>
       </div>
 
+      {/* ✅ 追加：問題文だけの一覧（ジャンプ/削除） */}
       <div className="rounded border p-3 space-y-2">
-        <div className="text-sm font-semibold">JSONをペーストしてインポート</div>
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-sm font-semibold">問題一覧（英文のみ）</div>
+          <button className="px-3 py-1 rounded border text-sm" onClick={() => setShowList((v) => !v)}>
+            {showList ? "一覧を閉じる" : "一覧を開く"}
+          </button>
+        </div>
+
+        {showList && (
+          <div className="rounded border overflow-auto" style={{ maxHeight: 280 }}>
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 bg-white">
+                <tr className="border-b">
+                  <th className="p-2 text-left w-16">No</th>
+                  <th className="p-2 text-left">Question</th>
+                  <th className="p-2 text-left w-40">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {store.questions.length === 0 ? (
+                  <tr>
+                    <td className="p-2 text-gray-500" colSpan={3}>
+                      まだ問題がありません（JSONをインポートしてください）
+                    </td>
+                  </tr>
+                ) : (
+                  store.questions.map((qq, i) => {
+                    const active = i === store.progress.currentIndex;
+                    return (
+                      <tr key={qq.id} className={active ? "border-b bg-gray-50" : "border-b"}>
+                        <td className="p-2">{i + 1}</td>
+                        <td className="p-2">
+                          <div className="truncate" title={qq.qText ?? ""}>
+                            {qq.qText?.trim() ? qq.qText : <span className="text-gray-400">(qTextなし)</span>}
+                          </div>
+                        </td>
+                        <td className="p-2 flex gap-2">
+                          <button
+                            className="px-2 py-1 rounded border"
+                            onClick={() => goToIndex(i)}
+                            disabled={busy}
+                            title="この問題へ移動"
+                          >
+                            移動
+                          </button>
+                          <button
+                            className="px-2 py-1 rounded border"
+                            onClick={() => {
+                              if (confirm(`No.${i + 1} を削除しますか？`)) deleteAt(i);
+                            }}
+                            disabled={busy}
+                            title="この問題を削除"
+                          >
+                            削除
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        <div className="text-xs text-gray-500">
+          ※ 番号は「追加順（配列順）」で自動採番です。削除すると自動で詰まります。
+        </div>
+      </div>
+
+      {/* ✅ ペーストインポート */}
+      <div className="rounded border p-3 space-y-2">
+        <div className="text-sm font-semibold">JSONをペーストしてインポート（追記＋重複スキップ）</div>
         <textarea
           className="w-full rounded border p-2 text-sm font-mono"
           rows={6}
@@ -512,7 +659,7 @@ export default function SapuriPart2() {
           value={importText}
           onChange={(e) => setImportText(e.target.value)}
         />
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <button className="px-3 py-1 rounded border" onClick={importFromText}>
             ペーストインポート
           </button>
@@ -521,11 +668,13 @@ export default function SapuriPart2() {
             onClick={() => {
               setImportText("");
               setImportError(null);
+              setImportInfo(null);
             }}
           >
             クリア
           </button>
           {importError && <div className="text-sm text-red-700">{importError}</div>}
+          {importInfo && <div className="text-sm text-green-700">{importInfo}</div>}
         </div>
       </div>
 
@@ -566,8 +715,6 @@ export default function SapuriPart2() {
         {q && store.settings.showText && (
           <div className="space-y-1">
             {q.qText && <div className="text-base font-medium">{q.qText}</div>}
-
-            {/* ✅ 日本語訳は「選択後」にだけ表示 */}
             {showJapaneseNow && q.qJa && <div className="text-gray-700">{q.qJa}</div>}
 
             {(q.speaker?.q || q.speaker?.a) && (
@@ -578,9 +725,7 @@ export default function SapuriPart2() {
               </div>
             )}
 
-            {!showJapaneseNow && (
-              <div className="text-xs text-gray-500">※ 日本語訳は解答後に表示されます</div>
-            )}
+            {!showJapaneseNow && <div className="text-xs text-gray-500">※ 日本語訳は解答後に表示されます</div>}
           </div>
         )}
 
@@ -589,7 +734,6 @@ export default function SapuriPart2() {
             {q.choices.map((c) => {
               const isSel = selected === c.key;
               const isCorrect = result && c.key === result.correctKey;
-
               const canSpeakEnglish = !!(c.text && c.text.trim().length > 0);
 
               return (
@@ -610,10 +754,7 @@ export default function SapuriPart2() {
 
                     {store.settings.showText && (
                       <div className="text-sm">
-                        {/* 英文は常に表示（リスニングでも確認できる） */}
                         {c.text ? <span className="font-medium">{c.text}</span> : <span className="text-gray-400">(textなし)</span>}
-
-                        {/* ✅ 日本語訳は「選択後」にだけ表示 */}
                         {showJapaneseNow && c.ja ? <span className="text-gray-700">　/　{c.ja}</span> : null}
                       </div>
                     )}
@@ -640,8 +781,6 @@ export default function SapuriPart2() {
             <div className="text-sm">
               あなたの解答: <b>{selected}</b> / 正解: <b>{result.correctKey}</b>
             </div>
-
-            {/* ✅ 解説（日本語）は解答後なのでここはそのまま */}
             {q.explanation && <div className="text-sm text-gray-800 whitespace-pre-wrap">{q.explanation}</div>}
           </div>
         )}
