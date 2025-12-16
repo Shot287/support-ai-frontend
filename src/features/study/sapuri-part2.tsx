@@ -229,6 +229,42 @@ async function playUrl(
   });
 }
 
+function isLikelyEnglish(s: string) {
+  // 雑判定：ASCII比率がそこそこ高いなら英語扱い
+  const ascii = (s.match(/[\x00-\x7F]/g) ?? []).length;
+  return s.length > 0 && ascii / s.length > 0.6;
+}
+
+async function speakText(text: string, langHint?: "en" | "ja") {
+  if (typeof window === "undefined") return;
+  const synth = window.speechSynthesis;
+  if (!synth || typeof SpeechSynthesisUtterance === "undefined") {
+    throw new Error("speechSynthesis not supported");
+  }
+
+  // 既存キュー停止
+  try {
+    synth.cancel();
+  } catch {}
+
+  const u = new SpeechSynthesisUtterance(text);
+
+  const lang =
+    langHint ??
+    (isLikelyEnglish(text) ? "en" : "ja"); // ざっくり英/日切替
+  u.lang = lang === "en" ? "en-US" : "ja-JP";
+
+  return new Promise<void>((resolve, reject) => {
+    u.onend = () => resolve();
+    u.onerror = () => reject(new Error("tts error"));
+    try {
+      synth.speak(u);
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
 export default function SapuriPart2() {
   const [store, setStore] = useState<StoreV1>(() => {
     if (typeof window === "undefined") return migrate(null);
@@ -252,7 +288,7 @@ export default function SapuriPart2() {
   }>(null);
   const [busy, setBusy] = useState(false);
 
-  // ✅ 追加：ペースト用UI
+  // ✅ ペースト用UI
   const [importText, setImportText] = useState("");
   const [importError, setImportError] = useState<string | null>(null);
 
@@ -342,17 +378,59 @@ export default function SapuriPart2() {
   useEffect(() => {
     setSelected(null);
     setResult(null);
+
+    // 再生中の音声を止める（Audio/TTS）
+    try {
+      audioRef.current?.pause();
+      if (audioRef.current) audioRef.current.currentTime = 0;
+    } catch {}
+    try {
+      window.speechSynthesis?.cancel();
+    } catch {}
   }, [q?.id]);
 
   const canPlay = !!q;
+
+  // ✅ audioUrlが無い場合はTTSで読み上げる
+  const playQuestion = async () => {
+    if (!q) return;
+
+    // まず音声ファイルがあるならそれを使う
+    if (q.qAudioUrl) {
+      await playUrl(q.qAudioUrl, audioRef);
+      return;
+    }
+
+    // 無いならテキスト読み上げ（英→無ければ日）
+    const t = q.qText?.trim() || q.qJa?.trim() || "";
+    if (!t) return;
+
+    await speakText(t, q.qText ? "en" : "ja");
+  };
+
+  const playChoiceAny = async (key: ChoiceKey) => {
+    if (!q) return;
+    const c = q.choices.find((x) => x.key === key);
+    if (!c) return;
+
+    if (c.audioUrl) {
+      await playUrl(c.audioUrl, audioRef);
+      return;
+    }
+
+    const t = c.text?.trim() || c.ja?.trim() || "";
+    if (!t) return;
+
+    await speakText(t, c.text ? "en" : "ja");
+  };
 
   const playSequence = async () => {
     if (!q) return;
     setBusy(true);
     try {
-      if (q.qAudioUrl) await playUrl(q.qAudioUrl, audioRef);
+      await playQuestion();
       for (const c of q.choices) {
-        if (c.audioUrl) await playUrl(c.audioUrl, audioRef);
+        await playChoiceAny(c.key);
       }
     } catch (e) {
       console.warn("playSequence failed:", e);
@@ -362,10 +440,10 @@ export default function SapuriPart2() {
   };
 
   const playQuestionOnly = async () => {
-    if (!q?.qAudioUrl) return;
+    if (!q) return;
     setBusy(true);
     try {
-      await playUrl(q.qAudioUrl, audioRef);
+      await playQuestion();
     } catch (e) {
       console.warn("playQuestionOnly failed:", e);
     } finally {
@@ -375,11 +453,9 @@ export default function SapuriPart2() {
 
   const playChoice = async (key: ChoiceKey) => {
     if (!q) return;
-    const c = q.choices.find((x) => x.key === key);
-    if (!c?.audioUrl) return;
     setBusy(true);
     try {
-      await playUrl(c.audioUrl, audioRef);
+      await playChoiceAny(key);
     } catch (e) {
       console.warn("playChoice failed:", e);
     } finally {
@@ -442,7 +518,6 @@ export default function SapuriPart2() {
 
   // ✅ 共通：JSON → questions を取り込む（file/importText 両方で使用）
   const applyImported = (parsed: any) => {
-    // 期待: { version:1, questions:[...] } または questions配列単体
     const incoming = Array.isArray(parsed)
       ? { version: 1, questions: parsed }
       : parsed;
@@ -470,7 +545,6 @@ export default function SapuriPart2() {
     }
   };
 
-  // ✅ 追加：ペースト文字列インポート
   const importFromText = () => {
     const raw = importText.trim();
     if (!raw) {
@@ -523,7 +597,7 @@ export default function SapuriPart2() {
         </div>
       </div>
 
-      {/* ✅ 追加：ペーストインポート */}
+      {/* ✅ ペーストインポート */}
       <div className="rounded border p-3 space-y-2">
         <div className="text-sm font-semibold">JSONをペーストしてインポート</div>
         <textarea
@@ -620,14 +694,24 @@ export default function SapuriPart2() {
             {q.choices.map((c) => {
               const isSel = selected === c.key;
               const isCorrect = result && c.key === result.correctKey;
+
+              // ✅ 音声URLが無くても、text/jaがあれば読み上げ可能
+              const canSpeak = !!(c.audioUrl || c.text || c.ja);
+
               return (
                 <div key={c.key} className="rounded border p-3">
                   <div className="flex items-center gap-2 flex-wrap">
                     <button
                       className="px-3 py-1 rounded border disabled:opacity-50"
-                      disabled={busy || !c.audioUrl}
+                      disabled={busy || !canSpeak}
                       onClick={() => playChoice(c.key)}
-                      title={c.audioUrl ? "選択肢音声を再生" : "audioUrl未設定"}
+                      title={
+                        c.audioUrl
+                          ? "選択肢音声を再生（ファイル）"
+                          : canSpeak
+                          ? "選択肢を読み上げ（TTS）"
+                          : "text/ja/audioUrl がありません"
+                      }
                     >
                       🔊 {c.key}
                     </button>
@@ -690,6 +774,11 @@ export default function SapuriPart2() {
             )}
           </div>
         )}
+
+        {/* TTSが使えないブラウザ向けの注意（表示だけ） */}
+        <div className="text-xs text-gray-500">
+          ※ 音声ファイルが無い場合はブラウザの読み上げ機能（TTS）を使用します。iOSの一部環境などで動かない場合があります。
+        </div>
       </div>
     </div>
   );
