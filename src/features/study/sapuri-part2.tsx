@@ -11,19 +11,16 @@ type ChoiceKey = "A" | "B" | "C";
 type Choice = {
   key: ChoiceKey;
   text?: string; // 英文（読み上げ対象）
-  ja?: string; // 日本語（表示のみ）
-  audioUrl?: string; // 今後使わないが互換のため残す
+  ja?: string; // 日本語（選択後に表示）
+  audioUrl?: string; // 互換用（使わない）
 };
 
 type Part2Question = {
   id: ID;
-
   qText?: string; // 英文（読み上げ対象）
-  qJa?: string; // 日本語（表示のみ）
-
-  qAudioUrl?: string; // 今後使わないが互換のため残す
+  qJa?: string; // 日本語（選択後に表示）
+  qAudioUrl?: string; // 互換用（使わない）
   choices: Choice[];
-
   correct: ChoiceKey;
   explanation?: string;
   speaker?: { q?: string; a?: string };
@@ -35,10 +32,10 @@ type StoreV1 = {
   questions: Part2Question[];
   settings: {
     autoplaySequence: boolean; // 問題→A→B→C を自動再生
-    showText: boolean; // 英日テキストを表示する
+    showText: boolean; // 英文を表示する（日本語は選択後のみ）
   };
   progress: {
-    currentIndex: number; // 0-based
+    currentIndex: number;
     lastAnswered?: {
       qid: ID;
       selected: ChoiceKey;
@@ -133,8 +130,7 @@ function migrate(raw: any): StoreV1 {
         typeof settings.autoplaySequence === "boolean"
           ? settings.autoplaySequence
           : base.settings.autoplaySequence,
-      showText:
-        typeof settings.showText === "boolean" ? settings.showText : base.settings.showText,
+      showText: typeof settings.showText === "boolean" ? settings.showText : base.settings.showText,
     },
     progress: {
       currentIndex:
@@ -204,6 +200,11 @@ async function speakEnglish(text: string) {
       reject(e);
     }
   });
+}
+
+function labelSpeakText(key: ChoiceKey, english: string) {
+  // 「A」→英文（より自然にするため "A." を使う）
+  return `${key}. ${english}`;
 }
 
 export default function SapuriPart2() {
@@ -321,7 +322,6 @@ export default function SapuriPart2() {
 
   const canPlay = !!q;
 
-  // ✅ 今後は「英文のみ」読み上げ（audioUrl/qAudioUrl は完全無視）
   const playQuestion = async () => {
     if (!q) return;
     const t = q.qText?.trim() || "";
@@ -335,7 +335,9 @@ export default function SapuriPart2() {
     if (!c) return;
     const t = c.text?.trim() || "";
     if (!t) return;
-    await speakEnglish(t);
+
+    // ✅ 「A」→英文 の形で読み上げ
+    await speakEnglish(labelSpeakText(key, t));
   };
 
   const playSequence = async () => {
@@ -477,6 +479,9 @@ export default function SapuriPart2() {
   const total = store.questions.length;
   const idx = total ? store.progress.currentIndex + 1 : 0;
 
+  // ✅ 選択前は日本語を隠す（リスニング用）
+  const showJapaneseNow = !!selected;
+
   return (
     <div className="mx-auto max-w-3xl p-4 space-y-4">
       <div className="flex items-center justify-between gap-3">
@@ -547,7 +552,7 @@ export default function SapuriPart2() {
               else playQuestionOnly();
             }}
           >
-            ▶ 再生（英文のみ{store.settings.autoplaySequence ? "：問題→ABC" : ""}）
+            ▶ 再生（問題{store.settings.autoplaySequence ? "→A→B→C" : ""}）
           </button>
 
           <button className="px-3 py-2 rounded border disabled:opacity-50" disabled={!q || busy} onClick={prevQ}>
@@ -561,13 +566,20 @@ export default function SapuriPart2() {
         {q && store.settings.showText && (
           <div className="space-y-1">
             {q.qText && <div className="text-base font-medium">{q.qText}</div>}
-            {q.qJa && <div className="text-gray-700">{q.qJa}</div>}
+
+            {/* ✅ 日本語訳は「選択後」にだけ表示 */}
+            {showJapaneseNow && q.qJa && <div className="text-gray-700">{q.qJa}</div>}
+
             {(q.speaker?.q || q.speaker?.a) && (
               <div className="text-xs text-gray-500">
                 {q.speaker?.q ? `Q: ${q.speaker.q}` : ""}
                 {q.speaker?.q && q.speaker?.a ? " / " : ""}
                 {q.speaker?.a ? `A: ${q.speaker.a}` : ""}
               </div>
+            )}
+
+            {!showJapaneseNow && (
+              <div className="text-xs text-gray-500">※ 日本語訳は解答後に表示されます</div>
             )}
           </div>
         )}
@@ -578,7 +590,6 @@ export default function SapuriPart2() {
               const isSel = selected === c.key;
               const isCorrect = result && c.key === result.correctKey;
 
-              // ✅ 英文(text)がある時だけ読み上げボタンを有効化
               const canSpeakEnglish = !!(c.text && c.text.trim().length > 0);
 
               return (
@@ -588,7 +599,7 @@ export default function SapuriPart2() {
                       className="px-3 py-1 rounded border disabled:opacity-50"
                       disabled={busy || !canSpeakEnglish}
                       onClick={() => playChoice(c.key)}
-                      title={canSpeakEnglish ? "英文を読み上げ（TTS）" : "英文(text)がありません"}
+                      title={canSpeakEnglish ? "「A」→英文 を読み上げ（TTS）" : "英文(text)がありません"}
                     >
                       🔊 {c.key}
                     </button>
@@ -599,12 +610,11 @@ export default function SapuriPart2() {
 
                     {store.settings.showText && (
                       <div className="text-sm">
-                        {c.text ? (
-                          <span className="font-medium">{c.text}</span>
-                        ) : (
-                          <span className="text-gray-400">(textなし)</span>
-                        )}
-                        {c.ja ? <span className="text-gray-700">　/　{c.ja}</span> : null}
+                        {/* 英文は常に表示（リスニングでも確認できる） */}
+                        {c.text ? <span className="font-medium">{c.text}</span> : <span className="text-gray-400">(textなし)</span>}
+
+                        {/* ✅ 日本語訳は「選択後」にだけ表示 */}
+                        {showJapaneseNow && c.ja ? <span className="text-gray-700">　/　{c.ja}</span> : null}
                       </div>
                     )}
 
@@ -630,12 +640,14 @@ export default function SapuriPart2() {
             <div className="text-sm">
               あなたの解答: <b>{selected}</b> / 正解: <b>{result.correctKey}</b>
             </div>
+
+            {/* ✅ 解説（日本語）は解答後なのでここはそのまま */}
             {q.explanation && <div className="text-sm text-gray-800 whitespace-pre-wrap">{q.explanation}</div>}
           </div>
         )}
 
         <div className="text-xs text-gray-500">
-          ※ 音声ファイルは使用しません。読み上げはブラウザのTTS（英文のみ）です。
+          ※ 音声ファイルは使用しません。読み上げはブラウザのTTS（英文＋A/B/Cラベル）です。
         </div>
       </div>
     </div>
