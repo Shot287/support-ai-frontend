@@ -10,8 +10,8 @@ type ChoiceKey = "A" | "B" | "C";
 
 type Choice = {
   key: ChoiceKey;
-  text?: string;   // 任意（表示用）
-  ja?: string;     // 任意（表示用）
+  text?: string; // 任意（表示用）
+  ja?: string; // 任意（表示用）
   audioUrl?: string; // 例: "/audio/part2/q001_A.mp3" など
 };
 
@@ -44,7 +44,7 @@ type StoreV1 = {
   questions: Part2Question[];
   settings: {
     autoplaySequence: boolean; // 問題→A→B→C を自動再生
-    showText: boolean;         // 英日テキストを表示する
+    showText: boolean; // 英日テキストを表示する
   };
   progress: {
     currentIndex: number; // 0-based
@@ -99,7 +99,8 @@ function migrate(raw: any): StoreV1 {
           if (!key) return null;
           const text = typeof c.text === "string" ? c.text : undefined;
           const ja = typeof c.ja === "string" ? c.ja : undefined;
-          const audioUrl = typeof c.audioUrl === "string" ? c.audioUrl : undefined;
+          const audioUrl =
+            typeof c.audioUrl === "string" ? c.audioUrl : undefined;
           return { key, text, ja, audioUrl } as Choice;
         })
         .filter(Boolean) as Choice[];
@@ -115,41 +116,63 @@ function migrate(raw: any): StoreV1 {
         id,
         qText: typeof q.qText === "string" ? q.qText : undefined,
         qJa: typeof q.qJa === "string" ? q.qJa : undefined,
-        qAudioUrl: typeof q.qAudioUrl === "string" ? q.qAudioUrl : undefined,
+        qAudioUrl:
+          typeof q.qAudioUrl === "string" ? q.qAudioUrl : undefined,
         choices: (["A", "B", "C"] as ChoiceKey[]).map((k) => byKey.get(k)!),
         correct,
-        explanation: typeof q.explanation === "string" ? q.explanation : undefined,
+        explanation:
+          typeof q.explanation === "string" ? q.explanation : undefined,
         speaker:
           q.speaker && typeof q.speaker === "object"
             ? {
-                q: typeof q.speaker.q === "string" ? q.speaker.q : undefined,
-                a: typeof q.speaker.a === "string" ? q.speaker.a : undefined,
+                q:
+                  typeof q.speaker.q === "string" ? q.speaker.q : undefined,
+                a:
+                  typeof q.speaker.a === "string" ? q.speaker.a : undefined,
               }
             : undefined,
       } as Part2Question;
     })
     .filter(Boolean);
 
-  const settings = raw.settings && typeof raw.settings === "object" ? raw.settings : {};
-  const progress = raw.progress && typeof raw.progress === "object" ? raw.progress : {};
+  const settings =
+    raw.settings && typeof raw.settings === "object" ? raw.settings : {};
+  const progress =
+    raw.progress && typeof raw.progress === "object" ? raw.progress : {};
 
   const merged: StoreV1 = {
     version: 1,
     updatedAt: typeof raw.updatedAt === "number" ? raw.updatedAt : Date.now(),
     questions,
     settings: {
-      autoplaySequence: typeof settings.autoplaySequence === "boolean" ? settings.autoplaySequence : base.settings.autoplaySequence,
-      showText: typeof settings.showText === "boolean" ? settings.showText : base.settings.showText,
+      autoplaySequence:
+        typeof settings.autoplaySequence === "boolean"
+          ? settings.autoplaySequence
+          : base.settings.autoplaySequence,
+      showText:
+        typeof settings.showText === "boolean"
+          ? settings.showText
+          : base.settings.showText,
     },
     progress: {
-      currentIndex: typeof progress.currentIndex === "number" ? Math.max(0, progress.currentIndex) : 0,
+      currentIndex:
+        typeof progress.currentIndex === "number"
+          ? Math.max(0, progress.currentIndex)
+          : 0,
       lastAnswered:
         progress.lastAnswered && typeof progress.lastAnswered === "object"
           ? {
-              qid: typeof progress.lastAnswered.qid === "string" ? progress.lastAnswered.qid : "",
-              selected: (normalizeChoiceKey(progress.lastAnswered.selected) ?? "A") as ChoiceKey,
+              qid:
+                typeof progress.lastAnswered.qid === "string"
+                  ? progress.lastAnswered.qid
+                  : "",
+              selected: (normalizeChoiceKey(progress.lastAnswered.selected) ??
+                "A") as ChoiceKey,
               correct: !!progress.lastAnswered.correct,
-              answeredAt: typeof progress.lastAnswered.answeredAt === "number" ? progress.lastAnswered.answeredAt : Date.now(),
+              answeredAt:
+                typeof progress.lastAnswered.answeredAt === "number"
+                  ? progress.lastAnswered.answeredAt
+                  : Date.now(),
             }
           : undefined,
     },
@@ -157,7 +180,11 @@ function migrate(raw: any): StoreV1 {
 
   // currentIndexが範囲外なら丸める
   if (merged.questions.length === 0) merged.progress.currentIndex = 0;
-  else merged.progress.currentIndex = Math.min(merged.progress.currentIndex, merged.questions.length - 1);
+  else
+    merged.progress.currentIndex = Math.min(
+      merged.progress.currentIndex,
+      merged.questions.length - 1
+    );
 
   return merged;
 }
@@ -180,7 +207,10 @@ function saveLocal(store: StoreV1) {
   }
 }
 
-async function playUrl(url: string, audioRef: React.MutableRefObject<HTMLAudioElement | null>) {
+async function playUrl(
+  url: string,
+  audioRef: React.MutableRefObject<HTMLAudioElement | null>
+) {
   if (!url) return;
   const a = audioRef.current ?? new Audio();
   audioRef.current = a;
@@ -216,8 +246,15 @@ export default function SapuriPart2() {
   }, [store.questions, store.progress.currentIndex]);
 
   const [selected, setSelected] = useState<ChoiceKey | null>(null);
-  const [result, setResult] = useState<null | { correct: boolean; correctKey: ChoiceKey }>(null);
+  const [result, setResult] = useState<null | {
+    correct: boolean;
+    correctKey: ChoiceKey;
+  }>(null);
   const [busy, setBusy] = useState(false);
+
+  // ✅ 追加：ペースト用UI
+  const [importText, setImportText] = useState("");
+  const [importError, setImportError] = useState<string | null>(null);
 
   // ローカルへ即時保存（サーバ保存はしない）
   useEffect(() => {
@@ -376,14 +413,22 @@ export default function SapuriPart2() {
       const n = prev.questions.length;
       if (!n) return prev;
       const ni = Math.min(prev.progress.currentIndex + 1, n - 1);
-      return { ...prev, updatedAt: Date.now(), progress: { ...prev.progress, currentIndex: ni } };
+      return {
+        ...prev,
+        updatedAt: Date.now(),
+        progress: { ...prev.progress, currentIndex: ni },
+      };
     });
   };
 
   const prevQ = () => {
     setStore((prev) => {
       const ni = Math.max(prev.progress.currentIndex - 1, 0);
-      return { ...prev, updatedAt: Date.now(), progress: { ...prev.progress, currentIndex: ni } };
+      return {
+        ...prev,
+        updatedAt: Date.now(),
+        progress: { ...prev.progress, currentIndex: ni },
+      };
     });
   };
 
@@ -395,31 +440,58 @@ export default function SapuriPart2() {
     }));
   };
 
+  // ✅ 共通：JSON → questions を取り込む（file/importText 両方で使用）
+  const applyImported = (parsed: any) => {
+    // 期待: { version:1, questions:[...] } または questions配列単体
+    const incoming = Array.isArray(parsed)
+      ? { version: 1, questions: parsed }
+      : parsed;
+
+    const m = migrate(incoming);
+
+    setStore((prev) => ({
+      ...prev,
+      updatedAt: Date.now(),
+      questions: m.questions,
+      progress: { ...prev.progress, currentIndex: 0 },
+    }));
+  };
+
   const onImportJson = async (file: File | null) => {
     if (!file) return;
     try {
       const text = await file.text();
       const parsed = JSON.parse(text);
-
-      // 期待: { version:1, questions:[...] } または questions配列単体
-      const incoming = Array.isArray(parsed) ? { version: 1, questions: parsed } : parsed;
-      const m = migrate(incoming);
-
-      // 取り込み（置き換え）
-      setStore((prev) => ({
-        ...prev,
-        updatedAt: Date.now(),
-        questions: m.questions,
-        progress: { ...prev.progress, currentIndex: 0 },
-      }));
+      applyImported(parsed);
+      setImportError(null);
     } catch (e) {
       alert("JSONの読み込みに失敗しました。形式を確認してください。");
       console.warn(e);
     }
   };
 
+  // ✅ 追加：ペースト文字列インポート
+  const importFromText = () => {
+    const raw = importText.trim();
+    if (!raw) {
+      setImportError("JSONが空です。貼り付けてください。");
+      return;
+    }
+    try {
+      const parsed = JSON.parse(raw);
+      applyImported(parsed);
+      setImportError(null);
+      setImportText("");
+    } catch (e: any) {
+      setImportError("JSONの解析に失敗しました（カンマ/括弧/引用符などを確認）。");
+      console.warn(e);
+    }
+  };
+
   const exportJson = () => {
-    const blob = new Blob([JSON.stringify(store, null, 2)], { type: "application/json" });
+    const blob = new Blob([JSON.stringify(store, null, 2)], {
+      type: "application/json",
+    });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -451,11 +523,47 @@ export default function SapuriPart2() {
         </div>
       </div>
 
+      {/* ✅ 追加：ペーストインポート */}
+      <div className="rounded border p-3 space-y-2">
+        <div className="text-sm font-semibold">JSONをペーストしてインポート</div>
+        <textarea
+          className="w-full rounded border p-2 text-sm font-mono"
+          rows={6}
+          placeholder='ここにJSONを貼り付け → 「ペーストインポート」を押す
+例: { "version": 1, "questions": [...] }'
+          value={importText}
+          onChange={(e) => setImportText(e.target.value)}
+        />
+        <div className="flex items-center gap-2">
+          <button className="px-3 py-1 rounded border" onClick={importFromText}>
+            ペーストインポート
+          </button>
+          <button
+            className="px-3 py-1 rounded border"
+            onClick={() => {
+              setImportText("");
+              setImportError(null);
+            }}
+          >
+            クリア
+          </button>
+          {importError && (
+            <div className="text-sm text-red-700">{importError}</div>
+          )}
+        </div>
+      </div>
+
       <div className="rounded border p-3 text-sm flex flex-wrap gap-3 items-center">
-        <button className="px-3 py-1 rounded border" onClick={() => toggle("autoplaySequence")}>
+        <button
+          className="px-3 py-1 rounded border"
+          onClick={() => toggle("autoplaySequence")}
+        >
           自動再生: {store.settings.autoplaySequence ? "ON" : "OFF"}
         </button>
-        <button className="px-3 py-1 rounded border" onClick={() => toggle("showText")}>
+        <button
+          className="px-3 py-1 rounded border"
+          onClick={() => toggle("showText")}
+        >
           テキスト表示: {store.settings.showText ? "ON" : "OFF"}
         </button>
         <div className="ml-auto text-gray-600">
@@ -477,10 +585,18 @@ export default function SapuriPart2() {
             ▶ 再生（問題{store.settings.autoplaySequence ? "→ABC" : ""}）
           </button>
 
-          <button className="px-3 py-2 rounded border disabled:opacity-50" disabled={!q || busy} onClick={prevQ}>
+          <button
+            className="px-3 py-2 rounded border disabled:opacity-50"
+            disabled={!q || busy}
+            onClick={prevQ}
+          >
             ← 前へ
           </button>
-          <button className="px-3 py-2 rounded border disabled:opacity-50" disabled={!q || busy} onClick={next}>
+          <button
+            className="px-3 py-2 rounded border disabled:opacity-50"
+            disabled={!q || busy}
+            onClick={next}
+          >
             次へ →
           </button>
         </div>
@@ -526,19 +642,33 @@ export default function SapuriPart2() {
 
                     {store.settings.showText && (
                       <div className="text-sm">
-                        {c.text ? <span className="font-medium">{c.text}</span> : <span className="text-gray-400">(textなし)</span>}
-                        {c.ja ? <span className="text-gray-700">　/　{c.ja}</span> : null}
+                        {c.text ? (
+                          <span className="font-medium">{c.text}</span>
+                        ) : (
+                          <span className="text-gray-400">(textなし)</span>
+                        )}
+                        {c.ja ? (
+                          <span className="text-gray-700">　/　{c.ja}</span>
+                        ) : null}
                       </div>
                     )}
 
                     {result && (
                       <div className="ml-auto text-sm">
                         {isSel && (
-                          <span className={result.correct ? "text-green-700" : "text-red-700"}>
+                          <span
+                            className={
+                              result.correct ? "text-green-700" : "text-red-700"
+                            }
+                          >
                             {result.correct ? "正解" : "不正解"}
                           </span>
                         )}
-                        {isCorrect && <span className="ml-2 text-green-700">← 正解 {result.correctKey}</span>}
+                        {isCorrect && (
+                          <span className="ml-2 text-green-700">
+                            ← 正解 {result.correctKey}
+                          </span>
+                        )}
                       </div>
                     )}
                   </div>
@@ -554,7 +684,9 @@ export default function SapuriPart2() {
               あなたの解答: <b>{selected}</b> / 正解: <b>{result.correctKey}</b>
             </div>
             {q.explanation && (
-              <div className="text-sm text-gray-800 whitespace-pre-wrap">{q.explanation}</div>
+              <div className="text-sm text-gray-800 whitespace-pre-wrap">
+                {q.explanation}
+              </div>
             )}
           </div>
         )}
