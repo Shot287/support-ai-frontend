@@ -27,6 +27,7 @@ const DOCS = [
   { docKey: "mental_emotion_labeling_v1", localKey: "emotion_labeling_v1" },
   { docKey: "math_dictionary_v1", localKey: "math_dictionary_v1" },
   { docKey: "study_lisp_dictionary_v1", localKey: "lisp_dictionary_v1" },
+  { docKey: "study_sapuri_part2_v1", localKey: "study_sapuri_part2_v1" },
 ] as const;
 
 // エラー表示用：できるだけ詳細に

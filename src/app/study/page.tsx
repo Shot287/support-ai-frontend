@@ -115,6 +115,14 @@ export default function StudyPage() {
       href: "/study/sapuri-wordbook",
       type: "link" as const,
     },
+    {
+      id: "sapuri-part2",
+      title: "スタディサプリ対応 Part2",
+      description:
+        "Part2（応答問題）をJSONでインポートして、問題→選択肢音声→選択→正誤→解説まで学習。",
+      href: "/study/sapuri-part2",
+      type: "link" as const,
+    },
   ] as const;
 
   useEffect(() => {
