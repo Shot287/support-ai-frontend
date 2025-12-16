@@ -11,14 +11,14 @@ type ChoiceKey = "A" | "B" | "C";
 type Choice = {
   key: ChoiceKey;
   text?: string; // 英文（読み上げ対象）
-  ja?: string; // 日本語（選択後に表示）
+  ja?: string; // 日本語（表示用）
   audioUrl?: string; // 互換用（使わない）
 };
 
 type Part2Question = {
   id: ID;
   qText?: string; // 英文（読み上げ対象）
-  qJa?: string; // 日本語（選択後に表示）
+  qJa?: string; // 日本語（表示用）
   qAudioUrl?: string; // 互換用（使わない）
   choices: Choice[];
   correct: ChoiceKey;
@@ -32,7 +32,10 @@ type StoreV1 = {
   questions: Part2Question[];
   settings: {
     autoplaySequence: boolean; // 問題→A→B→C を自動再生
-    showText: boolean; // 英文を表示する（日本語は選択後のみ）
+    showEnglish: boolean; // ✅ 英文表示
+    showJapanese: boolean; // ✅ 日本語表示
+    // legacy（過去互換）
+    showText?: boolean;
   };
   progress: {
     currentIndex: number;
@@ -63,11 +66,12 @@ function normalizeChoiceKey(k: any): ChoiceKey | null {
 }
 
 function migrate(raw: any): StoreV1 {
+  // ✅ デフォルト：英文ON / 日本語OFF（リスニング向け）
   const base: StoreV1 = {
     version: 1,
     updatedAt: Date.now(),
     questions: [],
-    settings: { autoplaySequence: true, showText: true },
+    settings: { autoplaySequence: true, showEnglish: true, showJapanese: false },
     progress: { currentIndex: 0 },
   };
 
@@ -121,6 +125,10 @@ function migrate(raw: any): StoreV1 {
   const settings = raw.settings && typeof raw.settings === "object" ? raw.settings : {};
   const progress = raw.progress && typeof raw.progress === "object" ? raw.progress : {};
 
+  // legacy showText（過去の「テキスト表示」）→ showEnglish の既定に流用
+  const legacyShowText =
+    typeof settings.showText === "boolean" ? settings.showText : undefined;
+
   const merged: StoreV1 = {
     version: 1,
     updatedAt: typeof raw.updatedAt === "number" ? raw.updatedAt : Date.now(),
@@ -130,7 +138,15 @@ function migrate(raw: any): StoreV1 {
         typeof settings.autoplaySequence === "boolean"
           ? settings.autoplaySequence
           : base.settings.autoplaySequence,
-      showText: typeof settings.showText === "boolean" ? settings.showText : base.settings.showText,
+      showEnglish:
+        typeof settings.showEnglish === "boolean"
+          ? settings.showEnglish
+          : legacyShowText ?? base.settings.showEnglish,
+      showJapanese:
+        typeof settings.showJapanese === "boolean"
+          ? settings.showJapanese
+          : base.settings.showJapanese,
+      showText: legacyShowText,
     },
     progress: {
       currentIndex:
@@ -422,7 +438,7 @@ export default function SapuriPart2() {
     });
   };
 
-  const toggle = (k: keyof StoreV1["settings"]) => {
+  const toggleSetting = (k: keyof StoreV1["settings"]) => {
     setStore((prev) => ({
       ...prev,
       updatedAt: Date.now(),
@@ -450,9 +466,7 @@ export default function SapuriPart2() {
       const deleted = nextQuestions.splice(i, 1)[0];
 
       let nextIndex = prev.progress.currentIndex;
-      // 削除位置が現在より前なら、現在位置を1つ戻す
       if (i < nextIndex) nextIndex = Math.max(0, nextIndex - 1);
-      // 現在そのものを削除した場合、同じインデックスに次が来るが、末尾超えたら詰める
       if (nextIndex >= nextQuestions.length) nextIndex = Math.max(0, nextQuestions.length - 1);
 
       const lastAnswered =
@@ -496,11 +510,11 @@ export default function SapuriPart2() {
         added++;
       }
 
-      // currentIndexは基本維持（最初の導入時だけ0に）
       const nextIndex =
-        prev.questions.length === 0 && mergedQuestions.length > 0 ? 0 : Math.min(prev.progress.currentIndex, Math.max(0, mergedQuestions.length - 1));
+        prev.questions.length === 0 && mergedQuestions.length > 0
+          ? 0
+          : Math.min(prev.progress.currentIndex, Math.max(0, mergedQuestions.length - 1));
 
-      // 画面に結果表示
       setImportInfo(`インポート完了：追加 ${added} 件 / 重複スキップ ${skipped} 件`);
       return {
         ...prev,
@@ -554,8 +568,8 @@ export default function SapuriPart2() {
   const total = store.questions.length;
   const idx = total ? store.progress.currentIndex + 1 : 0;
 
-  // ✅ 選択前は日本語を隠す（リスニング用）
-  const showJapaneseNow = !!selected;
+  const showEn = !!store.settings.showEnglish;
+  const showJa = !!store.settings.showJapanese;
 
   return (
     <div className="mx-auto max-w-3xl p-4 space-y-4">
@@ -678,13 +692,20 @@ export default function SapuriPart2() {
         </div>
       </div>
 
+      {/* ✅ 設定バー：自動再生 + 英文表示 + 日本語表示 */}
       <div className="rounded border p-3 text-sm flex flex-wrap gap-3 items-center">
-        <button className="px-3 py-1 rounded border" onClick={() => toggle("autoplaySequence")}>
+        <button className="px-3 py-1 rounded border" onClick={() => toggleSetting("autoplaySequence")}>
           自動再生: {store.settings.autoplaySequence ? "ON" : "OFF"}
         </button>
-        <button className="px-3 py-1 rounded border" onClick={() => toggle("showText")}>
-          テキスト表示: {store.settings.showText ? "ON" : "OFF"}
+
+        <button className="px-3 py-1 rounded border" onClick={() => toggleSetting("showEnglish")}>
+          英文表示: {showEn ? "ON" : "OFF"}
         </button>
+
+        <button className="px-3 py-1 rounded border" onClick={() => toggleSetting("showJapanese")}>
+          日本語表示: {showJa ? "ON" : "OFF"}
+        </button>
+
         <div className="ml-auto text-gray-600">
           {total ? `${idx}/${total}` : "問題がありません（JSONをインポートしてください）"}
         </div>
@@ -712,10 +733,18 @@ export default function SapuriPart2() {
           </button>
         </div>
 
-        {q && store.settings.showText && (
+        {/* ✅ 問題文表示（英文/日本語はそれぞれトグルで制御） */}
+        {q && (
           <div className="space-y-1">
-            {q.qText && <div className="text-base font-medium">{q.qText}</div>}
-            {showJapaneseNow && q.qJa && <div className="text-gray-700">{q.qJa}</div>}
+            {showEn ? (
+              q.qText ? (
+                <div className="text-base font-medium">{q.qText}</div>
+              ) : (
+                <div className="text-base text-gray-400">(qTextなし)</div>
+              )
+            ) : null}
+
+            {showJa ? (q.qJa ? <div className="text-gray-700">{q.qJa}</div> : null) : null}
 
             {(q.speaker?.q || q.speaker?.a) && (
               <div className="text-xs text-gray-500">
@@ -725,7 +754,11 @@ export default function SapuriPart2() {
               </div>
             )}
 
-            {!showJapaneseNow && <div className="text-xs text-gray-500">※ 日本語訳は解答後に表示されます</div>}
+            {!showEn && !showJa && (
+              <div className="text-xs text-gray-500">
+                ※ 英文/日本語どちらも非表示です（リスニング専用モード）
+              </div>
+            )}
           </div>
         )}
 
@@ -734,6 +767,7 @@ export default function SapuriPart2() {
             {q.choices.map((c) => {
               const isSel = selected === c.key;
               const isCorrect = result && c.key === result.correctKey;
+
               const canSpeakEnglish = !!(c.text && c.text.trim().length > 0);
 
               return (
@@ -752,12 +786,18 @@ export default function SapuriPart2() {
                       選択
                     </button>
 
-                    {store.settings.showText && (
-                      <div className="text-sm">
-                        {c.text ? <span className="font-medium">{c.text}</span> : <span className="text-gray-400">(textなし)</span>}
-                        {showJapaneseNow && c.ja ? <span className="text-gray-700">　/　{c.ja}</span> : null}
-                      </div>
-                    )}
+                    {/* ✅ 表示はトグルで制御（選択とは独立） */}
+                    <div className="text-sm">
+                      {showEn ? (
+                        c.text ? (
+                          <span className="font-medium">{c.text}</span>
+                        ) : (
+                          <span className="text-gray-400">(textなし)</span>
+                        )
+                      ) : null}
+
+                      {showJa ? (c.ja ? <span className="text-gray-700">　/　{c.ja}</span> : null) : null}
+                    </div>
 
                     {result && (
                       <div className="ml-auto text-sm">
