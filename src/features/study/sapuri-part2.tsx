@@ -225,35 +225,31 @@ function normQuestionKey(qText?: string) {
 }
 
 /* =========================
-   ✅ ディクテーションUI
-   - 1文字ずつ入力
-   - 英字以外は入らない
-   - 正解と違う文字は入らない（不正入力は無視）
-   - 小文字入力→自動で正解の大文字/小文字に合わせて入る
+   ✅ ディクテーションUI（改良版）
+   - クリックしなくても連続入力できる（行単位でキャプチャ）
+   - 間違えたら「次の枠」が赤く点滅/表示
+   - 正しい場合だけ1文字ずつ進む
+   - 小文字入力→正解の大文字/小文字へ自動合わせ
    ========================= */
 
 type DictFieldKey = "Q" | "A" | "B" | "C";
 
 function buildSlots(text: string) {
-  // 文字配列（スペース等も含む）
   return Array.from(text);
 }
 function isAlphabet(ch: string) {
   return /^[A-Za-z]$/.test(ch);
 }
 function applyCaseToMatch(correct: string, typed: string) {
-  // correctが大文字なら typed を大文字へ、そうでなければ小文字へ
   return correct === correct.toUpperCase() ? typed.toUpperCase() : typed.toLowerCase();
 }
 function initDictStateForText(text?: string) {
   const t = (text ?? "").toString();
   const slots = buildSlots(t);
-  // 入力欄の値：英字は空、英字以外は固定（スペース/記号を表示する）
   const values = slots.map((ch) => (isAlphabet(ch) ? "" : ch));
-  // 次に入力すべきインデックス（英字の最初）
   let next = 0;
   while (next < slots.length && !isAlphabet(slots[next])) next++;
-  return { values, nextIndex: next, done: slots.length === 0 };
+  return { values, nextIndex: next, done: slots.length === 0, wrongTick: 0 };
 }
 
 export default function SapuriPart2() {
@@ -294,6 +290,10 @@ export default function SapuriPart2() {
     B: initDictStateForText(""),
     C: initDictStateForText(""),
   }));
+
+  // ✅ 行ごとの入力キャプチャを「有効化」するためのフォーカス先
+  const dictRowRef = useRef<{ [K in DictFieldKey]?: HTMLDivElement | null }>({});
+  const [activeDictRow, setActiveDictRow] = useState<DictFieldKey>("Q");
 
   // ローカルへ即時保存
   useEffect(() => {
@@ -396,7 +396,18 @@ export default function SapuriPart2() {
       B: initDictStateForText(bText),
       C: initDictStateForText(cText),
     });
+
+    // デフォルトはQ行をアクティブ
+    setActiveDictRow("Q");
   }, [q?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ✅ アクティブ行が変わったら、その行にフォーカス（クリック不要で入力開始）
+  useEffect(() => {
+    const el = dictRowRef.current[activeDictRow];
+    try {
+      el?.focus();
+    } catch {}
+  }, [activeDictRow, dict.Q.nextIndex, dict.A.nextIndex, dict.B.nextIndex, dict.C.nextIndex]);
 
   const canPlay = !!q;
 
@@ -625,8 +636,8 @@ export default function SapuriPart2() {
   const showEn = !!store.settings.showEnglish;
   const showJa = !!store.settings.showJapanese;
 
-  // ✅ ディクテーション：1文字入力（不正なら無視）
-  const onDictChar = (field: DictFieldKey, chRaw: string) => {
+  // ✅ 1文字トライ（正解なら進む／不正なら wrongTick++）
+  const tryDictChar = (field: DictFieldKey, typed: string) => {
     if (!q) return;
 
     const correctText =
@@ -637,42 +648,71 @@ export default function SapuriPart2() {
     const slots = buildSlots(correctText);
     if (!slots.length) return;
 
-    const typed = (chRaw ?? "").slice(-1); // 最後の1文字
-    if (!typed) return;
-    if (!isAlphabet(typed)) return;
+    const t = (typed ?? "").slice(-1);
+    if (!t || !isAlphabet(t)) return;
 
     setDict((prev) => {
       const cur = prev[field];
-      const i = cur.nextIndex;
-      if (i < 0 || i >= slots.length) return prev;
+      let ni = cur.nextIndex;
 
-      // 次が英字でないならスキップして英字へ
-      let ni = i;
       while (ni < slots.length && !isAlphabet(slots[ni])) ni++;
       if (ni >= slots.length) {
         return { ...prev, [field]: { ...cur, nextIndex: ni, done: true } };
       }
 
       const correctChar = slots[ni];
-      // 入力は正誤判定は「大文字小文字を無視」して比較
-      if (typed.toLowerCase() !== correctChar.toLowerCase()) {
-        // 間違ったアルファベットは入力できない
-        return prev;
+      if (t.toLowerCase() !== correctChar.toLowerCase()) {
+        // ❌ 間違い：入力は進めず、赤表示トリガー
+        return { ...prev, [field]: { ...cur, wrongTick: cur.wrongTick + 1 } };
       }
 
+      // ✅ 正解：埋めて進める
       const nextValues = cur.values.slice();
-      nextValues[ni] = applyCaseToMatch(correctChar, typed);
+      nextValues[ni] = applyCaseToMatch(correctChar, t);
 
-      // 次の英字位置へ
       let next = ni + 1;
       while (next < slots.length && !isAlphabet(slots[next])) next++;
       const done = next >= slots.length;
 
       return {
         ...prev,
-        [field]: { ...cur, values: nextValues, nextIndex: next, done },
+        [field]: { ...cur, values: nextValues, nextIndex: next, done, wrongTick: cur.wrongTick },
       };
     });
+  };
+
+  // ✅ 行（Q/A/B/C）をアクティブにして連続入力：キー入力を行コンテナで拾う
+  const onDictRowKeyDown = (field: DictFieldKey, e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (busy) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+    // 文字キー（1文字）だけ扱う
+    if (e.key && e.key.length === 1) {
+      const ch = e.key;
+      if (isAlphabet(ch)) {
+        e.preventDefault();
+        setActiveDictRow(field);
+        tryDictChar(field, ch);
+      }
+      return;
+    }
+
+    // 行移動（任意：↑↓で行移動）
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActiveDictRow((prev) => (prev === "Q" ? "A" : prev === "A" ? "B" : prev === "B" ? "C" : "C"));
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActiveDictRow((prev) => (prev === "C" ? "B" : prev === "B" ? "A" : prev === "A" ? "Q" : "Q"));
+      return;
+    }
+
+    // Backspaceは今回は無効（誤操作防止）
+    if (e.key === "Backspace") {
+      e.preventDefault();
+    }
   };
 
   const resetDictField = (field: DictFieldKey) => {
@@ -682,6 +722,7 @@ export default function SapuriPart2() {
         ? q.qText ?? ""
         : q.choices.find((x) => x.key === field)?.text ?? "";
     setDict((prev) => ({ ...prev, [field]: initDictStateForText(text) }));
+    setActiveDictRow(field);
   };
 
   const resetAllDict = () => {
@@ -696,6 +737,7 @@ export default function SapuriPart2() {
       B: initDictStateForText(bText),
       C: initDictStateForText(cText),
     });
+    setActiveDictRow("Q");
   };
 
   const renderDictRow = (label: string, field: DictFieldKey) => {
@@ -716,6 +758,9 @@ export default function SapuriPart2() {
       );
     }
 
+    const isActive = activeDictRow === field;
+    const wrongNow = isActive && state.wrongTick > 0;
+
     return (
       <div className="space-y-1">
         <div className="flex items-center gap-2">
@@ -723,48 +768,61 @@ export default function SapuriPart2() {
           <button className="px-2 py-1 rounded border text-xs" onClick={() => resetDictField(field)} disabled={busy}>
             リセット
           </button>
-          <div className="text-xs text-gray-500">
-            {state.done ? "完了" : `次: ${state.nextIndex + 1}/${slots.length}`}
+          <div className="text-xs text-gray-500">{state.done ? "完了" : `次: ${state.nextIndex + 1}/${slots.length}`}</div>
+          {isActive && <div className="text-xs text-gray-500">（この行にそのまま টাইピングOK）</div>}
+        </div>
+
+        {/* ✅ 行コンテナがキーボード入力を受け取る（クリック不要で連続入力） */}
+        <div
+          ref={(el) => {
+            dictRowRef.current[field] = el;
+          }}
+          tabIndex={0}
+          onFocus={() => setActiveDictRow(field)}
+          onMouseDown={() => setActiveDictRow(field)}
+          onKeyDown={(e) => onDictRowKeyDown(field, e)}
+          className={
+            "rounded border p-2 outline-none " +
+            (isActive ? "ring-2 ring-gray-400" : "") +
+            (wrongNow ? " ring-red-400 border-red-400" : "")
+          }
+          title="クリックしてもOKですが、以後はクリック無しで入力できます（この枠がフォーカスを持ちます）"
+        >
+          <div className="flex flex-wrap items-center gap-1">
+            {slots.map((ch, i) => {
+              if (!isAlphabet(ch)) {
+                return (
+                  <span key={i} className="px-1 text-sm text-gray-600 whitespace-pre">
+                    {ch}
+                  </span>
+                );
+              }
+              const v = state.values[i] || "";
+              const isNext = i === state.nextIndex;
+              const showWrong = wrongNow && isNext;
+
+              return (
+                <div
+                  key={i}
+                  className={
+                    "w-7 h-8 flex items-center justify-center border rounded text-sm font-mono select-none " +
+                    (isNext ? "ring-2 ring-gray-400" : "") +
+                    (showWrong ? " border-red-500 ring-red-500" : "")
+                  }
+                  title={isNext ? "次に入力する枠" : ""}
+                >
+                  {v ? v : "_"}
+                </div>
+              );
+            })}
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-1">
-          {slots.map((ch, i) => {
-            if (!isAlphabet(ch)) {
-              return (
-                <span key={i} className="px-1 text-sm text-gray-600 whitespace-pre">
-                  {ch}
-                </span>
-              );
-            }
-            const v = state.values[i] || "";
-            const isNext = i === state.nextIndex;
-            return (
-              <input
-                key={i}
-                className={
-                  "w-7 h-8 text-center border rounded text-sm font-mono " +
-                  (isNext ? "ring-2 ring-gray-400" : "")
-                }
-                value={v}
-                inputMode="text"
-                autoComplete="off"
-                autoCorrect="off"
-                autoCapitalize="off"
-                spellCheck={false}
-                // 1文字だけ受け取り、正解なら入る
-                onChange={(e) => onDictChar(field, e.target.value)}
-                onKeyDown={(e) => {
-                  // Backspaceは「1つ戻す」ではなく、誤操作防止で無効化（要望にないので）
-                  // 必要なら後で追加可能
-                  if (e.key === "Backspace") e.preventDefault();
-                }}
-                disabled={busy || state.done || !isNext}
-                placeholder="_"
-              />
-            );
-          })}
-        </div>
+        {isActive && (
+          <div className="text-xs text-gray-500">
+            ※ 英字キーを押すと自動で次に進みます（クリックで各マスを選ぶ必要はありません）。間違うと「次の枠」が赤くなります。
+          </div>
+        )}
       </div>
     );
   };
@@ -1002,11 +1060,11 @@ export default function SapuriPart2() {
           </div>
         )}
 
-        {/* ✅ 追加：ディクテーション（3択の下） */}
+        {/* ✅ ディクテーション（3択の下） */}
         {q && (
           <div className="rounded border p-3 space-y-3 bg-white">
             <div className="flex items-center justify-between gap-2">
-              <div className="text-sm font-semibold">ディクテーション（1文字ずつ入力）</div>
+              <div className="text-sm font-semibold">ディクテーション（クリック不要で連続入力）</div>
               <button className="px-2 py-1 rounded border text-xs" onClick={resetAllDict} disabled={busy}>
                 全部リセット
               </button>
@@ -1018,7 +1076,8 @@ export default function SapuriPart2() {
             {renderDictRow("C", "C")}
 
             <div className="text-xs text-gray-500">
-              ※ 英字だけ入力できます。正解と違う英字は入力されません。小文字で打っても、正解の大文字/小文字に自動で合わせます。
+              ※ まず行（問題文/A/B/C）のどれかを1回クリックしてフォーカスすれば、その後はクリック無しで入力できます。間違うと次の枠が赤くなります。
+              （↑↓で行移動もできます）
             </div>
           </div>
         )}
