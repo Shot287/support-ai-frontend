@@ -165,7 +165,11 @@ function migrate(raw: any): StoreV1 {
   };
 
   if (merged.questions.length === 0) merged.progress.currentIndex = 0;
-  else merged.progress.currentIndex = Math.min(merged.progress.currentIndex, merged.questions.length - 1);
+  else
+    merged.progress.currentIndex = Math.min(
+      merged.progress.currentIndex,
+      merged.questions.length - 1
+    );
 
   return merged;
 }
@@ -228,6 +232,8 @@ function normQuestionKey(qText?: string) {
    ✅ ディクテーションUI（点灯だけ）
    - wrongTick を「増やす」→ UIは wrongFlashId と一致した瞬間だけ赤にする
    - さらに setTimeout で wrongFlashId を0に戻し「一瞬だけ点灯」させる
+   - ✅ 各行に音声ボタン追加（Q/A/B/C）
+   - ✅ 音声ボタン押下後も、入力フォーカスが維持される（クリック不要）
    ========================= */
 
 type DictFieldKey = "Q" | "A" | "B" | "C";
@@ -294,7 +300,6 @@ export default function SapuriPart2() {
   const [activeDictRow, setActiveDictRow] = useState<DictFieldKey>("Q");
 
   // ✅ 「赤点灯」を一瞬だけ出すためのフラッシュ状態
-  // - fieldごとに flashId を持つ（増えるたびに点灯）
   const [wrongFlashId, setWrongFlashId] = useState<Record<DictFieldKey, number>>({
     Q: 0,
     A: 0,
@@ -309,7 +314,6 @@ export default function SapuriPart2() {
   });
 
   const flashWrongOnce = (field: DictFieldKey) => {
-    // 既存タイマーがあれば消して「今回の点灯」に置き換える
     const prev = wrongTimerRef.current[field];
     if (prev) window.clearTimeout(prev);
 
@@ -318,11 +322,21 @@ export default function SapuriPart2() {
       return { ...m, [field]: next };
     });
 
-    // 120ms後に0に戻して消灯（「一度点灯」）
     wrongTimerRef.current[field] = window.setTimeout(() => {
       setWrongFlashId((m) => ({ ...m, [field]: 0 }));
       wrongTimerRef.current[field] = null;
     }, 120);
+  };
+
+  // ✅ 音声ボタン押下後も入力を継続できるように、フォーカスを戻すヘルパ
+  const refocusDictRow = (field: DictFieldKey) => {
+    // ここで active を保証して、次のtickで focus
+    setActiveDictRow(field);
+    requestAnimationFrame(() => {
+      try {
+        dictRowRef.current[field]?.focus();
+      } catch {}
+    });
   };
 
   // ローカルへ即時保存
@@ -429,7 +443,7 @@ export default function SapuriPart2() {
 
     setActiveDictRow("Q");
 
-    // ✅ フラッシュ状態もリセット
+    // フラッシュ状態もリセット
     setWrongFlashId({ Q: 0, A: 0, B: 0, C: 0 });
     (["Q", "A", "B", "C"] as DictFieldKey[]).forEach((k) => {
       const t = wrongTimerRef.current[k];
@@ -438,7 +452,7 @@ export default function SapuriPart2() {
     });
   }, [q?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ✅ アクティブ行が変わったら、その行にフォーカス
+  // アクティブ行が変わったら、その行にフォーカス
   useEffect(() => {
     const el = dictRowRef.current[activeDictRow];
     try {
@@ -500,6 +514,30 @@ export default function SapuriPart2() {
       console.warn("playChoice failed:", e);
     } finally {
       setBusy(false);
+    }
+  };
+
+  // ✅ ディクテーション行の音声再生（押した後も入力継続）
+  const playDictRow = async (field: DictFieldKey) => {
+    if (!q) return;
+
+    // 入力継続のため、先にフォーカスを確保（ボタン押下でフォーカスが移るので戻す）
+    refocusDictRow(field);
+
+    setBusy(true);
+    try {
+      if (field === "Q") {
+        await playQuestion();
+      } else {
+        // A/B/C のときはラベル付きで読み上げ
+        await playChoiceAny(field as ChoiceKey);
+      }
+    } catch (e) {
+      console.warn("playDictRow failed:", e);
+    } finally {
+      setBusy(false);
+      // 再度フォーカス（再生後もタイプ継続）
+      refocusDictRow(field);
     }
   };
 
@@ -678,9 +716,7 @@ export default function SapuriPart2() {
     if (!q) return;
 
     const correctText =
-      field === "Q"
-        ? q.qText ?? ""
-        : q.choices.find((x) => x.key === field)?.text ?? "";
+      field === "Q" ? q.qText ?? "" : q.choices.find((x) => x.key === field)?.text ?? "";
 
     const slots = buildSlots(correctText);
     if (!slots.length) return;
@@ -695,12 +731,10 @@ export default function SapuriPart2() {
 
     const correctChar = slots[ni];
     if (t.toLowerCase() !== correctChar.toLowerCase()) {
-      // ❌ 間違い：その都度「一瞬だけ」赤点灯
       flashWrongOnce(field);
       return;
     }
 
-    // ✅ 正解：埋めて進める
     setDict((prev) => {
       const cur2 = prev[field];
       const nextValues = cur2.values.slice();
@@ -734,12 +768,16 @@ export default function SapuriPart2() {
 
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      setActiveDictRow((prev) => (prev === "Q" ? "A" : prev === "A" ? "B" : prev === "B" ? "C" : "C"));
+      setActiveDictRow((prev) =>
+        prev === "Q" ? "A" : prev === "A" ? "B" : prev === "B" ? "C" : "C"
+      );
       return;
     }
     if (e.key === "ArrowUp") {
       e.preventDefault();
-      setActiveDictRow((prev) => (prev === "C" ? "B" : prev === "B" ? "A" : prev === "A" ? "Q" : "Q"));
+      setActiveDictRow((prev) =>
+        prev === "C" ? "B" : prev === "B" ? "A" : prev === "A" ? "Q" : "Q"
+      );
       return;
     }
 
@@ -751,12 +789,11 @@ export default function SapuriPart2() {
   const resetDictField = (field: DictFieldKey) => {
     if (!q) return;
     const text =
-      field === "Q"
-        ? q.qText ?? ""
-        : q.choices.find((x) => x.key === field)?.text ?? "";
+      field === "Q" ? q.qText ?? "" : q.choices.find((x) => x.key === field)?.text ?? "";
     setDict((prev) => ({ ...prev, [field]: initDictStateForText(text) }));
     setActiveDictRow(field);
     setWrongFlashId((m) => ({ ...m, [field]: 0 }));
+    refocusDictRow(field);
   };
 
   const resetAllDict = () => {
@@ -773,15 +810,14 @@ export default function SapuriPart2() {
     });
     setActiveDictRow("Q");
     setWrongFlashId({ Q: 0, A: 0, B: 0, C: 0 });
+    refocusDictRow("Q");
   };
 
   const renderDictRow = (label: string, field: DictFieldKey) => {
     if (!q) return null;
 
     const correctText =
-      field === "Q"
-        ? q.qText ?? ""
-        : q.choices.find((x) => x.key === field)?.text ?? "";
+      field === "Q" ? q.qText ?? "" : q.choices.find((x) => x.key === field)?.text ?? "";
     const state = dict[field];
     const slots = buildSlots(correctText);
 
@@ -794,19 +830,44 @@ export default function SapuriPart2() {
     }
 
     const isActive = activeDictRow === field;
-    const flashOn = isActive && (wrongFlashId[field] ?? 0) > 0; // ✅ 0に戻るので「点灯だけ」になる
+    const flashOn = isActive && (wrongFlashId[field] ?? 0) > 0;
+
+    const canSpeak =
+      field === "Q"
+        ? !!(q.qText && q.qText.trim().length > 0)
+        : !!(q.choices.find((x) => x.key === (field as any))?.text ?? "").trim();
 
     return (
       <div className="space-y-1">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <div className="text-sm font-semibold">{label}</div>
-          <button className="px-2 py-1 rounded border text-xs" onClick={() => resetDictField(field)} disabled={busy}>
+
+          {/* ✅ ディクテーション行の音声ボタン（押した後も入力継続） */}
+          <button
+            className="px-2 py-1 rounded border text-xs disabled:opacity-50"
+            disabled={busy || !canSpeak}
+            // onMouseDownで preventDefault すると「ボタンがフォーカスを奪う」を抑制できる
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => playDictRow(field)}
+            title={field === "Q" ? "問題文を読み上げ" : `${field} を読み上げ`}
+          >
+            🔊 {label}
+          </button>
+
+          <button
+            className="px-2 py-1 rounded border text-xs"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => resetDictField(field)}
+            disabled={busy}
+          >
             リセット
           </button>
+
           <div className="text-xs text-gray-500">
             {state.done ? "完了" : `次: ${state.nextIndex + 1}/${slots.length}`}
           </div>
-          {isActive && <div className="text-xs text-gray-500">（この行にそのまま タイピングOK）</div>}
+
+          {isActive && <div className="text-xs text-gray-500">（この行にそのまま টাইピングOK）</div>}
         </div>
 
         <div
@@ -835,8 +896,6 @@ export default function SapuriPart2() {
               }
               const v = state.values[i] || "";
               const isNext = i === state.nextIndex;
-
-              // ✅ 点灯は「次の枠」だけに出す（行全体も軽く赤）
               const showFlash = flashOn && isNext;
 
               return (
@@ -858,7 +917,7 @@ export default function SapuriPart2() {
 
         {isActive && (
           <div className="text-xs text-gray-500">
-            ※ 英字キーを押すと自動で次に進みます。間違うと「一瞬だけ」赤く点灯します。
+            ※ 🔊を押した後も、クリック無しでそのまま入力できます（フォーカスが戻ります）。
           </div>
         )}
       </div>
@@ -1103,7 +1162,12 @@ export default function SapuriPart2() {
           <div className="rounded border p-3 space-y-3 bg-white">
             <div className="flex items-center justify-between gap-2">
               <div className="text-sm font-semibold">ディクテーション（クリック不要で連続入力）</div>
-              <button className="px-2 py-1 rounded border text-xs" onClick={resetAllDict} disabled={busy}>
+              <button
+                className="px-2 py-1 rounded border text-xs"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={resetAllDict}
+                disabled={busy}
+              >
                 全部リセット
               </button>
             </div>
@@ -1114,7 +1178,7 @@ export default function SapuriPart2() {
             {renderDictRow("C", "C")}
 
             <div className="text-xs text-gray-500">
-              ※ 間違えるたびに「一瞬だけ」赤く点灯します（点灯しっぱなしにはなりません）。
+              ※ 各行の🔊を押して何回でも再生できます。押した後もフォーカスが戻るので、クリックせずに入力し続けられます。
             </div>
           </div>
         )}
