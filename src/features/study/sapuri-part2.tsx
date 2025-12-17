@@ -32,9 +32,9 @@ type StoreV1 = {
   questions: Part2Question[];
   settings: {
     autoplaySequence: boolean; // 問題→A→B→C を自動再生
-    showEnglish: boolean; // ✅ 英文表示
-    showJapanese: boolean; // ✅ 日本語表示
-    // legacy（過去互換）
+    showEnglish: boolean; // 英文表示
+    showJapanese: boolean; // 日本語表示
+    // legacy
     showText?: boolean;
   };
   progress: {
@@ -66,7 +66,7 @@ function normalizeChoiceKey(k: any): ChoiceKey | null {
 }
 
 function migrate(raw: any): StoreV1 {
-  // ✅ デフォルト：英文ON / 日本語OFF（リスニング向け）
+  // デフォルト：英文ON / 日本語OFF（リスニング向け）
   const base: StoreV1 = {
     version: 1,
     updatedAt: Date.now(),
@@ -107,7 +107,7 @@ function migrate(raw: any): StoreV1 {
         id,
         qText: typeof q.qText === "string" ? q.qText : undefined,
         qJa: typeof q.qJa === "string" ? q.qJa : undefined,
-        qAudioUrl: typeof q.qAudioUrl === "string" ? q.qAudioUrl : undefined, // 互換用
+        qAudioUrl: typeof q.qAudioUrl === "string" ? q.qAudioUrl : undefined,
         choices: (["A", "B", "C"] as ChoiceKey[]).map((k) => byKey.get(k)!),
         correct,
         explanation: typeof q.explanation === "string" ? q.explanation : undefined,
@@ -125,9 +125,7 @@ function migrate(raw: any): StoreV1 {
   const settings = raw.settings && typeof raw.settings === "object" ? raw.settings : {};
   const progress = raw.progress && typeof raw.progress === "object" ? raw.progress : {};
 
-  // legacy showText（過去の「テキスト表示」）→ showEnglish の既定に流用
-  const legacyShowText =
-    typeof settings.showText === "boolean" ? settings.showText : undefined;
+  const legacyShowText = typeof settings.showText === "boolean" ? settings.showText : undefined;
 
   const merged: StoreV1 = {
     version: 1,
@@ -190,7 +188,7 @@ function saveLocal(store: StoreV1) {
   }
 }
 
-/** ✅ 英文のみ読み上げ（Web Speech API） */
+/** 英文のみ読み上げ（Web Speech API） */
 async function speakEnglish(text: string) {
   if (typeof window === "undefined") return;
 
@@ -222,9 +220,40 @@ function labelSpeakText(key: ChoiceKey, english: string) {
 }
 
 function normQuestionKey(qText?: string) {
-  // 重複排除用キー：空白正規化＋lower（英文が無い場合は空）
   const s = (qText ?? "").trim().replace(/\s+/g, " ");
   return s.toLowerCase();
+}
+
+/* =========================
+   ✅ ディクテーションUI
+   - 1文字ずつ入力
+   - 英字以外は入らない
+   - 正解と違う文字は入らない（不正入力は無視）
+   - 小文字入力→自動で正解の大文字/小文字に合わせて入る
+   ========================= */
+
+type DictFieldKey = "Q" | "A" | "B" | "C";
+
+function buildSlots(text: string) {
+  // 文字配列（スペース等も含む）
+  return Array.from(text);
+}
+function isAlphabet(ch: string) {
+  return /^[A-Za-z]$/.test(ch);
+}
+function applyCaseToMatch(correct: string, typed: string) {
+  // correctが大文字なら typed を大文字へ、そうでなければ小文字へ
+  return correct === correct.toUpperCase() ? typed.toUpperCase() : typed.toLowerCase();
+}
+function initDictStateForText(text?: string) {
+  const t = (text ?? "").toString();
+  const slots = buildSlots(t);
+  // 入力欄の値：英字は空、英字以外は固定（スペース/記号を表示する）
+  const values = slots.map((ch) => (isAlphabet(ch) ? "" : ch));
+  // 次に入力すべきインデックス（英字の最初）
+  let next = 0;
+  while (next < slots.length && !isAlphabet(slots[next])) next++;
+  return { values, nextIndex: next, done: slots.length === 0 };
 }
 
 export default function SapuriPart2() {
@@ -245,15 +274,28 @@ export default function SapuriPart2() {
   const [result, setResult] = useState<null | { correct: boolean; correctKey: ChoiceKey }>(null);
   const [busy, setBusy] = useState(false);
 
-  // ✅ ペースト用UI
+  // ペースト用UI
   const [importText, setImportText] = useState("");
   const [importError, setImportError] = useState<string | null>(null);
   const [importInfo, setImportInfo] = useState<string | null>(null);
 
-  // ✅ 一覧 表示
+  // 一覧 表示
   const [showList, setShowList] = useState(true);
 
-  // ローカルへ即時保存（サーバ保存はしない）
+  // ✅ ディクテーション状態（Q/A/B/C それぞれ）
+  const [dict, setDict] = useState<{
+    Q: ReturnType<typeof initDictStateForText>;
+    A: ReturnType<typeof initDictStateForText>;
+    B: ReturnType<typeof initDictStateForText>;
+    C: ReturnType<typeof initDictStateForText>;
+  }>(() => ({
+    Q: initDictStateForText(""),
+    A: initDictStateForText(""),
+    B: initDictStateForText(""),
+    C: initDictStateForText(""),
+  }));
+
+  // ローカルへ即時保存
   useEffect(() => {
     storeRef.current = store;
     saveLocal(store);
@@ -321,7 +363,7 @@ export default function SapuriPart2() {
         } catch {}
       }
       if (ev.key === STORAGE_KEY_RESET_REQ) {
-        // noop（直後にPULL想定）
+        // noop
       }
     };
     window.addEventListener("storage", onStorage);
@@ -335,14 +377,26 @@ export default function SapuriPart2() {
     };
   }, []);
 
-  // 問題切り替え時に表示状態をリセット + TTS停止
+  // 問題切り替え時に表示状態をリセット + TTS停止 + ディクテーション初期化
   useEffect(() => {
     setSelected(null);
     setResult(null);
     try {
       window.speechSynthesis?.cancel();
     } catch {}
-  }, [q?.id]);
+
+    const qText = q?.qText ?? "";
+    const aText = q?.choices.find((x) => x.key === "A")?.text ?? "";
+    const bText = q?.choices.find((x) => x.key === "B")?.text ?? "";
+    const cText = q?.choices.find((x) => x.key === "C")?.text ?? "";
+
+    setDict({
+      Q: initDictStateForText(qText),
+      A: initDictStateForText(aText),
+      B: initDictStateForText(bText),
+      C: initDictStateForText(cText),
+    });
+  }, [q?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const canPlay = !!q;
 
@@ -446,7 +500,7 @@ export default function SapuriPart2() {
     }));
   };
 
-  // ✅ 一覧からジャンプ
+  // 一覧からジャンプ
   const goToIndex = (i: number) => {
     setStore((prev) => {
       const n = prev.questions.length;
@@ -456,7 +510,7 @@ export default function SapuriPart2() {
     });
   };
 
-  // ✅ 一覧から削除（番号は自動で詰まる）
+  // 一覧から削除（番号は自動で詰まる）
   const deleteAt = (i: number) => {
     setStore((prev) => {
       const n = prev.questions.length;
@@ -483,7 +537,7 @@ export default function SapuriPart2() {
     });
   };
 
-  // ✅ インポート：既存に「追記」＋ 同じ問題文(qText)を重複スキップ
+  // インポート：既存に「追記」＋ 同じ問題文(qText)を重複スキップ
   const applyImported = (parsed: any) => {
     const incoming = Array.isArray(parsed) ? { version: 1, questions: parsed } : parsed;
     const m = migrate(incoming);
@@ -571,6 +625,150 @@ export default function SapuriPart2() {
   const showEn = !!store.settings.showEnglish;
   const showJa = !!store.settings.showJapanese;
 
+  // ✅ ディクテーション：1文字入力（不正なら無視）
+  const onDictChar = (field: DictFieldKey, chRaw: string) => {
+    if (!q) return;
+
+    const correctText =
+      field === "Q"
+        ? q.qText ?? ""
+        : q.choices.find((x) => x.key === field)?.text ?? "";
+
+    const slots = buildSlots(correctText);
+    if (!slots.length) return;
+
+    const typed = (chRaw ?? "").slice(-1); // 最後の1文字
+    if (!typed) return;
+    if (!isAlphabet(typed)) return;
+
+    setDict((prev) => {
+      const cur = prev[field];
+      const i = cur.nextIndex;
+      if (i < 0 || i >= slots.length) return prev;
+
+      // 次が英字でないならスキップして英字へ
+      let ni = i;
+      while (ni < slots.length && !isAlphabet(slots[ni])) ni++;
+      if (ni >= slots.length) {
+        return { ...prev, [field]: { ...cur, nextIndex: ni, done: true } };
+      }
+
+      const correctChar = slots[ni];
+      // 入力は正誤判定は「大文字小文字を無視」して比較
+      if (typed.toLowerCase() !== correctChar.toLowerCase()) {
+        // 間違ったアルファベットは入力できない
+        return prev;
+      }
+
+      const nextValues = cur.values.slice();
+      nextValues[ni] = applyCaseToMatch(correctChar, typed);
+
+      // 次の英字位置へ
+      let next = ni + 1;
+      while (next < slots.length && !isAlphabet(slots[next])) next++;
+      const done = next >= slots.length;
+
+      return {
+        ...prev,
+        [field]: { ...cur, values: nextValues, nextIndex: next, done },
+      };
+    });
+  };
+
+  const resetDictField = (field: DictFieldKey) => {
+    if (!q) return;
+    const text =
+      field === "Q"
+        ? q.qText ?? ""
+        : q.choices.find((x) => x.key === field)?.text ?? "";
+    setDict((prev) => ({ ...prev, [field]: initDictStateForText(text) }));
+  };
+
+  const resetAllDict = () => {
+    if (!q) return;
+    const qText = q.qText ?? "";
+    const aText = q.choices.find((x) => x.key === "A")?.text ?? "";
+    const bText = q.choices.find((x) => x.key === "B")?.text ?? "";
+    const cText = q.choices.find((x) => x.key === "C")?.text ?? "";
+    setDict({
+      Q: initDictStateForText(qText),
+      A: initDictStateForText(aText),
+      B: initDictStateForText(bText),
+      C: initDictStateForText(cText),
+    });
+  };
+
+  const renderDictRow = (label: string, field: DictFieldKey) => {
+    if (!q) return null;
+
+    const correctText =
+      field === "Q"
+        ? q.qText ?? ""
+        : q.choices.find((x) => x.key === field)?.text ?? "";
+    const state = dict[field];
+    const slots = buildSlots(correctText);
+
+    if (!correctText.trim()) {
+      return (
+        <div className="text-sm text-gray-500">
+          {label}: (textなし)
+        </div>
+      );
+    }
+
+    return (
+      <div className="space-y-1">
+        <div className="flex items-center gap-2">
+          <div className="text-sm font-semibold">{label}</div>
+          <button className="px-2 py-1 rounded border text-xs" onClick={() => resetDictField(field)} disabled={busy}>
+            リセット
+          </button>
+          <div className="text-xs text-gray-500">
+            {state.done ? "完了" : `次: ${state.nextIndex + 1}/${slots.length}`}
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-1">
+          {slots.map((ch, i) => {
+            if (!isAlphabet(ch)) {
+              return (
+                <span key={i} className="px-1 text-sm text-gray-600 whitespace-pre">
+                  {ch}
+                </span>
+              );
+            }
+            const v = state.values[i] || "";
+            const isNext = i === state.nextIndex;
+            return (
+              <input
+                key={i}
+                className={
+                  "w-7 h-8 text-center border rounded text-sm font-mono " +
+                  (isNext ? "ring-2 ring-gray-400" : "")
+                }
+                value={v}
+                inputMode="text"
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
+                // 1文字だけ受け取り、正解なら入る
+                onChange={(e) => onDictChar(field, e.target.value)}
+                onKeyDown={(e) => {
+                  // Backspaceは「1つ戻す」ではなく、誤操作防止で無効化（要望にないので）
+                  // 必要なら後で追加可能
+                  if (e.key === "Backspace") e.preventDefault();
+                }}
+                disabled={busy || state.done || !isNext}
+                placeholder="_"
+              />
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="mx-auto max-w-3xl p-4 space-y-4">
       <div className="flex items-center justify-between gap-3">
@@ -591,7 +789,7 @@ export default function SapuriPart2() {
         </div>
       </div>
 
-      {/* ✅ 追加：問題文だけの一覧（ジャンプ/削除） */}
+      {/* 問題一覧（ジャンプ/削除） */}
       <div className="rounded border p-3 space-y-2">
         <div className="flex items-center justify-between gap-2">
           <div className="text-sm font-semibold">問題一覧（英文のみ）</div>
@@ -629,12 +827,7 @@ export default function SapuriPart2() {
                           </div>
                         </td>
                         <td className="p-2 flex gap-2">
-                          <button
-                            className="px-2 py-1 rounded border"
-                            onClick={() => goToIndex(i)}
-                            disabled={busy}
-                            title="この問題へ移動"
-                          >
+                          <button className="px-2 py-1 rounded border" onClick={() => goToIndex(i)} disabled={busy}>
                             移動
                           </button>
                           <button
@@ -643,7 +836,6 @@ export default function SapuriPart2() {
                               if (confirm(`No.${i + 1} を削除しますか？`)) deleteAt(i);
                             }}
                             disabled={busy}
-                            title="この問題を削除"
                           >
                             削除
                           </button>
@@ -662,7 +854,7 @@ export default function SapuriPart2() {
         </div>
       </div>
 
-      {/* ✅ ペーストインポート */}
+      {/* ペーストインポート */}
       <div className="rounded border p-3 space-y-2">
         <div className="text-sm font-semibold">JSONをペーストしてインポート（追記＋重複スキップ）</div>
         <textarea
@@ -692,7 +884,7 @@ export default function SapuriPart2() {
         </div>
       </div>
 
-      {/* ✅ 設定バー：自動再生 + 英文表示 + 日本語表示 */}
+      {/* 設定バー */}
       <div className="rounded border p-3 text-sm flex flex-wrap gap-3 items-center">
         <button className="px-3 py-1 rounded border" onClick={() => toggleSetting("autoplaySequence")}>
           自動再生: {store.settings.autoplaySequence ? "ON" : "OFF"}
@@ -706,9 +898,7 @@ export default function SapuriPart2() {
           日本語表示: {showJa ? "ON" : "OFF"}
         </button>
 
-        <div className="ml-auto text-gray-600">
-          {total ? `${idx}/${total}` : "問題がありません（JSONをインポートしてください）"}
-        </div>
+        <div className="ml-auto text-gray-600">{total ? `${idx}/${total}` : "問題がありません（JSONをインポートしてください）"}</div>
       </div>
 
       <div className="rounded border p-4 space-y-3">
@@ -733,7 +923,7 @@ export default function SapuriPart2() {
           </button>
         </div>
 
-        {/* ✅ 問題文表示（英文/日本語はそれぞれトグルで制御） */}
+        {/* 問題文表示（英文/日本語） */}
         {q && (
           <div className="space-y-1">
             {showEn ? (
@@ -755,19 +945,17 @@ export default function SapuriPart2() {
             )}
 
             {!showEn && !showJa && (
-              <div className="text-xs text-gray-500">
-                ※ 英文/日本語どちらも非表示です（リスニング専用モード）
-              </div>
+              <div className="text-xs text-gray-500">※ 英文/日本語どちらも非表示です（リスニング専用モード）</div>
             )}
           </div>
         )}
 
+        {/* 3択 */}
         {q && (
           <div className="space-y-2">
             {q.choices.map((c) => {
               const isSel = selected === c.key;
               const isCorrect = result && c.key === result.correctKey;
-
               const canSpeakEnglish = !!(c.text && c.text.trim().length > 0);
 
               return (
@@ -786,7 +974,6 @@ export default function SapuriPart2() {
                       選択
                     </button>
 
-                    {/* ✅ 表示はトグルで制御（選択とは独立） */}
                     <div className="text-sm">
                       {showEn ? (
                         c.text ? (
@@ -795,7 +982,6 @@ export default function SapuriPart2() {
                           <span className="text-gray-400">(textなし)</span>
                         )
                       ) : null}
-
                       {showJa ? (c.ja ? <span className="text-gray-700">　/　{c.ja}</span> : null) : null}
                     </div>
 
@@ -813,6 +999,27 @@ export default function SapuriPart2() {
                 </div>
               );
             })}
+          </div>
+        )}
+
+        {/* ✅ 追加：ディクテーション（3択の下） */}
+        {q && (
+          <div className="rounded border p-3 space-y-3 bg-white">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-sm font-semibold">ディクテーション（1文字ずつ入力）</div>
+              <button className="px-2 py-1 rounded border text-xs" onClick={resetAllDict} disabled={busy}>
+                全部リセット
+              </button>
+            </div>
+
+            {renderDictRow("問題文", "Q")}
+            {renderDictRow("A", "A")}
+            {renderDictRow("B", "B")}
+            {renderDictRow("C", "C")}
+
+            <div className="text-xs text-gray-500">
+              ※ 英字だけ入力できます。正解と違う英字は入力されません。小文字で打っても、正解の大文字/小文字に自動で合わせます。
+            </div>
           </div>
         )}
 
