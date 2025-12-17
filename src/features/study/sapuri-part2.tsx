@@ -806,7 +806,7 @@ export default function SapuriPart2() {
           <div className="text-xs text-gray-500">
             {state.done ? "完了" : `次: ${state.nextIndex + 1}/${slots.length}`}
           </div>
-          {isActive && <div className="text-xs text-gray-500">（この行にそのまま টাইピングOK）</div>}
+          {isActive && <div className="text-xs text-gray-500">（この行にそのまま タイピングOK）</div>}
         </div>
 
         <div
