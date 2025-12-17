@@ -165,11 +165,7 @@ function migrate(raw: any): StoreV1 {
   };
 
   if (merged.questions.length === 0) merged.progress.currentIndex = 0;
-  else
-    merged.progress.currentIndex = Math.min(
-      merged.progress.currentIndex,
-      merged.questions.length - 1
-    );
+  else merged.progress.currentIndex = Math.min(merged.progress.currentIndex, merged.questions.length - 1);
 
   return merged;
 }
@@ -234,6 +230,7 @@ function normQuestionKey(qText?: string) {
    - さらに setTimeout で wrongFlashId を0に戻し「一瞬だけ点灯」させる
    - ✅ 各行に音声ボタン追加（Q/A/B/C）
    - ✅ 音声ボタン押下後も、入力フォーカスが維持される（クリック不要）
+   - ✅ 各行の下に「日本語訳」折りたたみ欄（デフォルト閉）
    ========================= */
 
 type DictFieldKey = "Q" | "A" | "B" | "C";
@@ -330,13 +327,26 @@ export default function SapuriPart2() {
 
   // ✅ 音声ボタン押下後も入力を継続できるように、フォーカスを戻すヘルパ
   const refocusDictRow = (field: DictFieldKey) => {
-    // ここで active を保証して、次のtickで focus
     setActiveDictRow(field);
     requestAnimationFrame(() => {
       try {
         dictRowRef.current[field]?.focus();
       } catch {}
     });
+  };
+
+  // ✅ 日本語訳の折りたたみ状態（常にデフォルト閉）
+  const [jaOpen, setJaOpen] = useState<Record<DictFieldKey, boolean>>({
+    Q: false,
+    A: false,
+    B: false,
+    C: false,
+  });
+
+  const toggleJa = (field: DictFieldKey) => {
+    setJaOpen((m) => ({ ...m, [field]: !m[field] }));
+    // クリック不要ディクテーションの体験を壊さない（開閉後も入力継続）
+    refocusDictRow(field);
   };
 
   // ローカルへ即時保存
@@ -443,16 +453,19 @@ export default function SapuriPart2() {
 
     setActiveDictRow("Q");
 
-    // フラッシュ状態もリセット
+    // ✅ フラッシュ状態もリセット
     setWrongFlashId({ Q: 0, A: 0, B: 0, C: 0 });
     (["Q", "A", "B", "C"] as DictFieldKey[]).forEach((k) => {
       const t = wrongTimerRef.current[k];
       if (t) window.clearTimeout(t);
       wrongTimerRef.current[k] = null;
     });
+
+    // ✅ 日本語欄も「常に閉」へ戻す
+    setJaOpen({ Q: false, A: false, B: false, C: false });
   }, [q?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // アクティブ行が変わったら、その行にフォーカス
+  // ✅ アクティブ行が変わったら、その行にフォーカス
   useEffect(() => {
     const el = dictRowRef.current[activeDictRow];
     try {
@@ -521,7 +534,6 @@ export default function SapuriPart2() {
   const playDictRow = async (field: DictFieldKey) => {
     if (!q) return;
 
-    // 入力継続のため、先にフォーカスを確保（ボタン押下でフォーカスが移るので戻す）
     refocusDictRow(field);
 
     setBusy(true);
@@ -529,14 +541,12 @@ export default function SapuriPart2() {
       if (field === "Q") {
         await playQuestion();
       } else {
-        // A/B/C のときはラベル付きで読み上げ
         await playChoiceAny(field as ChoiceKey);
       }
     } catch (e) {
       console.warn("playDictRow failed:", e);
     } finally {
       setBusy(false);
-      // 再度フォーカス（再生後もタイプ継続）
       refocusDictRow(field);
     }
   };
@@ -768,16 +778,12 @@ export default function SapuriPart2() {
 
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      setActiveDictRow((prev) =>
-        prev === "Q" ? "A" : prev === "A" ? "B" : prev === "B" ? "C" : "C"
-      );
+      setActiveDictRow((prev) => (prev === "Q" ? "A" : prev === "A" ? "B" : prev === "B" ? "C" : "C"));
       return;
     }
     if (e.key === "ArrowUp") {
       e.preventDefault();
-      setActiveDictRow((prev) =>
-        prev === "C" ? "B" : prev === "B" ? "A" : prev === "A" ? "Q" : "Q"
-      );
+      setActiveDictRow((prev) => (prev === "C" ? "B" : prev === "B" ? "A" : prev === "A" ? "Q" : "Q"));
       return;
     }
 
@@ -810,7 +816,15 @@ export default function SapuriPart2() {
     });
     setActiveDictRow("Q");
     setWrongFlashId({ Q: 0, A: 0, B: 0, C: 0 });
+    setJaOpen({ Q: false, A: false, B: false, C: false });
     refocusDictRow("Q");
+  };
+
+  const getJaText = (field: DictFieldKey): string => {
+    if (!q) return "";
+    if (field === "Q") return (q.qJa ?? "").trim();
+    const c = q.choices.find((x) => x.key === field);
+    return (c?.ja ?? "").trim();
   };
 
   const renderDictRow = (label: string, field: DictFieldKey) => {
@@ -837,16 +851,17 @@ export default function SapuriPart2() {
         ? !!(q.qText && q.qText.trim().length > 0)
         : !!(q.choices.find((x) => x.key === (field as any))?.text ?? "").trim();
 
+    const jaText = getJaText(field);
+    const isJaOpen = !!jaOpen[field];
+
     return (
       <div className="space-y-1">
         <div className="flex items-center gap-2 flex-wrap">
           <div className="text-sm font-semibold">{label}</div>
 
-          {/* ✅ ディクテーション行の音声ボタン（押した後も入力継続） */}
           <button
             className="px-2 py-1 rounded border text-xs disabled:opacity-50"
             disabled={busy || !canSpeak}
-            // onMouseDownで preventDefault すると「ボタンがフォーカスを奪う」を抑制できる
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => playDictRow(field)}
             title={field === "Q" ? "問題文を読み上げ" : `${field} を読み上げ`}
@@ -863,11 +878,22 @@ export default function SapuriPart2() {
             リセット
           </button>
 
+          {/* ✅ 日本語訳：常にデフォルト閉。ボタンで開閉 */}
+          <button
+            className="px-2 py-1 rounded border text-xs disabled:opacity-50"
+            disabled={!jaText}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => toggleJa(field)}
+            title={jaText ? "日本語訳の表示/非表示" : "日本語訳(ja)がありません"}
+          >
+            {isJaOpen ? "日本語訳を閉じる" : "日本語訳を見る"}
+          </button>
+
           <div className="text-xs text-gray-500">
             {state.done ? "完了" : `次: ${state.nextIndex + 1}/${slots.length}`}
           </div>
 
-          {isActive && <div className="text-xs text-gray-500">（この行にそのまま টাইピングOK）</div>}
+          {isActive && <div className="text-xs text-gray-500">（この行にそのまま タイピングOK）</div>}
         </div>
 
         <div
@@ -915,9 +941,16 @@ export default function SapuriPart2() {
           </div>
         </div>
 
+        {/* ✅ 日本語訳の折りたたみ表示（行の下） */}
+        {isJaOpen && (
+          <div className="rounded border bg-gray-50 p-2 text-sm text-gray-800 whitespace-pre-wrap">
+            {jaText}
+          </div>
+        )}
+
         {isActive && (
           <div className="text-xs text-gray-500">
-            ※ 🔊を押した後も、クリック無しでそのまま入力できます（フォーカスが戻ります）。
+            ※ 🔊や「日本語訳」を押した後も、クリック無しでそのまま入力できます（フォーカスが戻ります）。
           </div>
         )}
       </div>
@@ -1179,6 +1212,8 @@ export default function SapuriPart2() {
 
             <div className="text-xs text-gray-500">
               ※ 各行の🔊を押して何回でも再生できます。押した後もフォーカスが戻るので、クリックせずに入力し続けられます。
+              <br />
+              ※ 「日本語訳を見る」はデフォルトで閉じています（必要なときだけ開けます）。
             </div>
           </div>
         )}
