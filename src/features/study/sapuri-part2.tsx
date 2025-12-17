@@ -1,7 +1,7 @@
 // src/features/study/sapuri-part2.tsx
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { loadUserDoc, saveUserDoc } from "@/lib/userDocStore";
 
 type ID = string;
@@ -225,11 +225,9 @@ function normQuestionKey(qText?: string) {
 }
 
 /* =========================
-   ✅ ディクテーションUI（改良版）
-   - クリックしなくても連続入力できる（行単位でキャプチャ）
-   - 間違えたら「次の枠」が赤く点滅/表示
-   - 正しい場合だけ1文字ずつ進む
-   - 小文字入力→正解の大文字/小文字へ自動合わせ
+   ✅ ディクテーションUI（点灯だけ）
+   - wrongTick を「増やす」→ UIは wrongFlashId と一致した瞬間だけ赤にする
+   - さらに setTimeout で wrongFlashId を0に戻し「一瞬だけ点灯」させる
    ========================= */
 
 type DictFieldKey = "Q" | "A" | "B" | "C";
@@ -249,7 +247,7 @@ function initDictStateForText(text?: string) {
   const values = slots.map((ch) => (isAlphabet(ch) ? "" : ch));
   let next = 0;
   while (next < slots.length && !isAlphabet(slots[next])) next++;
-  return { values, nextIndex: next, done: slots.length === 0, wrongTick: 0 };
+  return { values, nextIndex: next, done: slots.length === 0 };
 }
 
 export default function SapuriPart2() {
@@ -294,6 +292,38 @@ export default function SapuriPart2() {
   // ✅ 行ごとの入力キャプチャを「有効化」するためのフォーカス先
   const dictRowRef = useRef<{ [K in DictFieldKey]?: HTMLDivElement | null }>({});
   const [activeDictRow, setActiveDictRow] = useState<DictFieldKey>("Q");
+
+  // ✅ 「赤点灯」を一瞬だけ出すためのフラッシュ状態
+  // - fieldごとに flashId を持つ（増えるたびに点灯）
+  const [wrongFlashId, setWrongFlashId] = useState<Record<DictFieldKey, number>>({
+    Q: 0,
+    A: 0,
+    B: 0,
+    C: 0,
+  });
+  const wrongTimerRef = useRef<Record<DictFieldKey, number | null>>({
+    Q: null,
+    A: null,
+    B: null,
+    C: null,
+  });
+
+  const flashWrongOnce = (field: DictFieldKey) => {
+    // 既存タイマーがあれば消して「今回の点灯」に置き換える
+    const prev = wrongTimerRef.current[field];
+    if (prev) window.clearTimeout(prev);
+
+    setWrongFlashId((m) => {
+      const next = (m[field] ?? 0) + 1;
+      return { ...m, [field]: next };
+    });
+
+    // 120ms後に0に戻して消灯（「一度点灯」）
+    wrongTimerRef.current[field] = window.setTimeout(() => {
+      setWrongFlashId((m) => ({ ...m, [field]: 0 }));
+      wrongTimerRef.current[field] = null;
+    }, 120);
+  };
 
   // ローカルへ即時保存
   useEffect(() => {
@@ -397,11 +427,18 @@ export default function SapuriPart2() {
       C: initDictStateForText(cText),
     });
 
-    // デフォルトはQ行をアクティブ
     setActiveDictRow("Q");
+
+    // ✅ フラッシュ状態もリセット
+    setWrongFlashId({ Q: 0, A: 0, B: 0, C: 0 });
+    (["Q", "A", "B", "C"] as DictFieldKey[]).forEach((k) => {
+      const t = wrongTimerRef.current[k];
+      if (t) window.clearTimeout(t);
+      wrongTimerRef.current[k] = null;
+    });
   }, [q?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ✅ アクティブ行が変わったら、その行にフォーカス（クリック不要で入力開始）
+  // ✅ アクティブ行が変わったら、その行にフォーカス
   useEffect(() => {
     const el = dictRowRef.current[activeDictRow];
     try {
@@ -636,7 +673,7 @@ export default function SapuriPart2() {
   const showEn = !!store.settings.showEnglish;
   const showJa = !!store.settings.showJapanese;
 
-  // ✅ 1文字トライ（正解なら進む／不正なら wrongTick++）
+  // ✅ 1文字トライ（正解なら進む／不正なら「点灯だけ」）
   const tryDictChar = (field: DictFieldKey, typed: string) => {
     if (!q) return;
 
@@ -651,23 +688,22 @@ export default function SapuriPart2() {
     const t = (typed ?? "").slice(-1);
     if (!t || !isAlphabet(t)) return;
 
+    const cur = dict[field];
+    let ni = cur.nextIndex;
+    while (ni < slots.length && !isAlphabet(slots[ni])) ni++;
+    if (ni >= slots.length) return;
+
+    const correctChar = slots[ni];
+    if (t.toLowerCase() !== correctChar.toLowerCase()) {
+      // ❌ 間違い：その都度「一瞬だけ」赤点灯
+      flashWrongOnce(field);
+      return;
+    }
+
+    // ✅ 正解：埋めて進める
     setDict((prev) => {
-      const cur = prev[field];
-      let ni = cur.nextIndex;
-
-      while (ni < slots.length && !isAlphabet(slots[ni])) ni++;
-      if (ni >= slots.length) {
-        return { ...prev, [field]: { ...cur, nextIndex: ni, done: true } };
-      }
-
-      const correctChar = slots[ni];
-      if (t.toLowerCase() !== correctChar.toLowerCase()) {
-        // ❌ 間違い：入力は進めず、赤表示トリガー
-        return { ...prev, [field]: { ...cur, wrongTick: cur.wrongTick + 1 } };
-      }
-
-      // ✅ 正解：埋めて進める
-      const nextValues = cur.values.slice();
+      const cur2 = prev[field];
+      const nextValues = cur2.values.slice();
       nextValues[ni] = applyCaseToMatch(correctChar, t);
 
       let next = ni + 1;
@@ -676,7 +712,7 @@ export default function SapuriPart2() {
 
       return {
         ...prev,
-        [field]: { ...cur, values: nextValues, nextIndex: next, done, wrongTick: cur.wrongTick },
+        [field]: { ...cur2, values: nextValues, nextIndex: next, done },
       };
     });
   };
@@ -686,7 +722,6 @@ export default function SapuriPart2() {
     if (busy) return;
     if (e.ctrlKey || e.metaKey || e.altKey) return;
 
-    // 文字キー（1文字）だけ扱う
     if (e.key && e.key.length === 1) {
       const ch = e.key;
       if (isAlphabet(ch)) {
@@ -697,7 +732,6 @@ export default function SapuriPart2() {
       return;
     }
 
-    // 行移動（任意：↑↓で行移動）
     if (e.key === "ArrowDown") {
       e.preventDefault();
       setActiveDictRow((prev) => (prev === "Q" ? "A" : prev === "A" ? "B" : prev === "B" ? "C" : "C"));
@@ -709,7 +743,6 @@ export default function SapuriPart2() {
       return;
     }
 
-    // Backspaceは今回は無効（誤操作防止）
     if (e.key === "Backspace") {
       e.preventDefault();
     }
@@ -723,6 +756,7 @@ export default function SapuriPart2() {
         : q.choices.find((x) => x.key === field)?.text ?? "";
     setDict((prev) => ({ ...prev, [field]: initDictStateForText(text) }));
     setActiveDictRow(field);
+    setWrongFlashId((m) => ({ ...m, [field]: 0 }));
   };
 
   const resetAllDict = () => {
@@ -738,6 +772,7 @@ export default function SapuriPart2() {
       C: initDictStateForText(cText),
     });
     setActiveDictRow("Q");
+    setWrongFlashId({ Q: 0, A: 0, B: 0, C: 0 });
   };
 
   const renderDictRow = (label: string, field: DictFieldKey) => {
@@ -759,7 +794,7 @@ export default function SapuriPart2() {
     }
 
     const isActive = activeDictRow === field;
-    const wrongNow = isActive && state.wrongTick > 0;
+    const flashOn = isActive && (wrongFlashId[field] ?? 0) > 0; // ✅ 0に戻るので「点灯だけ」になる
 
     return (
       <div className="space-y-1">
@@ -768,11 +803,12 @@ export default function SapuriPart2() {
           <button className="px-2 py-1 rounded border text-xs" onClick={() => resetDictField(field)} disabled={busy}>
             リセット
           </button>
-          <div className="text-xs text-gray-500">{state.done ? "完了" : `次: ${state.nextIndex + 1}/${slots.length}`}</div>
+          <div className="text-xs text-gray-500">
+            {state.done ? "完了" : `次: ${state.nextIndex + 1}/${slots.length}`}
+          </div>
           {isActive && <div className="text-xs text-gray-500">（この行にそのまま টাইピングOK）</div>}
         </div>
 
-        {/* ✅ 行コンテナがキーボード入力を受け取る（クリック不要で連続入力） */}
         <div
           ref={(el) => {
             dictRowRef.current[field] = el;
@@ -782,9 +818,9 @@ export default function SapuriPart2() {
           onMouseDown={() => setActiveDictRow(field)}
           onKeyDown={(e) => onDictRowKeyDown(field, e)}
           className={
-            "rounded border p-2 outline-none " +
+            "rounded border p-2 outline-none transition-colors " +
             (isActive ? "ring-2 ring-gray-400" : "") +
-            (wrongNow ? " ring-red-400 border-red-400" : "")
+            (flashOn ? " ring-red-400 border-red-400" : "")
           }
           title="クリックしてもOKですが、以後はクリック無しで入力できます（この枠がフォーカスを持ちます）"
         >
@@ -799,15 +835,17 @@ export default function SapuriPart2() {
               }
               const v = state.values[i] || "";
               const isNext = i === state.nextIndex;
-              const showWrong = wrongNow && isNext;
+
+              // ✅ 点灯は「次の枠」だけに出す（行全体も軽く赤）
+              const showFlash = flashOn && isNext;
 
               return (
                 <div
                   key={i}
                   className={
-                    "w-7 h-8 flex items-center justify-center border rounded text-sm font-mono select-none " +
+                    "w-7 h-8 flex items-center justify-center border rounded text-sm font-mono select-none transition-colors " +
                     (isNext ? "ring-2 ring-gray-400" : "") +
-                    (showWrong ? " border-red-500 ring-red-500" : "")
+                    (showFlash ? " border-red-500 ring-red-500" : "")
                   }
                   title={isNext ? "次に入力する枠" : ""}
                 >
@@ -820,7 +858,7 @@ export default function SapuriPart2() {
 
         {isActive && (
           <div className="text-xs text-gray-500">
-            ※ 英字キーを押すと自動で次に進みます（クリックで各マスを選ぶ必要はありません）。間違うと「次の枠」が赤くなります。
+            ※ 英字キーを押すと自動で次に進みます。間違うと「一瞬だけ」赤く点灯します。
           </div>
         )}
       </div>
@@ -1076,8 +1114,7 @@ export default function SapuriPart2() {
             {renderDictRow("C", "C")}
 
             <div className="text-xs text-gray-500">
-              ※ まず行（問題文/A/B/C）のどれかを1回クリックしてフォーカスすれば、その後はクリック無しで入力できます。間違うと次の枠が赤くなります。
-              （↑↓で行移動もできます）
+              ※ 間違えるたびに「一瞬だけ」赤く点灯します（点灯しっぱなしにはなりません）。
             </div>
           </div>
         )}
