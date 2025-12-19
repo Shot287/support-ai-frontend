@@ -147,8 +147,7 @@ function migrate(raw: any): StoreV1 {
       showText: legacyShowText,
     },
     progress: {
-      currentIndex:
-        typeof progress.currentIndex === "number" ? Math.max(0, progress.currentIndex) : 0,
+      currentIndex: typeof progress.currentIndex === "number" ? Math.max(0, progress.currentIndex) : 0,
       lastAnswered:
         progress.lastAnswered && typeof progress.lastAnswered === "object"
           ? {
@@ -225,12 +224,10 @@ function normQuestionKey(qText?: string) {
 }
 
 /* =========================
-   ✅ ディクテーションUI（点灯だけ）
-   - wrongTick を「増やす」→ UIは wrongFlashId と一致した瞬間だけ赤にする
-   - さらに setTimeout で wrongFlashId を0に戻し「一瞬だけ点灯」させる
-   - ✅ 各行に音声ボタン追加（Q/A/B/C）
-   - ✅ 音声ボタン押下後も、入力フォーカスが維持される（クリック不要）
-   - ✅ 各行の下に「日本語訳」折りたたみ欄（デフォルト閉）
+   ✅ ディクテーションUI（単語ボックス + 正解済みロック + 自動スキップ）
+   - 単語単位でクリックして開始位置を変更できる（未完了のみ）
+   - 正解済み単語は再入力不可（ロック）・次の単語へ自動で飛ぶ
+   - 既存：赤点灯 / TTS / フォーカス維持 / 日本語訳折りたたみ を維持
    ========================= */
 
 type DictFieldKey = "Q" | "A" | "B" | "C";
@@ -244,13 +241,90 @@ function isAlphabet(ch: string) {
 function applyCaseToMatch(correct: string, typed: string) {
   return correct === correct.toUpperCase() ? typed.toUpperCase() : typed.toLowerCase();
 }
+
+type WordUnit = { start: number; end: number }; // start/end are indices in slots/string
+
+function splitToWords(text: string): WordUnit[] {
+  const slots = buildSlots(text);
+  const words: WordUnit[] = [];
+  let i = 0;
+  while (i < slots.length) {
+    if (!isAlphabet(slots[i])) {
+      i++;
+      continue;
+    }
+    const start = i;
+    while (i < slots.length && isAlphabet(slots[i])) i++;
+    const end = i - 1;
+    words.push({ start, end });
+  }
+  return words;
+}
+
+function clampNextToFirstUncompletedWord(
+  nextIndex: number,
+  slots: string[],
+  words: WordUnit[],
+  completedWords: boolean[]
+) {
+  if (!words.length) {
+    // no words, fall back to original behavior
+    let ni = nextIndex;
+    while (ni < slots.length && !isAlphabet(slots[ni])) ni++;
+    return ni;
+  }
+
+  // if nextIndex is inside a completed word, jump to the next uncompleted word start after it
+  const findWordIndexAt = (pos: number) => words.findIndex((w) => pos >= w.start && pos <= w.end);
+
+  let ni = nextIndex;
+  while (ni < slots.length && !isAlphabet(slots[ni])) ni++;
+
+  let wi = findWordIndexAt(ni);
+  if (wi >= 0 && completedWords[wi]) {
+    // find next uncompleted word
+    for (let j = wi + 1; j < words.length; j++) {
+      if (!completedWords[j]) return words[j].start;
+    }
+    // all words completed
+    return slots.length;
+  }
+
+  // if nextIndex is between words/punct, move to first uncompleted word at/after ni
+  if (wi < 0) {
+    for (let j = 0; j < words.length; j++) {
+      if (words[j].start >= ni && !completedWords[j]) return words[j].start;
+    }
+    // otherwise, earlier uncompleted?
+    for (let j = 0; j < words.length; j++) {
+      if (!completedWords[j]) return words[j].start;
+    }
+    return slots.length;
+  }
+
+  return ni;
+}
+
 function initDictStateForText(text?: string) {
   const t = (text ?? "").toString();
   const slots = buildSlots(t);
+
   const values = slots.map((ch) => (isAlphabet(ch) ? "" : ch));
+
+  const words = splitToWords(t);
+  const completedWords = words.map(() => false);
+
   let next = 0;
   while (next < slots.length && !isAlphabet(slots[next])) next++;
-  return { values, nextIndex: next, done: slots.length === 0 };
+  next = clampNextToFirstUncompletedWord(next, slots, words, completedWords);
+
+  return {
+    values,
+    nextIndex: next,
+    done: slots.length === 0 || next >= slots.length,
+    words,
+    completedWords,
+  };
 }
 
 export default function SapuriPart2() {
@@ -345,7 +419,6 @@ export default function SapuriPart2() {
 
   const toggleJa = (field: DictFieldKey) => {
     setJaOpen((m) => ({ ...m, [field]: !m[field] }));
-    // クリック不要ディクテーションの体験を壊さない（開閉後も入力継続）
     refocusDictRow(field);
   };
 
@@ -722,6 +795,7 @@ export default function SapuriPart2() {
   const showJa = !!store.settings.showJapanese;
 
   // ✅ 1文字トライ（正解なら進む／不正なら「点灯だけ」）
+  // ✅ 追加：単語が完成したらロックし、次の未完了単語へジャンプ
   const tryDictChar = (field: DictFieldKey, typed: string) => {
     if (!q) return;
 
@@ -735,9 +809,14 @@ export default function SapuriPart2() {
     if (!t || !isAlphabet(t)) return;
 
     const cur = dict[field];
-    let ni = cur.nextIndex;
-    while (ni < slots.length && !isAlphabet(slots[ni])) ni++;
-    if (ni >= slots.length) return;
+    if (cur.done) return;
+
+    // 現在位置が「正解済み単語内」ならスキップしてから処理
+    let ni = clampNextToFirstUncompletedWord(cur.nextIndex, slots, cur.words, cur.completedWords);
+    if (ni >= slots.length) {
+      setDict((prev) => ({ ...prev, [field]: { ...prev[field], nextIndex: slots.length, done: true } }));
+      return;
+    }
 
     const correctChar = slots[ni];
     if (t.toLowerCase() !== correctChar.toLowerCase()) {
@@ -746,17 +825,41 @@ export default function SapuriPart2() {
     }
 
     setDict((prev) => {
-      const cur2 = prev[field];
-      const nextValues = cur2.values.slice();
+      const st = prev[field];
+      const nextValues = st.values.slice();
       nextValues[ni] = applyCaseToMatch(correctChar, t);
 
+      const words = st.words;
+      const completedWords = st.completedWords.slice();
+
+      // どの単語に属しているか
+      const wi = words.findIndex((w) => ni >= w.start && ni <= w.end);
+
+      // 単語が全部埋まったらロック
+      if (wi >= 0 && !completedWords[wi]) {
+        const w = words[wi];
+        let ok = true;
+        for (let i = w.start; i <= w.end; i++) {
+          const v = nextValues[i];
+          const c = slots[i];
+          if (!isAlphabet(c)) continue;
+          if (!v || v.toLowerCase() !== c.toLowerCase()) {
+            ok = false;
+            break;
+          }
+        }
+        if (ok) completedWords[wi] = true;
+      }
+
+      // 次の入力位置：未完了単語を探す（間の記号も飛ばす）
       let next = ni + 1;
-      while (next < slots.length && !isAlphabet(slots[next])) next++;
+      next = clampNextToFirstUncompletedWord(next, slots, words, completedWords);
+
       const done = next >= slots.length;
 
       return {
         ...prev,
-        [field]: { ...cur2, values: nextValues, nextIndex: next, done },
+        [field]: { ...st, values: nextValues, completedWords, nextIndex: next, done },
       };
     });
   };
@@ -794,8 +897,7 @@ export default function SapuriPart2() {
 
   const resetDictField = (field: DictFieldKey) => {
     if (!q) return;
-    const text =
-      field === "Q" ? q.qText ?? "" : q.choices.find((x) => x.key === field)?.text ?? "";
+    const text = field === "Q" ? q.qText ?? "" : q.choices.find((x) => x.key === field)?.text ?? "";
     setDict((prev) => ({ ...prev, [field]: initDictStateForText(text) }));
     setActiveDictRow(field);
     setWrongFlashId((m) => ({ ...m, [field]: 0 }));
@@ -854,6 +956,81 @@ export default function SapuriPart2() {
     const jaText = getJaText(field);
     const isJaOpen = !!jaOpen[field];
 
+    const words = state.words;
+
+    // クリックで単語スタート（正解済みは不可）
+    const jumpToWord = (wi: number) => {
+      if (!isActive) setActiveDictRow(field);
+      if (state.completedWords[wi]) return;
+      const target = words[wi]?.start ?? 0;
+      setDict((prev) => ({
+        ...prev,
+        [field]: { ...prev[field], nextIndex: target, done: target >= slots.length },
+      }));
+      refocusDictRow(field);
+    };
+
+    // 描画：文字列を走査し、単語は「単語グループ」、記号/空白はそのまま
+    const rendered: React.ReactNode[] = [];
+    const wordByStart = new Map<number, number>();
+    words.forEach((w, wi) => wordByStart.set(w.start, wi));
+
+    for (let i = 0; i < slots.length; i++) {
+      const wi = wordByStart.get(i);
+      if (wi !== undefined) {
+        const w = words[wi];
+        const locked = !!state.completedWords[wi];
+        const isNextInside = state.nextIndex >= w.start && state.nextIndex <= w.end;
+
+        rendered.push(
+          <div
+            key={`w-${wi}`}
+            className={
+              "flex gap-1 p-1 border rounded select-none " +
+              (locked
+                ? "bg-gray-200 text-gray-400 cursor-not-allowed opacity-70"
+                : "cursor-pointer hover:ring-2 hover:ring-gray-400") +
+              (isNextInside && isActive ? " ring-2 ring-gray-400" : "")
+            }
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => jumpToWord(wi)}
+            title={locked ? "正解済み（再入力不可）" : "クリックしてこの単語から入力"}
+          >
+            {Array.from({ length: w.end - w.start + 1 }).map((_, k) => {
+              const idx = w.start + k;
+              const v = state.values[idx] || "";
+              const isNext = idx === state.nextIndex;
+              const showFlash = flashOn && isNext;
+
+              return (
+                <div
+                  key={`c-${wi}-${k}`}
+                  className={
+                    "w-7 h-8 flex items-center justify-center border rounded text-sm font-mono transition-colors " +
+                    (isNext && isActive ? "ring-2 ring-gray-400" : "") +
+                    (showFlash ? " border-red-500 ring-red-500" : "")
+                  }
+                  title={isNext ? "次に入力する枠" : ""}
+                >
+                  {v ? v : "_"}
+                </div>
+              );
+            })}
+          </div>
+        );
+
+        i = w.end; // skip to end of word
+        continue;
+      }
+
+      // 記号/空白など
+      rendered.push(
+        <span key={`s-${i}`} className="px-1 text-sm text-gray-600 whitespace-pre select-none">
+          {slots[i]}
+        </span>
+      );
+    }
+
     return (
       <div className="space-y-1">
         <div className="flex items-center gap-2 flex-wrap">
@@ -878,7 +1055,6 @@ export default function SapuriPart2() {
             リセット
           </button>
 
-          {/* ✅ 日本語訳：常にデフォルト閉。ボタンで開閉 */}
           <button
             className="px-2 py-1 rounded border text-xs disabled:opacity-50"
             disabled={!jaText}
@@ -890,7 +1066,7 @@ export default function SapuriPart2() {
           </button>
 
           <div className="text-xs text-gray-500">
-            {state.done ? "完了" : `次: ${state.nextIndex + 1}/${slots.length}`}
+            {state.done ? "完了" : `次: ${Math.min(state.nextIndex + 1, slots.length)}/${slots.length}`}
           </div>
 
           {isActive && <div className="text-xs text-gray-500">（この行にそのまま タイピングOK）</div>}
@@ -911,46 +1087,18 @@ export default function SapuriPart2() {
           }
           title="クリックしてもOKですが、以後はクリック無しで入力できます（この枠がフォーカスを持ちます）"
         >
-          <div className="flex flex-wrap items-center gap-1">
-            {slots.map((ch, i) => {
-              if (!isAlphabet(ch)) {
-                return (
-                  <span key={i} className="px-1 text-sm text-gray-600 whitespace-pre">
-                    {ch}
-                  </span>
-                );
-              }
-              const v = state.values[i] || "";
-              const isNext = i === state.nextIndex;
-              const showFlash = flashOn && isNext;
-
-              return (
-                <div
-                  key={i}
-                  className={
-                    "w-7 h-8 flex items-center justify-center border rounded text-sm font-mono select-none transition-colors " +
-                    (isNext ? "ring-2 ring-gray-400" : "") +
-                    (showFlash ? " border-red-500 ring-red-500" : "")
-                  }
-                  title={isNext ? "次に入力する枠" : ""}
-                >
-                  {v ? v : "_"}
-                </div>
-              );
-            })}
-          </div>
+          <div className="flex flex-wrap items-center gap-1">{rendered}</div>
         </div>
 
-        {/* ✅ 日本語訳の折りたたみ表示（行の下） */}
         {isJaOpen && (
-          <div className="rounded border bg-gray-50 p-2 text-sm text-gray-800 whitespace-pre-wrap">
-            {jaText}
-          </div>
+          <div className="rounded border bg-gray-50 p-2 text-sm text-gray-800 whitespace-pre-wrap">{jaText}</div>
         )}
 
         {isActive && (
           <div className="text-xs text-gray-500">
             ※ 🔊や「日本語訳」を押した後も、クリック無しでそのまま入力できます（フォーカスが戻ります）。
+            <br />
+            ※ 単語ボックスをクリックすると、その単語から入力できます（正解済みはロックされます）。
           </div>
         )}
       </div>
@@ -1037,9 +1185,7 @@ export default function SapuriPart2() {
           </div>
         )}
 
-        <div className="text-xs text-gray-500">
-          ※ 番号は「追加順（配列順）」で自動採番です。削除すると自動で詰まります。
-        </div>
+        <div className="text-xs text-gray-500">※ 番号は「追加順（配列順）」で自動採番です。削除すると自動で詰まります。</div>
       </div>
 
       {/* ペーストインポート */}
@@ -1194,7 +1340,7 @@ export default function SapuriPart2() {
         {q && (
           <div className="rounded border p-3 space-y-3 bg-white">
             <div className="flex items-center justify-between gap-2">
-              <div className="text-sm font-semibold">ディクテーション（クリック不要で連続入力）</div>
+              <div className="text-sm font-semibold">ディクテーション（単語ボックス / 正解済みは自動スキップ）</div>
               <button
                 className="px-2 py-1 rounded border text-xs"
                 onMouseDown={(e) => e.preventDefault()}
@@ -1211,7 +1357,9 @@ export default function SapuriPart2() {
             {renderDictRow("C", "C")}
 
             <div className="text-xs text-gray-500">
-              ※ 各行の🔊を押して何回でも再生できます。押した後もフォーカスが戻るので、クリックせずに入力し続けられます。
+              ※ 単語ボックスをクリックすると、その単語から入力できます（未完了のみ）。
+              <br />
+              ※ 正解済み単語はロックされ、入力は次の単語へ自動で進みます。
               <br />
               ※ 「日本語訳を見る」はデフォルトで閉じています（必要なときだけ開けます）。
             </div>
@@ -1227,9 +1375,7 @@ export default function SapuriPart2() {
           </div>
         )}
 
-        <div className="text-xs text-gray-500">
-          ※ 音声ファイルは使用しません。読み上げはブラウザのTTS（英文＋A/B/Cラベル）です。
-        </div>
+        <div className="text-xs text-gray-500">※ 音声ファイルは使用しません。読み上げはブラウザのTTS（英文＋A/B/Cラベル）です。</div>
       </div>
     </div>
   );
