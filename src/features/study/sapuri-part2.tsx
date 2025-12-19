@@ -280,7 +280,7 @@ function clampNextToFirstUncompletedWord(
   let ni = nextIndex;
   while (ni < slots.length && !isAlphabet(slots[ni])) ni++;
 
-  let wi = findWordIndexAt(ni);
+  const wi = findWordIndexAt(ni);
   if (wi >= 0 && completedWords[wi]) {
     // find next uncompleted word
     for (let j = wi + 1; j < words.length; j++) {
@@ -812,7 +812,7 @@ export default function SapuriPart2() {
     if (cur.done) return;
 
     // 現在位置が「正解済み単語内」ならスキップしてから処理
-    let ni = clampNextToFirstUncompletedWord(cur.nextIndex, slots, cur.words, cur.completedWords);
+    const ni = clampNextToFirstUncompletedWord(cur.nextIndex, slots, cur.words, cur.completedWords);
     if (ni >= slots.length) {
       setDict((prev) => ({ ...prev, [field]: { ...prev[field], nextIndex: slots.length, done: true } }));
       return;
