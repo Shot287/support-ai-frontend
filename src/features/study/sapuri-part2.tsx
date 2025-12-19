@@ -938,11 +938,7 @@ export default function SapuriPart2() {
     const slots = buildSlots(correctText);
 
     if (!correctText.trim()) {
-      return (
-        <div className="text-sm text-gray-500">
-          {label}: (textなし)
-        </div>
-      );
+      return <div className="text-sm text-gray-500">{label}: (textなし)</div>;
     }
 
     const isActive = activeDictRow === field;
@@ -982,13 +978,16 @@ export default function SapuriPart2() {
         const locked = !!state.completedWords[wi];
         const isNextInside = state.nextIndex >= w.start && state.nextIndex <= w.end;
 
+        // ✅ 修正：ロック時の「グレーアウト（text-gray-400 / opacity-70）」をやめる
+        // - クリック不可は維持（cursor-not-allowed / title）
+        // - 見やすさ維持のため、背景だけ薄い色にしてテキスト色は落とさない
         rendered.push(
           <div
             key={`w-${wi}`}
             className={
               "flex gap-1 p-1 border rounded select-none " +
               (locked
-                ? "bg-gray-200 text-gray-400 cursor-not-allowed opacity-70"
+                ? "bg-gray-100 cursor-not-allowed"
                 : "cursor-pointer hover:ring-2 hover:ring-gray-400") +
               (isNextInside && isActive ? " ring-2 ring-gray-400" : "")
             }
@@ -1008,7 +1007,9 @@ export default function SapuriPart2() {
                   className={
                     "w-7 h-8 flex items-center justify-center border rounded text-sm font-mono transition-colors " +
                     (isNext && isActive ? "ring-2 ring-gray-400" : "") +
-                    (showFlash ? " border-red-500 ring-red-500" : "")
+                    (showFlash ? " border-red-500 ring-red-500" : "") +
+                    // ✅ ロック時も文字は見やすく（薄くしない）
+                    (locked ? "bg-white" : "")
                   }
                   title={isNext ? "次に入力する枠" : ""}
                 >
@@ -1090,9 +1091,7 @@ export default function SapuriPart2() {
           <div className="flex flex-wrap items-center gap-1">{rendered}</div>
         </div>
 
-        {isJaOpen && (
-          <div className="rounded border bg-gray-50 p-2 text-sm text-gray-800 whitespace-pre-wrap">{jaText}</div>
-        )}
+        {isJaOpen && <div className="rounded border bg-gray-50 p-2 text-sm text-gray-800 whitespace-pre-wrap">{jaText}</div>}
 
         {isActive && (
           <div className="text-xs text-gray-500">
