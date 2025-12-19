@@ -228,6 +228,7 @@ function normQuestionKey(qText?: string) {
    - 単語単位でクリックして開始位置を変更できる（未完了のみ）
    - 正解済み単語は再入力不可（ロック）・次の単語へ自動で飛ぶ
    - 既存：赤点灯 / TTS / フォーカス維持 / 日本語訳折りたたみ を維持
+   - ✅ 追加：1文字ヒント（現在選択中の単語ボックスの次の1文字を自動で埋める）
    ========================= */
 
 type DictFieldKey = "Q" | "A" | "B" | "C";
@@ -274,7 +275,6 @@ function clampNextToFirstUncompletedWord(
     return ni;
   }
 
-  // if nextIndex is inside a completed word, jump to the next uncompleted word start after it
   const findWordIndexAt = (pos: number) => words.findIndex((w) => pos >= w.start && pos <= w.end);
 
   let ni = nextIndex;
@@ -282,20 +282,16 @@ function clampNextToFirstUncompletedWord(
 
   const wi = findWordIndexAt(ni);
   if (wi >= 0 && completedWords[wi]) {
-    // find next uncompleted word
     for (let j = wi + 1; j < words.length; j++) {
       if (!completedWords[j]) return words[j].start;
     }
-    // all words completed
     return slots.length;
   }
 
-  // if nextIndex is between words/punct, move to first uncompleted word at/after ni
   if (wi < 0) {
     for (let j = 0; j < words.length; j++) {
       if (words[j].start >= ni && !completedWords[j]) return words[j].start;
     }
-    // otherwise, earlier uncompleted?
     for (let j = 0; j < words.length; j++) {
       if (!completedWords[j]) return words[j].start;
     }
@@ -864,6 +860,84 @@ export default function SapuriPart2() {
     });
   };
 
+  // ✅ 追加：1文字ヒント（現在の nextIndex の1文字を正解で埋める）
+  const hintOneChar = (field: DictFieldKey) => {
+    if (!q) return;
+
+    const correctText =
+      field === "Q" ? q.qText ?? "" : q.choices.find((x) => x.key === field)?.text ?? "";
+    const slots = buildSlots(correctText);
+    if (!slots.length) return;
+
+    // 押下した行をアクティブにして入力継続
+    setActiveDictRow(field);
+    refocusDictRow(field);
+
+    const cur = dict[field];
+    if (cur.done) return;
+
+    const ni = clampNextToFirstUncompletedWord(cur.nextIndex, slots, cur.words, cur.completedWords);
+    if (ni >= slots.length) {
+      setDict((prev) => ({ ...prev, [field]: { ...prev[field], nextIndex: slots.length, done: true } }));
+      return;
+    }
+
+    const correctChar = slots[ni];
+    if (!isAlphabet(correctChar)) {
+      // 念のため（基本は clamp 側で alphabet へ寄せている）
+      setDict((prev) => ({ ...prev, [field]: { ...prev[field], nextIndex: ni + 1 } }));
+      return;
+    }
+
+    // tryDictChar と同等の更新（ただし「不正解フラッシュ」は発生しない）
+    setDict((prev) => {
+      const st = prev[field];
+      const nextValues = st.values.slice();
+
+      // 既に埋まっているなら次へ（通常は起きにくいが安全）
+      if (nextValues[ni] && nextValues[ni].toLowerCase() === correctChar.toLowerCase()) {
+        let next = ni + 1;
+        next = clampNextToFirstUncompletedWord(next, slots, st.words, st.completedWords);
+        const done = next >= slots.length;
+        return { ...prev, [field]: { ...st, nextIndex: next, done } };
+      }
+
+      nextValues[ni] = applyCaseToMatch(correctChar, correctChar);
+
+      const words = st.words;
+      const completedWords = st.completedWords.slice();
+
+      const wi = words.findIndex((w) => ni >= w.start && ni <= w.end);
+
+      if (wi >= 0 && !completedWords[wi]) {
+        const w = words[wi];
+        let ok = true;
+        for (let i = w.start; i <= w.end; i++) {
+          const v = nextValues[i];
+          const c = slots[i];
+          if (!isAlphabet(c)) continue;
+          if (!v || v.toLowerCase() !== c.toLowerCase()) {
+            ok = false;
+            break;
+          }
+        }
+        if (ok) completedWords[wi] = true;
+      }
+
+      let next = ni + 1;
+      next = clampNextToFirstUncompletedWord(next, slots, words, completedWords);
+      const done = next >= slots.length;
+
+      return {
+        ...prev,
+        [field]: { ...st, values: nextValues, completedWords, nextIndex: next, done },
+      };
+    });
+
+    // ボタン押下後もすぐ入力できるように
+    refocusDictRow(field);
+  };
+
   // ✅ 行（Q/A/B/C）をアクティブにして連続入力：キー入力を行コンテナで拾う
   const onDictRowKeyDown = (field: DictFieldKey, e: React.KeyboardEvent<HTMLDivElement>) => {
     if (busy) return;
@@ -966,6 +1040,10 @@ export default function SapuriPart2() {
       refocusDictRow(field);
     };
 
+    // ヒントボタンの有効/無効
+    const hintIndex = clampNextToFirstUncompletedWord(state.nextIndex, slots, state.words, state.completedWords);
+    const canHint = !busy && !state.done && hintIndex < slots.length && isAlphabet(slots[hintIndex] ?? "");
+
     // 描画：文字列を走査し、単語は「単語グループ」、記号/空白はそのまま
     const rendered: React.ReactNode[] = [];
     const wordByStart = new Map<number, number>();
@@ -978,17 +1056,13 @@ export default function SapuriPart2() {
         const locked = !!state.completedWords[wi];
         const isNextInside = state.nextIndex >= w.start && state.nextIndex <= w.end;
 
-        // ✅ 修正：ロック時の「グレーアウト（text-gray-400 / opacity-70）」をやめる
-        // - クリック不可は維持（cursor-not-allowed / title）
-        // - 見やすさ維持のため、背景だけ薄い色にしてテキスト色は落とさない
+        // ✅ ロック時にグレーアウトしない（クリック不可は維持）
         rendered.push(
           <div
             key={`w-${wi}`}
             className={
               "flex gap-1 p-1 border rounded select-none " +
-              (locked
-                ? "bg-gray-100 cursor-not-allowed"
-                : "cursor-pointer hover:ring-2 hover:ring-gray-400") +
+              (locked ? "bg-gray-100 cursor-not-allowed" : "cursor-pointer hover:ring-2 hover:ring-gray-400") +
               (isNextInside && isActive ? " ring-2 ring-gray-400" : "")
             }
             onMouseDown={(e) => e.preventDefault()}
@@ -1008,7 +1082,6 @@ export default function SapuriPart2() {
                     "w-7 h-8 flex items-center justify-center border rounded text-sm font-mono transition-colors " +
                     (isNext && isActive ? "ring-2 ring-gray-400" : "") +
                     (showFlash ? " border-red-500 ring-red-500" : "") +
-                    // ✅ ロック時も文字は見やすく（薄くしない）
                     (locked ? "bg-white" : "")
                   }
                   title={isNext ? "次に入力する枠" : ""}
@@ -1045,6 +1118,17 @@ export default function SapuriPart2() {
             title={field === "Q" ? "問題文を読み上げ" : `${field} を読み上げ`}
           >
             🔊 {label}
+          </button>
+
+          {/* ✅ 追加：1文字ヒント */}
+          <button
+            className="px-2 py-1 rounded border text-xs disabled:opacity-50"
+            disabled={!canHint}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => hintOneChar(field)}
+            title="現在の単語ボックスの「次の1文字」を自動で埋めます"
+          >
+            💡 1文字ヒント
           </button>
 
           <button
@@ -1091,11 +1175,13 @@ export default function SapuriPart2() {
           <div className="flex flex-wrap items-center gap-1">{rendered}</div>
         </div>
 
-        {isJaOpen && <div className="rounded border bg-gray-50 p-2 text-sm text-gray-800 whitespace-pre-wrap">{jaText}</div>}
+        {isJaOpen && (
+          <div className="rounded border bg-gray-50 p-2 text-sm text-gray-800 whitespace-pre-wrap">{jaText}</div>
+        )}
 
         {isActive && (
           <div className="text-xs text-gray-500">
-            ※ 🔊や「日本語訳」を押した後も、クリック無しでそのまま入力できます（フォーカスが戻ります）。
+            ※ 🔊や「日本語訳」や「1文字ヒント」を押した後も、クリック無しでそのまま入力できます（フォーカスが戻ります）。
             <br />
             ※ 単語ボックスをクリックすると、その単語から入力できます（正解済みはロックされます）。
           </div>
@@ -1361,6 +1447,8 @@ export default function SapuriPart2() {
               ※ 正解済み単語はロックされ、入力は次の単語へ自動で進みます。
               <br />
               ※ 「日本語訳を見る」はデフォルトで閉じています（必要なときだけ開けます）。
+              <br />
+              ※ 「💡1文字ヒント」は、現在の単語ボックスの次のアルファベット1文字だけを埋めます。
             </div>
           </div>
         )}
