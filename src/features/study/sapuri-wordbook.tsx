@@ -87,15 +87,10 @@ function loadLocal(): Store {
             word: String(w.word ?? ""),
             meaning: String(w.meaning ?? ""),
             myMeaning:
-              typeof w.myMeaning === "string"
-                ? w.myMeaning
-                : String(w.myMeaning ?? ""),
+              typeof w.myMeaning === "string" ? w.myMeaning : String(w.myMeaning ?? ""),
 
             noteKind: normalizeNoteKind(w.noteKind),
-            intransPrep:
-              typeof w.intransPrep === "string"
-                ? w.intransPrep
-                : String(w.intransPrep ?? ""),
+            intransPrep: typeof w.intransPrep === "string" ? w.intransPrep : String(w.intransPrep ?? ""),
 
             marked: Boolean(w.marked),
             struck: Boolean(w.struck),
@@ -110,10 +105,7 @@ function loadLocal(): Store {
 
     return {
       folders,
-      currentFolderId:
-        typeof parsed.currentFolderId === "string"
-          ? parsed.currentFolderId
-          : def.currentFolderId,
+      currentFolderId: typeof parsed.currentFolderId === "string" ? parsed.currentFolderId : def.currentFolderId,
       version: 1,
     };
   } catch {
@@ -184,16 +176,12 @@ export default function SapuriWordbook() {
   const [session, setSession] = useState<StudySession | null>(null);
 
   // ★ 自動学習の解答表示待ち時間（ms）
-  const [autoDelayMs, setAutoDelayMs] = useState<number>(() =>
-    loadAutoDelayMs()
-  );
+  const [autoDelayMs, setAutoDelayMs] = useState<number>(() => loadAutoDelayMs());
 
   // ★ 単語一覧UI
   const [showWordList, setShowWordList] = useState(true);
   const [listQuery, setListQuery] = useState("");
-  const [listFilter, setListFilter] = useState<"all" | "marked" | "struck">(
-    "all"
-  );
+  const [listFilter, setListFilter] = useState<"all" | "marked" | "struck">("all");
 
   // ★ 音声（TTS）
   const [speakingWordId, setSpeakingWordId] = useState<ID | null>(null);
@@ -245,15 +233,9 @@ export default function SapuriWordbook() {
                     ...w,
                     pos: typeof w.pos === "string" ? w.pos : "",
                     struck: Boolean(w.struck),
-                    myMeaning:
-                      typeof w.myMeaning === "string"
-                        ? w.myMeaning
-                        : String(w.myMeaning ?? ""),
+                    myMeaning: typeof w.myMeaning === "string" ? w.myMeaning : String(w.myMeaning ?? ""),
                     noteKind: nk,
-                    intransPrep:
-                      typeof w.intransPrep === "string"
-                        ? w.intransPrep
-                        : String(w.intransPrep ?? ""),
+                    intransPrep: typeof w.intransPrep === "string" ? w.intransPrep : String(w.intransPrep ?? ""),
                     // 自動詞じゃないなら、念のため前置詞は保持しつつ表示側で制御
                   };
                 }),
@@ -328,9 +310,7 @@ export default function SapuriWordbook() {
   const pickEnglishVoice = (voices: SpeechSynthesisVoice[]) => {
     const prefers = ["en-US", "en-GB", "en"];
     for (const lang of prefers) {
-      const v = voices.find(
-        (x) => (x.lang || "").toLowerCase() === lang.toLowerCase()
-      );
+      const v = voices.find((x) => (x.lang || "").toLowerCase() === lang.toLowerCase());
       if (v) return v;
     }
     const v2 = voices.find((x) => (x.lang || "").toLowerCase().startsWith("en"));
@@ -467,16 +447,11 @@ export default function SapuriWordbook() {
   };
 
   const folders = store.folders;
-  const currentFolder =
-    folders.find((f) => f.id === store.currentFolderId) ?? null;
+  const currentFolder = folders.find((f) => f.id === store.currentFolderId) ?? null;
 
-  const totalMarkedInCurrent = currentFolder
-    ? currentFolder.words.filter((w) => w.marked).length
-    : 0;
+  const totalMarkedInCurrent = currentFolder ? currentFolder.words.filter((w) => w.marked).length : 0;
 
-  const totalStruckInCurrent = currentFolder
-    ? currentFolder.words.filter((w) => w.struck).length
-    : 0;
+  const totalStruckInCurrent = currentFolder ? currentFolder.words.filter((w) => w.struck).length : 0;
 
   // ---- フォルダ操作 ----
   const addFolder = () => {
@@ -484,16 +459,8 @@ export default function SapuriWordbook() {
     if (!name) return;
     setStore((s) => {
       const id = uid();
-      const folder: Folder = {
-        id,
-        name,
-        words: [],
-      };
-      return {
-        ...s,
-        folders: [...s.folders, folder],
-        currentFolderId: id,
-      };
+      const folder: Folder = { id, name, words: [] };
+      return { ...s, folders: [...s.folders, folder], currentFolderId: id };
     });
     setNewFolderName("");
     setJsonText("");
@@ -505,10 +472,7 @@ export default function SapuriWordbook() {
     lastAutoWordIdRef.current = null;
     stopSpeak();
 
-    setStore((s) => ({
-      ...s,
-      currentFolderId: id,
-    }));
+    setStore((s) => ({ ...s, currentFolderId: id }));
     setJsonText("");
     setSession(null);
     setShowWordList(true);
@@ -521,15 +485,12 @@ export default function SapuriWordbook() {
     if (!name || !name.trim()) return;
     setStore((s) => ({
       ...s,
-      folders: s.folders.map((f) =>
-        f.id === id ? { ...f, name: name.trim() } : f
-      ),
+      folders: s.folders.map((f) => (f.id === id ? { ...f, name: name.trim() } : f)),
     }));
   };
 
   const deleteFolder = (id: ID) => {
-    if (!confirm("このフォルダと中の単語をすべて削除します。よろしいですか？"))
-      return;
+    if (!confirm("このフォルダと中の単語をすべて削除します。よろしいですか？")) return;
 
     clearAutoTimer();
     lastAutoWordIdRef.current = null;
@@ -537,24 +498,15 @@ export default function SapuriWordbook() {
 
     setStore((s) => {
       const nextFolders = s.folders.filter((f) => f.id !== id);
-      const nextCurrent =
-        s.currentFolderId === id ? nextFolders[0]?.id ?? null : s.currentFolderId;
-      return {
-        ...s,
-        folders: nextFolders,
-        currentFolderId: nextCurrent,
-      };
+      const nextCurrent = s.currentFolderId === id ? nextFolders[0]?.id ?? null : s.currentFolderId;
+      return { ...s, folders: nextFolders, currentFolderId: nextCurrent };
     });
     setJsonText("");
     setSession(null);
   };
 
   // ---- 単語更新（共通）----
-  const updateWord = (
-    folderId: ID,
-    wordId: ID,
-    updater: (w: WordItem) => WordItem
-  ) => {
+  const updateWord = (folderId: ID, wordId: ID, updater: (w: WordItem) => WordItem) => {
     setStore((s) => ({
       ...s,
       folders: s.folders.map((f) =>
@@ -571,15 +523,9 @@ export default function SapuriWordbook() {
                   pos: typeof w.pos === "string" ? w.pos : "",
                   word: String(w.word ?? ""),
                   meaning: String(w.meaning ?? ""),
-                  myMeaning:
-                    typeof w.myMeaning === "string"
-                      ? w.myMeaning
-                      : String(w.myMeaning ?? ""),
+                  myMeaning: typeof w.myMeaning === "string" ? w.myMeaning : String(w.myMeaning ?? ""),
                   noteKind: normalizeNoteKind(w.noteKind),
-                  intransPrep:
-                    typeof w.intransPrep === "string"
-                      ? w.intransPrep
-                      : String(w.intransPrep ?? ""),
+                  intransPrep: typeof w.intransPrep === "string" ? w.intransPrep : String(w.intransPrep ?? ""),
                   no: typeof w.no === "number" ? w.no : 0,
                   id: String(w.id),
                 };
@@ -651,14 +597,12 @@ export default function SapuriWordbook() {
     const newWords: WordItem[] = [];
     for (let i = 0; i < parsed.length; i++) {
       const row = parsed[i] ?? {};
-      const noRaw =
-        row.no ?? row.number ?? (typeof row.id === "number" ? row.id : undefined);
+      const noRaw = row.no ?? row.number ?? (typeof row.id === "number" ? row.id : undefined);
       const no = typeof noRaw === "number" ? noRaw : i + 1;
 
       const pos = row.pos ?? row.partOfSpeech ?? row.part ?? row["品詞"] ?? "";
       const word = row.word ?? row.term ?? row.english ?? row.en ?? row["英単語"] ?? "";
-      const meaning =
-        row.meaning ?? row.jp ?? row.japanese ?? row.translation ?? row["意味"] ?? "";
+      const meaning = row.meaning ?? row.jp ?? row.japanese ?? row.translation ?? row["意味"] ?? "";
 
       if (!word || !meaning) {
         console.warn("スキップされた行:", row);
@@ -690,14 +634,10 @@ export default function SapuriWordbook() {
 
     setStore((s) => ({
       ...s,
-      folders: s.folders.map((f) =>
-        f.id === currentFolder.id ? { ...f, words: newWords } : f
-      ),
+      folders: s.folders.map((f) => (f.id === currentFolder.id ? { ...f, words: newWords } : f)),
     }));
     setSession(null);
-    alert(
-      `フォルダ「${currentFolder.name}」に ${newWords.length} 件の単語をインポートしました。`
-    );
+    alert(`フォルダ「${currentFolder.name}」に ${newWords.length} 件の単語をインポートしました。`);
   };
 
   // ---- 学習セッション開始 ----
@@ -711,10 +651,7 @@ export default function SapuriWordbook() {
       return;
     }
 
-    const sourceWords =
-      mode === "all"
-        ? currentFolder.words
-        : currentFolder.words.filter((w) => w.marked);
+    const sourceWords = mode === "all" ? currentFolder.words : currentFolder.words.filter((w) => w.marked);
 
     if (sourceWords.length === 0) {
       if (mode === "all") {
@@ -757,15 +694,9 @@ export default function SapuriWordbook() {
       struck: Boolean((word as any).struck),
       marked: Boolean((word as any).marked),
       pos: typeof (word as any).pos === "string" ? (word as any).pos : "",
-      myMeaning:
-        typeof (word as any).myMeaning === "string"
-          ? (word as any).myMeaning
-          : String((word as any).myMeaning ?? ""),
+      myMeaning: typeof (word as any).myMeaning === "string" ? (word as any).myMeaning : String((word as any).myMeaning ?? ""),
       noteKind: normalizeNoteKind((word as any).noteKind),
-      intransPrep:
-        typeof (word as any).intransPrep === "string"
-          ? (word as any).intransPrep
-          : String((word as any).intransPrep ?? ""),
+      intransPrep: typeof (word as any).intransPrep === "string" ? (word as any).intransPrep : String((word as any).intransPrep ?? ""),
     } as WordItem;
   }, [session, store]);
 
@@ -794,11 +725,7 @@ export default function SapuriWordbook() {
       await speakWordOnceAsync(w.id, w.word);
       if (cancelled) return;
 
-      const waitMs = clamp(
-        Math.round(autoDelayMs),
-        AUTO_DELAY_MIN,
-        AUTO_DELAY_MAX
-      );
+      const waitMs = clamp(Math.round(autoDelayMs), AUTO_DELAY_MIN, AUTO_DELAY_MAX);
 
       autoTimerRef.current = window.setTimeout(() => {
         setSession((s) => {
@@ -816,14 +743,7 @@ export default function SapuriWordbook() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    session?.auto,
-    session?.currentIndex,
-    session?.finished,
-    session?.showAnswer,
-    currentSessionWord?.id,
-    autoDelayMs,
-  ]);
+  }, [session?.auto, session?.currentIndex, session?.finished, session?.showAnswer, currentSessionWord?.id, autoDelayMs]);
 
   const handleShowAnswer = () => {
     if (!session || session.finished) return;
@@ -881,10 +801,7 @@ export default function SapuriWordbook() {
 
   const totalQuestions = session && session.wordIds ? session.wordIds.length : 0;
   const answeredCount = session ? session.correctCount + session.wrongCount : 0;
-  const accuracy =
-    answeredCount > 0
-      ? ((session!.correctCount / answeredCount) * 100).toFixed(1)
-      : null;
+  const accuracy = answeredCount > 0 ? ((session!.correctCount / answeredCount) * 100).toFixed(1) : null;
 
   // ===== 単語一覧（検索・フィルタ）=====
   const listWords = useMemo(() => {
@@ -899,9 +816,7 @@ export default function SapuriWordbook() {
     if (q) {
       base = base.filter((w) => {
         const nk = normalizeNoteKind((w as any).noteKind);
-        const hay = `${w.no} ${w.pos} ${w.word} ${w.meaning} ${w.myMeaning ?? ""} ${nk} ${
-          (w as any).intransPrep ?? ""
-        }`.toLowerCase();
+        const hay = `${w.no} ${w.pos} ${w.word} ${w.meaning} ${w.myMeaning ?? ""} ${nk} ${(w as any).intransPrep ?? ""}`.toLowerCase();
         return hay.includes(q);
       });
     }
@@ -917,9 +832,7 @@ export default function SapuriWordbook() {
         <div className="mb-3 text-xs text-gray-600">
           <div className="mb-1 font-medium">フォルダ一覧</div>
           {folders.length === 0 ? (
-            <p className="text-xs text-gray-500">
-              まだフォルダがありません。下のフォームから作成してください。
-            </p>
+            <p className="text-xs text-gray-500">まだフォルダがありません。下のフォームから作成してください。</p>
           ) : (
             <ul className="space-y-1 text-sm">
               {folders.map((f) => (
@@ -929,16 +842,12 @@ export default function SapuriWordbook() {
                     onClick={() => selectFolder(f.id)}
                     className={
                       "flex-1 text-left rounded-xl px-3 py-1.5 border " +
-                      (store.currentFolderId === f.id
-                        ? "bg-black text-white"
-                        : "bg-white hover:bg-gray-50")
+                      (store.currentFolderId === f.id ? "bg-black text-white" : "bg-white hover:bg-gray-50")
                     }
                   >
                     <div className="flex items-center justify-between gap-2">
                       <span>{f.name}</span>
-                      <span className="text-[11px] text-gray-400">
-                        {f.words.length} 語
-                      </span>
+                      <span className="text-[11px] text-gray-400">{f.words.length} 語</span>
                     </div>
                   </button>
                   <button
@@ -970,11 +879,7 @@ export default function SapuriWordbook() {
               className="flex-1 rounded-xl border px-3 py-2 text-xs"
               placeholder="例: 1〜100, 101〜200 など"
             />
-            <button
-              type="button"
-              onClick={addFolder}
-              className="rounded-xl bg-black px-3 py-2 text-xs text-white"
-            >
+            <button type="button" onClick={addFolder} className="rounded-xl bg-black px-3 py-2 text-xs text-white">
               追加
             </button>
           </div>
@@ -984,18 +889,13 @@ export default function SapuriWordbook() {
       {/* 右：フォルダ詳細 & 学習エリア */}
       <section className="rounded-2xl border p-4 shadow-sm min-h-[260px]">
         {!currentFolder ? (
-          <p className="text-sm text-gray-500">
-            左側でフォルダを選択するか、新しいフォルダを作成してください。
-          </p>
+          <p className="text-sm text-gray-500">左側でフォルダを選択するか、新しいフォルダを作成してください。</p>
         ) : (
           <div className="space-y-4">
             <div className="flex flex-wrap items-center gap-3">
-              <h2 className="font-semibold text-base">
-                フォルダ：{currentFolder.name}
-              </h2>
+              <h2 className="font-semibold text-base">フォルダ：{currentFolder.name}</h2>
               <span className="text-xs text-gray-500">
-                単語数: {currentFolder.words.length} 語 / マーク:{totalMarkedInCurrent} 語 /
-                取り消し線:{totalStruckInCurrent} 語
+                単語数: {currentFolder.words.length} 語 / マーク:{totalMarkedInCurrent} 語 / 取り消し線:{totalStruckInCurrent} 語
               </span>
               {speakingWordId && (
                 <button
@@ -1038,12 +938,7 @@ export default function SapuriWordbook() {
                       <button
                         type="button"
                         onClick={() => setListFilter("all")}
-                        className={
-                          "text-[11px] rounded-lg border px-2 py-1 " +
-                          (listFilter === "all"
-                            ? "bg-black text-white"
-                            : "hover:bg-gray-50")
-                        }
+                        className={"text-[11px] rounded-lg border px-2 py-1 " + (listFilter === "all" ? "bg-black text-white" : "hover:bg-gray-50")}
                       >
                         全て
                       </button>
@@ -1052,9 +947,7 @@ export default function SapuriWordbook() {
                         onClick={() => setListFilter("marked")}
                         className={
                           "text-[11px] rounded-lg border px-2 py-1 " +
-                          (listFilter === "marked"
-                            ? "bg-yellow-100 border-yellow-400"
-                            : "hover:bg-gray-50")
+                          (listFilter === "marked" ? "bg-yellow-100 border-yellow-400" : "hover:bg-gray-50")
                         }
                       >
                         マーク
@@ -1064,9 +957,7 @@ export default function SapuriWordbook() {
                         onClick={() => setListFilter("struck")}
                         className={
                           "text-[11px] rounded-lg border px-2 py-1 " +
-                          (listFilter === "struck"
-                            ? "bg-gray-100 border-gray-400"
-                            : "hover:bg-gray-50")
+                          (listFilter === "struck" ? "bg-gray-100 border-gray-400" : "hover:bg-gray-50")
                         }
                       >
                         取り消し線
@@ -1075,13 +966,9 @@ export default function SapuriWordbook() {
                   </div>
 
                   {currentFolder.words.length === 0 ? (
-                    <p className="text-xs text-gray-500">
-                      まだ単語がありません。下の「JSON インポート」で追加してください。
-                    </p>
+                    <p className="text-xs text-gray-500">まだ単語がありません。下の「JSON インポート」で追加してください。</p>
                   ) : listWords.length === 0 ? (
-                    <p className="text-xs text-gray-500">
-                      条件に一致する単語がありません。
-                    </p>
+                    <p className="text-xs text-gray-500">条件に一致する単語がありません。</p>
                   ) : (
                     <div className="mt-2 max-h-[420px] overflow-auto rounded-xl border">
                       <div className="min-w-[1180px]">
@@ -1098,9 +985,7 @@ export default function SapuriWordbook() {
                         {listWords.map((w) => {
                           const nk = normalizeNoteKind((w as any).noteKind);
                           const prep =
-                            typeof (w as any).intransPrep === "string"
-                              ? (w as any).intransPrep
-                              : String((w as any).intransPrep ?? "");
+                            typeof (w as any).intransPrep === "string" ? (w as any).intransPrep : String((w as any).intransPrep ?? "");
                           return (
                             <div
                               key={w.id}
@@ -1109,18 +994,14 @@ export default function SapuriWordbook() {
                               <div className="text-gray-500">No.{w.no}</div>
                               <div className="text-gray-600">{w.pos || "-"}</div>
                               <div className="font-medium">
-                                <span className={w.struck ? "line-through" : ""}>
-                                  {w.word}
-                                </span>
+                                <span className={w.struck ? "line-through" : ""}>{w.word}</span>
                               </div>
                               <div className="text-gray-700">{w.meaning}</div>
 
                               <div>
                                 <input
                                   value={w.myMeaning ?? ""}
-                                  onChange={(e) =>
-                                    updateMyMeaning(currentFolder.id, w.id, e.target.value)
-                                  }
+                                  onChange={(e) => updateMyMeaning(currentFolder.id, w.id, e.target.value)}
                                   className="w-full rounded-lg border px-2 py-1 text-xs"
                                   placeholder="自分なりの和訳"
                                 />
@@ -1129,13 +1010,7 @@ export default function SapuriWordbook() {
                               <div className="space-y-1">
                                 <select
                                   value={nk}
-                                  onChange={(e) =>
-                                    updateNoteKind(
-                                      currentFolder.id,
-                                      w.id,
-                                      normalizeNoteKind(e.target.value)
-                                    )
-                                  }
+                                  onChange={(e) => updateNoteKind(currentFolder.id, w.id, normalizeNoteKind(e.target.value))}
                                   className="w-full rounded-lg border px-2 py-1 text-xs bg-white"
                                   title="分類（Part5メモ）"
                                 >
@@ -1146,18 +1021,10 @@ export default function SapuriWordbook() {
 
                                 {nk === "intransitive" && (
                                   <div className="flex items-center gap-2">
-                                    <span className="text-[11px] text-gray-500 shrink-0">
-                                      前置詞
-                                    </span>
+                                    <span className="text-[11px] text-gray-500 shrink-0">前置詞</span>
                                     <input
                                       value={prep}
-                                      onChange={(e) =>
-                                        updateIntransPrep(
-                                          currentFolder.id,
-                                          w.id,
-                                          e.target.value
-                                        )
-                                      }
+                                      onChange={(e) => updateIntransPrep(currentFolder.id, w.id, e.target.value)}
                                       className="w-full rounded-lg border px-2 py-1 text-xs"
                                       placeholder='例: "to" / "for" / "with"...'
                                     />
@@ -1170,8 +1037,7 @@ export default function SapuriWordbook() {
                                   type="button"
                                   onClick={() => speakWord(w.id, w.word)}
                                   className={
-                                    "text-[11px] rounded-lg border px-2 py-1 hover:bg-gray-50 " +
-                                    (speakingWordId === w.id ? "bg-black text-white" : "")
+                                    "text-[11px] rounded-lg border px-2 py-1 hover:bg-gray-50 " + (speakingWordId === w.id ? "bg-black text-white" : "")
                                   }
                                   title="発音（読み上げ）"
                                 >
@@ -1182,9 +1048,7 @@ export default function SapuriWordbook() {
                                   onClick={() => toggleWordMarked(currentFolder.id, w.id)}
                                   className={
                                     "text-[11px] rounded-lg border px-2 py-1 " +
-                                    (w.marked
-                                      ? "bg-yellow-100 border-yellow-400"
-                                      : "hover:bg-gray-50")
+                                    (w.marked ? "bg-yellow-100 border-yellow-400" : "hover:bg-gray-50")
                                   }
                                 >
                                   {w.marked ? "マーク解除" : "マーク"}
@@ -1194,9 +1058,7 @@ export default function SapuriWordbook() {
                                   onClick={() => toggleWordStruck(currentFolder.id, w.id)}
                                   className={
                                     "text-[11px] rounded-lg border px-2 py-1 " +
-                                    (w.struck
-                                      ? "bg-gray-100 border-gray-400"
-                                      : "hover:bg-gray-50")
+                                    (w.struck ? "bg-gray-100 border-gray-400" : "hover:bg-gray-50")
                                   }
                                 >
                                   {w.struck ? "線ON" : "取り消し線"}
@@ -1209,9 +1071,7 @@ export default function SapuriWordbook() {
                     </div>
                   )}
 
-                  <p className="text-[11px] text-gray-500">
-                    ※ 「自分訳」「分類」「前置詞」はローカルに即保存され、ホームの☁アップロードでサーバへ反映できます。
-                  </p>
+                  <p className="text-[11px] text-gray-500">※ 「自分訳」「分類」「前置詞」はローカルに即保存され、ホームの☁アップロードでサーバへ反映できます。</p>
                 </>
               )}
             </div>
@@ -1220,9 +1080,7 @@ export default function SapuriWordbook() {
             <div className="rounded-xl border bg-gray-50 px-3 py-3 space-y-2">
               <div className="flex items-center justify-between gap-2">
                 <h3 className="text-xs font-semibold text-gray-700">JSON インポート</h3>
-                <span className="text-[11px] text-gray-500">
-                  インポートすると、このフォルダの単語は置き換えられます。
-                </span>
+                <span className="text-[11px] text-gray-500">インポートすると、このフォルダの単語は置き換えられます。</span>
               </div>
               <textarea
                 value={jsonText}
@@ -1236,11 +1094,7 @@ export default function SapuriWordbook() {
 ]`}
               />
               <div className="flex justify-end">
-                <button
-                  type="button"
-                  onClick={handleImportJson}
-                  className="rounded-xl bg-black px-3 py-1.5 text-xs text-white"
-                >
+                <button type="button" onClick={handleImportJson} className="rounded-xl bg-black px-3 py-1.5 text-xs text-white">
                   このフォルダにインポート
                 </button>
               </div>
@@ -1253,12 +1107,8 @@ export default function SapuriWordbook() {
               {/* ★ 自動モード待ち時間スライダー */}
               <div className="rounded-xl border bg-gray-50 px-3 py-3">
                 <div className="flex items-center justify-between">
-                  <div className="text-xs font-semibold text-gray-700">
-                    自動：解答表示までの待ち時間
-                  </div>
-                  <div className="text-xs text-gray-600 tabular-nums">
-                    {(autoDelayMs / 1000).toFixed(1)} 秒（{autoDelayMs}ms）
-                  </div>
+                  <div className="text-xs font-semibold text-gray-700">自動：解答表示までの待ち時間</div>
+                  <div className="text-xs text-gray-600 tabular-nums">{(autoDelayMs / 1000).toFixed(1)} 秒（{autoDelayMs}ms）</div>
                 </div>
                 <div className="mt-2 flex items-center gap-3">
                   <input
@@ -1280,9 +1130,7 @@ export default function SapuriWordbook() {
                     リセット
                   </button>
                 </div>
-                <p className="mt-2 text-[11px] text-gray-500">
-                  ※ 自動学習モードON時、「音声終了後 → この秒数」で解答が自動表示されます。
-                </p>
+                <p className="mt-2 text-[11px] text-gray-500">※ 自動学習モードON時、「音声終了後 → この秒数」で解答が自動表示されます。</p>
               </div>
 
               <div className="flex flex-wrap gap-2 mt-2">
@@ -1323,26 +1171,18 @@ export default function SapuriWordbook() {
                 </button>
 
                 {session && (
-                  <button
-                    type="button"
-                    onClick={handleResetSession}
-                    className="rounded-xl border px-3 py-1.5 text-xs hover:bg-gray-50 ml-auto"
-                  >
+                  <button type="button" onClick={handleResetSession} className="rounded-xl border px-3 py-1.5 text-xs hover:bg-gray-50 ml-auto">
                     セッションを終了
                   </button>
                 )}
               </div>
 
-              <p className="mt-1 text-[11px] text-gray-500">
-                ※ 不正解のときは、先に「マーク」ボタンを押してから「不正解」を押すと、マーク単語モードで復習できます。
-              </p>
+              <p className="mt-1 text-[11px] text-gray-500">※ 不正解のときは、先に「マーク」ボタンを押してから「不正解」を押すと、マーク単語モードで復習できます。</p>
             </div>
 
             {/* 学習カードエリア */}
             {!session ? (
-              <p className="text-sm text-gray-500">
-                モードボタン（手動 / 自動）から学習を開始してください。
-              </p>
+              <p className="text-sm text-gray-500">モードボタン（手動 / 自動）から学習を開始してください。</p>
             ) : session.finished ? (
               <div className="rounded-2xl border bg-white px-4 py-4 space-y-2">
                 <h3 className="text-sm font-semibold mb-1">結果</h3>
@@ -1352,15 +1192,9 @@ export default function SapuriWordbook() {
                 <p className="text-sm">
                   不正解：{session.wrongCount} / {totalQuestions}
                 </p>
-                <p className="text-sm font-semibold mt-1">
-                  正解率：{accuracy !== null ? `${accuracy}%` : "-"}
-                </p>
+                <p className="text-sm font-semibold mt-1">正解率：{accuracy !== null ? `${accuracy}%` : "-"}</p>
                 <div className="mt-3 flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={() => startSession(session.mode, session.auto)}
-                    className="rounded-xl border px-3 py-1.5 text-xs hover:bg-gray-50"
-                  >
+                  <button type="button" onClick={() => startSession(session.mode, session.auto)} className="rounded-xl border px-3 py-1.5 text-xs hover:bg-gray-50">
                     同じモードでやり直す
                   </button>
                   <button
@@ -1371,27 +1205,19 @@ export default function SapuriWordbook() {
                   >
                     マーク単語だけで復習
                   </button>
-                  <button
-                    type="button"
-                    onClick={handleResetSession}
-                    className="rounded-xl border px-3 py-1.5 text-xs hover:bg-gray-50"
-                  >
+                  <button type="button" onClick={handleResetSession} className="rounded-xl border px-3 py-1.5 text-xs hover:bg-gray-50">
                     セッションを閉じる
                   </button>
                 </div>
               </div>
             ) : !currentSessionWord ? (
-              <p className="text-sm text-gray-500">
-                単語データが見つかりません。JSONのインポート内容を確認してください。
-              </p>
+              <p className="text-sm text-gray-500">単語データが見つかりません。JSONのインポート内容を確認してください。</p>
             ) : (
               <div className="rounded-2xl border bg-white px-4 py-4 space-y-3">
                 <div className="flex items-center justify-between gap-2">
                   <div className="text-xs text-gray-500">
                     {session.mode === "all" ? "モード: すべて" : "モード: マークのみ"}
-                    {session.auto
-                      ? ` / 自動ON（${(autoDelayMs / 1000).toFixed(1)}s）`
-                      : " / 手動"}
+                    {session.auto ? ` / 自動ON（${(autoDelayMs / 1000).toFixed(1)}s）` : " / 手動"}
                   </div>
                   <div className="text-xs text-gray-500">
                     {session.currentIndex + 1} / {totalQuestions}
@@ -1407,10 +1233,7 @@ export default function SapuriWordbook() {
                     <button
                       type="button"
                       onClick={() => speakWord(currentSessionWord.id, currentSessionWord.word)}
-                      className={
-                        "rounded-xl border px-3 py-1.5 text-xs hover:bg-gray-50 " +
-                        (speakingWordId === currentSessionWord.id ? "bg-black text-white" : "")
-                      }
+                      className={"rounded-xl border px-3 py-1.5 text-xs hover:bg-gray-50 " + (speakingWordId === currentSessionWord.id ? "bg-black text-white" : "")}
                       title="発音（読み上げ）"
                     >
                       {speakingWordId === currentSessionWord.id ? "🔇 停止" : "🔊 発音"}
@@ -1421,39 +1244,32 @@ export default function SapuriWordbook() {
                       onClick={handleStrikethroughToggle}
                       className={
                         "rounded-xl border px-3 py-1.5 text-xs " +
-                        (currentSessionWord.struck
-                          ? "bg-gray-100 border-gray-400"
-                          : "hover:bg-gray-50")
+                        (currentSessionWord.struck ? "bg-gray-100 border-gray-400" : "hover:bg-gray-50")
                       }
                       title="英単語に取り消し線を付ける"
                     >
                       {currentSessionWord.struck ? "取り消し線ON" : "取り消し線"}
                     </button>
 
-                    {/* ★ ひと目で分かるラベル */}
-                    <span className="inline-flex items-center rounded-full border px-2 py-1 text-[11px] text-gray-600 bg-gray-50">
-                      {noteKindLabel(currentSessionWord.noteKind)}
-                      {currentSessionWord.noteKind === "intransitive" &&
-                        currentSessionWord.intransPrep.trim() && (
-                          <span className="ml-1 text-gray-500">
-                            + {currentSessionWord.intransPrep.trim()}
-                          </span>
+                    {/* ★ 改善：分類ラベルは「解答表示後」だけ見せる（答えバレ防止） */}
+                    {session.showAnswer && (
+                      <span className="inline-flex items-center rounded-full border px-2 py-1 text-[11px] text-gray-600 bg-gray-50">
+                        {noteKindLabel(currentSessionWord.noteKind)}
+                        {currentSessionWord.noteKind === "intransitive" && currentSessionWord.intransPrep.trim() && (
+                          <span className="ml-1 text-gray-500">+ {currentSessionWord.intransPrep.trim()}</span>
                         )}
-                    </span>
+                      </span>
+                    )}
                   </div>
 
                   <div className="text-2xl font-bold tracking-wide">
                     {currentSessionWord.pos ? (
                       <>
                         <span>{currentSessionWord.pos} </span>
-                        <span className={currentSessionWord.struck ? "line-through" : ""}>
-                          {currentSessionWord.word}
-                        </span>
+                        <span className={currentSessionWord.struck ? "line-through" : ""}>{currentSessionWord.word}</span>
                       </>
                     ) : (
-                      <span className={currentSessionWord.struck ? "line-through" : ""}>
-                        {currentSessionWord.word}
-                      </span>
+                      <span className={currentSessionWord.struck ? "line-through" : ""}>{currentSessionWord.word}</span>
                     )}
                   </div>
                 </div>
@@ -1464,9 +1280,7 @@ export default function SapuriWordbook() {
                     <div className="min-h-[56px] flex items-center justify-center">
                       <span className="text-sm text-gray-400">
                         {session.auto
-                          ? `自動学習中：音声終了後 ${(autoDelayMs / 1000).toFixed(
-                              1
-                            )} 秒で解答が表示されます。`
+                          ? `自動学習中：音声終了後 ${(autoDelayMs / 1000).toFixed(1)} 秒で解答が表示されます。`
                           : "「解答をチェック」を押すと意味が表示されます。"}
                       </span>
                     </div>
@@ -1481,27 +1295,17 @@ export default function SapuriWordbook() {
                         <div className="text-[11px] text-gray-500">自分訳（右側に入力）</div>
                         <input
                           value={currentSessionWord.myMeaning ?? ""}
-                          onChange={(e) =>
-                            updateMyMeaning(session.folderId, currentSessionWord.id, e.target.value)
-                          }
+                          onChange={(e) => updateMyMeaning(session.folderId, currentSessionWord.id, e.target.value)}
                           className="w-full rounded-lg border px-3 py-2 text-sm"
                           placeholder="自分なりの和訳を入力"
                         />
 
                         <div className="grid gap-2 sm:grid-cols-[160px_1fr] items-start">
                           <div>
-                            <div className="text-[11px] text-gray-500 mb-1">
-                              分類（Part5）
-                            </div>
+                            <div className="text-[11px] text-gray-500 mb-1">分類（Part5）</div>
                             <select
                               value={currentSessionWord.noteKind}
-                              onChange={(e) =>
-                                updateNoteKind(
-                                  session.folderId,
-                                  currentSessionWord.id,
-                                  normalizeNoteKind(e.target.value)
-                                )
-                              }
+                              onChange={(e) => updateNoteKind(session.folderId, currentSessionWord.id, normalizeNoteKind(e.target.value))}
                               className="w-full rounded-lg border px-2 py-2 text-sm bg-white"
                             >
                               <option value="other">その他</option>
@@ -1511,33 +1315,21 @@ export default function SapuriWordbook() {
                           </div>
 
                           <div>
-                            <div className="text-[11px] text-gray-500 mb-1">
-                              自動詞のとき：セット前置詞
-                            </div>
+                            <div className="text-[11px] text-gray-500 mb-1">自動詞のとき：セット前置詞</div>
                             <input
                               value={currentSessionWord.intransPrep ?? ""}
-                              onChange={(e) =>
-                                updateIntransPrep(
-                                  session.folderId,
-                                  currentSessionWord.id,
-                                  e.target.value
-                                )
-                              }
+                              onChange={(e) => updateIntransPrep(session.folderId, currentSessionWord.id, e.target.value)}
                               disabled={currentSessionWord.noteKind !== "intransitive"}
                               className={
                                 "w-full rounded-lg border px-3 py-2 text-sm " +
-                                (currentSessionWord.noteKind !== "intransitive"
-                                  ? "bg-gray-50 text-gray-400"
-                                  : "bg-white")
+                                (currentSessionWord.noteKind !== "intransitive" ? "bg-gray-50 text-gray-400" : "bg-white")
                               }
                               placeholder='例: "to" / "for" / "with"...'
                             />
                           </div>
                         </div>
 
-                        <div className="text-[11px] text-gray-400">
-                          ※ 入力はローカルに即保存（ホームの☁で同期）
-                        </div>
+                        <div className="text-[11px] text-gray-400">※ 入力はローカルに即保存（ホームの☁で同期）</div>
                       </div>
                     </div>
                   )}
@@ -1546,11 +1338,7 @@ export default function SapuriWordbook() {
                 {/* ボタン群 */}
                 {!session.showAnswer ? (
                   <div className="mt-3 flex justify-center">
-                    <button
-                      type="button"
-                      onClick={handleShowAnswer}
-                      className="rounded-xl bg-black px-4 py-2 text-sm text-white"
-                    >
+                    <button type="button" onClick={handleShowAnswer} className="rounded-xl bg-black px-4 py-2 text-sm text-white">
                       解答をチェック
                     </button>
                   </div>
@@ -1561,9 +1349,7 @@ export default function SapuriWordbook() {
                       onClick={handleMarkToggle}
                       className={
                         "rounded-xl border px-3 py-1.5 text-xs " +
-                        (currentSessionWord.marked
-                          ? "bg-yellow-100 border-yellow-400"
-                          : "hover:bg-gray-50")
+                        (currentSessionWord.marked ? "bg-yellow-100 border-yellow-400" : "hover:bg-gray-50")
                       }
                     >
                       {currentSessionWord.marked ? "マーク解除" : "マーク"}
