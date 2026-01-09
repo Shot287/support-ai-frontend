@@ -20,7 +20,7 @@ type Card = {
   id: ID;
   ifText: string; // 英文
   thenText: string; // 和訳
-  marked?: boolean; // ★ 追加（未保存データは false 扱い）
+  marked?: boolean; // ★（未保存データは false 扱い）
 };
 
 type DeckFile = {
@@ -71,7 +71,7 @@ function normalizeStore(s: Store): Store {
       ...c,
       marked: Boolean((c as any).marked),
     }));
-    nextFiles[fid] = { ...f, id: f.id ?? fid, cards };
+    nextFiles[fid] = { ...f, id: (f as any).id ?? fid, cards };
   }
   return { ...s, files: nextFiles, version: 1 };
 }
@@ -116,7 +116,7 @@ type DeckJsonV1 = {
   cards: Array<{
     ifText: string;
     thenText: string;
-    marked?: boolean; // ★ 追加（あってもなくてもOK）
+    marked?: boolean; // ★（あってもなくてもOK）
   }>;
 };
 
@@ -174,6 +174,8 @@ type PerCardState = {
   judge: Judge | null; // 正解/不正解（未回答はnull）
 };
 
+type PasteAction = "new" | "replace" | "append";
+
 export default function EnglishIfThenRules() {
   const [store, setStore] = useState<Store>(() => loadLocal());
   const storeRef = useRef(store);
@@ -192,6 +194,10 @@ export default function EnglishIfThenRules() {
   // 左：作成
   const [newFolderName, setNewFolderName] = useState("");
   const [newFileName, setNewFileName] = useState("");
+
+  // ★ 追加：JSONペースト import UI
+  const [pasteJsonText, setPasteJsonText] = useState("");
+  const [pasteAction, setPasteAction] = useState<PasteAction>("new");
 
   const nodes = store.nodes;
   const currentFolderId = store.currentFolderId;
@@ -237,9 +243,7 @@ export default function EnglishIfThenRules() {
 
   // children
   const children = useMemo(() => {
-    const list = Object.values(nodes).filter(
-      (n) => n.parentId === currentFolderId
-    );
+    const list = Object.values(nodes).filter((n) => n.parentId === currentFolderId);
     return list.sort((a, b) => {
       if (a.kind !== b.kind) return a.kind === "folder" ? -1 : 1;
       return a.name.localeCompare(b.name, "ja");
@@ -265,12 +269,7 @@ export default function EnglishIfThenRules() {
     if (!name) return;
     setStore((s) => {
       const id = uid();
-      const node: Node = {
-        id,
-        name,
-        parentId: s.currentFolderId,
-        kind: "folder",
-      };
+      const node: Node = { id, name, parentId: s.currentFolderId, kind: "folder" };
       return { ...s, nodes: { ...s.nodes, [id]: node } };
     });
     setNewFolderName("");
@@ -298,9 +297,7 @@ export default function EnglishIfThenRules() {
       ...s,
       currentFolderId: id,
       currentFileId:
-        s.currentFileId && s.nodes[s.currentFileId]?.parentId === id
-          ? s.currentFileId
-          : null,
+        s.currentFileId && s.nodes[s.currentFileId]?.parentId === id ? s.currentFileId : null,
     }));
   };
 
@@ -355,12 +352,8 @@ export default function EnglishIfThenRules() {
         if (!toDelete.has(fid)) nextFiles[fid] = file;
       }
 
-      const currentFolderIdNew = toDelete.has(s.currentFolderId ?? "")
-        ? null
-        : s.currentFolderId;
-      const currentFileIdNew = toDelete.has(s.currentFileId ?? "")
-        ? null
-        : s.currentFileId;
+      const currentFolderIdNew = toDelete.has(s.currentFolderId ?? "") ? null : s.currentFolderId;
+      const currentFileIdNew = toDelete.has(s.currentFileId ?? "") ? null : s.currentFileId;
 
       return {
         ...s,
@@ -380,12 +373,7 @@ export default function EnglishIfThenRules() {
       delete nextNodes[id];
       delete nextFiles[id];
       const currentFileIdNew = s.currentFileId === id ? null : s.currentFileId;
-      return {
-        ...s,
-        nodes: nextNodes,
-        files: nextFiles,
-        currentFileId: currentFileIdNew,
-      };
+      return { ...s, nodes: nextNodes, files: nextFiles, currentFileId: currentFileIdNew };
     });
   };
 
@@ -411,10 +399,7 @@ export default function EnglishIfThenRules() {
       const file = s.files[currentFile.id];
       if (!file) return s;
       const cards = file.cards.map((c) => (c.id === cardId ? updater(c) : c));
-      return {
-        ...s,
-        files: { ...s.files, [currentFile.id]: { ...file, cards } },
-      };
+      return { ...s, files: { ...s.files, [currentFile.id]: { ...file, cards } } };
     });
   };
 
@@ -433,10 +418,7 @@ export default function EnglishIfThenRules() {
         ...s,
         files: {
           ...s.files,
-          [currentFile.id]: {
-            ...file,
-            cards: file.cards.filter((c) => c.id !== cardId),
-          },
+          [currentFile.id]: { ...file, cards: file.cards.filter((c) => c.id !== cardId) },
         },
       };
     });
@@ -460,10 +442,7 @@ export default function EnglishIfThenRules() {
       const tmp = next[idx];
       next[idx] = next[j];
       next[j] = tmp;
-      return {
-        ...s,
-        files: { ...s.files, [currentFile.id]: { ...file, cards: next } },
-      };
+      return { ...s, files: { ...s.files, [currentFile.id]: { ...file, cards: next } } };
     });
   };
 
@@ -471,11 +450,7 @@ export default function EnglishIfThenRules() {
   const startStudy = () => {
     if (!currentFile) return;
 
-    const cards = currentFile.cards.map((c) => ({
-      ...c,
-      marked: Boolean(c.marked),
-    }));
-
+    const cards = currentFile.cards.map((c) => ({ ...c, marked: Boolean(c.marked) }));
     const filtered = studyMarkedOnly ? cards.filter((c) => c.marked) : cards;
 
     if (filtered.length === 0) {
@@ -537,7 +512,6 @@ export default function EnglishIfThenRules() {
 
   const judgeAndNext = (cardId: ID, judge: Judge) => {
     judgeCard(cardId, judge);
-    // 最後でなければ自動で次へ
     setStudyOrder((o) => {
       if (!o) return o;
       const atLast = o.idx >= o.cardIds.length - 1;
@@ -546,39 +520,14 @@ export default function EnglishIfThenRules() {
     });
   };
 
-  // ----------------- JSON Export / Import -----------------
-  const exportDeckJson = () => {
-    if (!currentFileId) {
-      alert("エクスポートするファイル（デッキ）を選択してください。");
-      return;
-    }
-    const file = store.files[currentFileId];
-    if (!file) return;
-
-    const name = nodes[currentFileId]?.name ?? "deck";
-    const payload: DeckJsonV1 = {
-      kind: "if_then_deck",
-      version: 1,
-      name,
-      cards: file.cards.map((c) => ({
-        ifText: c.ifText ?? "",
-        thenText: c.thenText ?? "",
-        marked: Boolean(c.marked),
-      })),
-    };
-
-    const safeName = name.replace(/[\\/:*?"<>|]+/g, "_");
-    downloadText(`${safeName}.json`, JSON.stringify(payload, null, 2));
+  // ----------------- JSON Import helpers (text/file shared) -----------------
+  const parseDeckJsonFromText = (text: string): DeckJsonV1 | null => {
+    const obj = safeJsonParse(text);
+    if (!validateDeckJsonV1(obj)) return null;
+    return obj;
   };
 
-  const importDeckJson = async (file: File) => {
-    const text = await readFileAsText(file);
-    const obj = safeJsonParse(text);
-    if (!validateDeckJsonV1(obj)) {
-      alert("このJSONは対応フォーマットではありません（if_then_deck v1）。");
-      return;
-    }
-
+  const applyDeckJsonAsNewDeck = (obj: DeckJsonV1) => {
     setStore((s) => {
       const id = uid();
       const node: Node = {
@@ -605,21 +554,13 @@ export default function EnglishIfThenRules() {
     });
   };
 
-  const replaceCurrentDeckByJson = async (file: File) => {
+  const applyDeckJsonReplaceCurrent = (obj: DeckJsonV1) => {
     if (!currentFileId) {
       alert("置き換えるファイル（デッキ）を選択してください。");
       return;
     }
-    const text = await readFileAsText(file);
-    const obj = safeJsonParse(text);
-    if (!validateDeckJsonV1(obj)) {
-      alert("このJSONは対応フォーマットではありません（if_then_deck v1）。");
-      return;
-    }
-    if (
-      !confirm("現在選択中のデッキを、このJSONで置き換えます。よろしいですか？")
-    )
-      return;
+
+    if (!confirm("現在選択中のデッキを、このJSONで置き換えます。よろしいですか？")) return;
 
     setStore((s) => {
       const fileId = currentFileId;
@@ -652,6 +593,129 @@ export default function EnglishIfThenRules() {
     });
   };
 
+  const applyDeckJsonAppendToCurrent = (obj: DeckJsonV1) => {
+    if (!currentFileId) {
+      alert("追加インポートする先のデッキを選択してください。");
+      return;
+    }
+
+    const addCount = obj.cards.length;
+    if (
+      !confirm(
+        `選択中デッキに、JSONのカード ${addCount} 件を追加します。よろしいですか？`
+      )
+    )
+      return;
+
+    setStore((s) => {
+      const fileId = currentFileId;
+      const existing = s.files[fileId];
+      if (!existing) return s;
+
+      const appended: Card[] = obj.cards.map((c) => ({
+        id: uid(),
+        ifText: c.ifText ?? "",
+        thenText: c.thenText ?? "",
+        marked: Boolean(c.marked),
+      }));
+
+      const nextFile: DeckFile = {
+        ...existing,
+        cards: [...(existing.cards ?? []), ...appended],
+      };
+
+      return {
+        ...s,
+        files: { ...s.files, [fileId]: nextFile },
+      };
+    });
+  };
+
+  // ----------------- JSON Export / Import (file) -----------------
+  const exportDeckJson = () => {
+    if (!currentFileId) {
+      alert("エクスポートするファイル（デッキ）を選択してください。");
+      return;
+    }
+    const file = store.files[currentFileId];
+    if (!file) return;
+
+    const name = nodes[currentFileId]?.name ?? "deck";
+    const payload: DeckJsonV1 = {
+      kind: "if_then_deck",
+      version: 1,
+      name,
+      cards: file.cards.map((c) => ({
+        ifText: c.ifText ?? "",
+        thenText: c.thenText ?? "",
+        marked: Boolean(c.marked),
+      })),
+    };
+
+    const safeName = name.replace(/[\\/:*?"<>|]+/g, "_");
+    downloadText(`${safeName}.json`, JSON.stringify(payload, null, 2));
+  };
+
+  const importDeckJsonAsNewFile = async (file: File) => {
+    const text = await readFileAsText(file);
+    const obj = parseDeckJsonFromText(text);
+    if (!obj) {
+      alert("このJSONは対応フォーマットではありません（if_then_deck v1）。");
+      return;
+    }
+    applyDeckJsonAsNewDeck(obj);
+  };
+
+  const replaceCurrentDeckByJsonFile = async (file: File) => {
+    const text = await readFileAsText(file);
+    const obj = parseDeckJsonFromText(text);
+    if (!obj) {
+      alert("このJSONは対応フォーマットではありません（if_then_deck v1）。");
+      return;
+    }
+    applyDeckJsonReplaceCurrent(obj);
+  };
+
+  const appendCurrentDeckByJsonFile = async (file: File) => {
+    const text = await readFileAsText(file);
+    const obj = parseDeckJsonFromText(text);
+    if (!obj) {
+      alert("このJSONは対応フォーマットではありません（if_then_deck v1）。");
+      return;
+    }
+    applyDeckJsonAppendToCurrent(obj);
+  };
+
+  // ----------------- JSON Import (paste) -----------------
+  const runPasteImport = () => {
+    const text = pasteJsonText.trim();
+    if (!text) {
+      alert("JSONをペーストしてください。");
+      return;
+    }
+    const obj = parseDeckJsonFromText(text);
+    if (!obj) {
+      alert("このJSONは対応フォーマットではありません（if_then_deck v1）。");
+      return;
+    }
+
+    if (pasteAction === "new") {
+      applyDeckJsonAsNewDeck(obj);
+      setPasteJsonText("");
+      return;
+    }
+    if (pasteAction === "replace") {
+      applyDeckJsonReplaceCurrent(obj);
+      // 置き換えは安全のため内容は残す（誤操作対策）
+      return;
+    }
+    if (pasteAction === "append") {
+      applyDeckJsonAppendToCurrent(obj);
+      // 追加も安全のため残す（誤操作対策）
+      return;
+    }
+  };
+
   // ----------------- Helpers -----------------
   function shuffle<T>(arr: T[]): T[] {
     for (let i = arr.length - 1; i > 0; i--) {
@@ -678,14 +742,10 @@ export default function EnglishIfThenRules() {
           <div className="flex flex-wrap items-center gap-1">
             <button
               type="button"
-              onClick={() =>
-                setStore((s) => ({ ...s, currentFolderId: null, currentFileId: null }))
-              }
+              onClick={() => setStore((s) => ({ ...s, currentFolderId: null, currentFileId: null }))}
               className={
                 "text-xs rounded-lg px-2 py-1 " +
-                (currentFolderId === null
-                  ? "bg-black text-white"
-                  : "bg-gray-100 hover:bg-gray-200")
+                (currentFolderId === null ? "bg-black text-white" : "bg-gray-100 hover:bg-gray-200")
               }
             >
               ルート
@@ -698,9 +758,7 @@ export default function EnglishIfThenRules() {
                   onClick={() => openFolder(b.id)}
                   className={
                     "text-xs rounded-lg px-2 py-1 " +
-                    (currentFolderId === b.id
-                      ? "bg-black text-white"
-                      : "bg-gray-100 hover:bg-gray-200")
+                    (currentFolderId === b.id ? "bg-black text-white" : "bg-gray-100 hover:bg-gray-200")
                   }
                 >
                   {b.name}
@@ -711,11 +769,7 @@ export default function EnglishIfThenRules() {
         </div>
 
         {currentFolderId !== null && (
-          <button
-            type="button"
-            onClick={goUpFolder}
-            className="mb-3 text-xs text-gray-600 underline"
-          >
+          <button type="button" onClick={goUpFolder} className="mb-3 text-xs text-gray-600 underline">
             上のフォルダに戻る
           </button>
         )}
@@ -732,14 +786,10 @@ export default function EnglishIfThenRules() {
                     onClick={() => (n.kind === "folder" ? openFolder(n.id) : openFile(n.id))}
                     className={
                       "flex-1 text-left rounded-xl px-3 py-1.5 border " +
-                      (currentFileId === n.id
-                        ? "bg-blue-600 text-white"
-                        : "bg-white hover:bg-gray-50")
+                      (currentFileId === n.id ? "bg-blue-600 text-white" : "bg-white hover:bg-gray-50")
                     }
                   >
-                    <span className="mr-2 text-xs text-gray-400">
-                      {n.kind === "folder" ? "📁" : "🃏"}
-                    </span>
+                    <span className="mr-2 text-xs text-gray-400">{n.kind === "folder" ? "📁" : "🃏"}</span>
                     {n.name}
                   </button>
 
@@ -776,11 +826,7 @@ export default function EnglishIfThenRules() {
                 className="flex-1 rounded-xl border px-3 py-2 text-xs"
                 placeholder="例: 文法 / Part5 / 重要表現"
               />
-              <button
-                type="button"
-                onClick={addFolder}
-                className="rounded-xl bg-black px-3 py-2 text-xs text-white"
-              >
+              <button type="button" onClick={addFolder} className="rounded-xl bg-black px-3 py-2 text-xs text-white">
                 追加
               </button>
             </div>
@@ -795,11 +841,7 @@ export default function EnglishIfThenRules() {
                 className="flex-1 rounded-xl border px-3 py-2 text-xs"
                 placeholder="例: 重要If-Then 001 / 条件文まとめ"
               />
-              <button
-                type="button"
-                onClick={addFile}
-                className="rounded-xl bg-black px-3 py-2 text-xs text-white"
-              >
+              <button type="button" onClick={addFile} className="rounded-xl bg-black px-3 py-2 text-xs text-white">
                 追加
               </button>
             </div>
@@ -819,7 +861,7 @@ export default function EnglishIfThenRules() {
               </button>
 
               <label className="rounded-xl border px-3 py-2 text-xs hover:bg-gray-50 cursor-pointer">
-                ⬆️ インポート（新しいデッキとして追加）
+                ⬆️ インポート（新しいデッキとして追加：ファイル）
                 <input
                   type="file"
                   accept="application/json"
@@ -827,13 +869,13 @@ export default function EnglishIfThenRules() {
                   onChange={(e) => {
                     const f = e.target.files?.[0];
                     e.currentTarget.value = "";
-                    if (f) importDeckJson(f);
+                    if (f) importDeckJsonAsNewFile(f);
                   }}
                 />
               </label>
 
               <label className="rounded-xl border px-3 py-2 text-xs hover:bg-gray-50 cursor-pointer">
-                ♻️ インポート（選択中デッキを置き換え）
+                ♻️ インポート（選択中デッキを置き換え：ファイル）
                 <input
                   type="file"
                   accept="application/json"
@@ -841,15 +883,76 @@ export default function EnglishIfThenRules() {
                   onChange={(e) => {
                     const f = e.target.files?.[0];
                     e.currentTarget.value = "";
-                    if (f) replaceCurrentDeckByJson(f);
+                    if (f) replaceCurrentDeckByJsonFile(f);
                   }}
                 />
               </label>
 
-              <p className="text-[11px] text-gray-500 leading-relaxed">
-                フォーマット：kind=if_then_deck, version=1, name, cards[
-                {`{ifText, thenText, marked?}`} ]。
-              </p>
+              <label className="rounded-xl border px-3 py-2 text-xs hover:bg-gray-50 cursor-pointer">
+                ➕ 追加インポート（選択中デッキに追加：ファイル）
+                <input
+                  type="file"
+                  accept="application/json"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    e.currentTarget.value = "";
+                    if (f) appendCurrentDeckByJsonFile(f);
+                  }}
+                />
+              </label>
+
+              {/* ★ JSON paste import */}
+              <div className="mt-2 rounded-2xl border p-3 bg-white">
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <div className="text-xs font-semibold text-gray-700">JSONをペーストしてインポート</div>
+                  <select
+                    value={pasteAction}
+                    onChange={(e) => setPasteAction(e.target.value as PasteAction)}
+                    className="text-xs rounded-lg border px-2 py-1 bg-white"
+                    title="インポート方法"
+                  >
+                    <option value="new">新しいデッキとして追加</option>
+                    <option value="replace">選択中デッキを置き換え</option>
+                    <option value="append">選択中デッキに追加</option>
+                  </select>
+                </div>
+
+                <textarea
+                  value={pasteJsonText}
+                  onChange={(e) => setPasteJsonText(e.target.value)}
+                  rows={6}
+                  className="w-full rounded-xl border px-3 py-2 text-[11px] font-mono"
+                  placeholder={`ここに if_then_deck v1 のJSONをペースト\n例: {"kind":"if_then_deck","version":1,"name":"...","cards":[{"ifText":"...","thenText":"..."}]}`}
+                />
+
+                <div className="flex items-center gap-2 mt-2">
+                  <button
+                    type="button"
+                    onClick={runPasteImport}
+                    className="rounded-xl bg-black px-3 py-2 text-xs text-white"
+                  >
+                    実行
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPasteJsonText("")}
+                    className="rounded-xl border px-3 py-2 text-xs hover:bg-gray-50"
+                  >
+                    クリア
+                  </button>
+                </div>
+
+                <p className="text-[11px] text-gray-500 leading-relaxed mt-2">
+                  フォーマット：kind=if_then_deck, version=1, name, cards[{`{ifText, thenText, marked?}`}]。
+                </p>
+
+                {(pasteAction === "replace" || pasteAction === "append") && !currentFileId && (
+                  <p className="text-[11px] text-red-600 mt-1">
+                    ※「置き換え / 追加」は、左でデッキを選択してから実行してください。
+                  </p>
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -914,17 +1017,11 @@ export default function EnglishIfThenRules() {
             </div>
 
             <div className="flex items-center justify-between mb-3">
-              <button
-                type="button"
-                onClick={addCard}
-                className="rounded-xl bg-black px-3 py-2 text-sm text-white"
-              >
+              <button type="button" onClick={addCard} className="rounded-xl bg-black px-3 py-2 text-sm text-white">
                 ＋ カード追加
               </button>
               <p className="text-xs text-gray-500">
-                カード数：{currentFile.cards.length} / マーク：{
-                  currentFile.cards.filter((c) => Boolean(c.marked)).length
-                }
+                カード数：{currentFile.cards.length} / マーク：{currentFile.cards.filter((c) => Boolean(c.marked)).length}
               </p>
             </div>
 
@@ -937,20 +1034,14 @@ export default function EnglishIfThenRules() {
                 {currentFile.cards.map((card, idx) => {
                   const marked = Boolean(card.marked);
                   return (
-                    <div
-                      key={card.id}
-                      className="rounded-2xl border px-4 py-3 bg-white space-y-3"
-                    >
+                    <div key={card.id} className="rounded-2xl border px-4 py-3 bg-white space-y-3">
                       <div className="flex items-center justify-between">
                         <h3 className="text-sm font-semibold flex items-center gap-2">
                           <span>カード {idx + 1}</span>
                           <button
                             type="button"
                             onClick={() => toggleMarkCard(card.id)}
-                            className={
-                              "text-xs rounded-lg border px-2 py-1 " +
-                              (marked ? "bg-yellow-100" : "hover:bg-gray-50")
-                            }
+                            className={"text-xs rounded-lg border px-2 py-1 " + (marked ? "bg-yellow-100" : "hover:bg-gray-50")}
                             title="マーク"
                           >
                             {marked ? "★ マーク中" : "☆ マーク"}
@@ -974,11 +1065,7 @@ export default function EnglishIfThenRules() {
                           >
                             ↓
                           </button>
-                          <button
-                            type="button"
-                            onClick={() => deleteCard(card.id)}
-                            className="text-xs text-red-500 hover:underline"
-                          >
+                          <button type="button" onClick={() => deleteCard(card.id)} className="text-xs text-red-500 hover:underline">
                             削除
                           </button>
                         </div>
@@ -986,34 +1073,20 @@ export default function EnglishIfThenRules() {
 
                       <div className="grid gap-3 md:grid-cols-2">
                         <div>
-                          <div className="text-xs font-semibold text-gray-700 mb-1">
-                            If（英文）
-                          </div>
+                          <div className="text-xs font-semibold text-gray-700 mb-1">If（英文）</div>
                           <textarea
                             value={card.ifText}
-                            onChange={(e) =>
-                              updateCard(card.id, (prev) => ({
-                                ...prev,
-                                ifText: e.target.value,
-                              }))
-                            }
+                            onChange={(e) => updateCard(card.id, (prev) => ({ ...prev, ifText: e.target.value }))}
                             rows={4}
                             className="w-full rounded-lg border px-3 py-2 text-xs font-mono"
                             placeholder="例: If you have any questions, please let me know."
                           />
                         </div>
                         <div>
-                          <div className="text-xs font-semibold text-gray-700 mb-1">
-                            Then（和訳）
-                          </div>
+                          <div className="text-xs font-semibold text-gray-700 mb-1">Then（和訳）</div>
                           <textarea
                             value={card.thenText}
-                            onChange={(e) =>
-                              updateCard(card.id, (prev) => ({
-                                ...prev,
-                                thenText: e.target.value,
-                              }))
-                            }
+                            onChange={(e) => updateCard(card.id, (prev) => ({ ...prev, thenText: e.target.value }))}
                             rows={4}
                             className="w-full rounded-lg border px-3 py-2 text-xs font-mono"
                             placeholder="例: もし何か質問があれば、教えてください。"
@@ -1045,18 +1118,7 @@ function StudyView(props: {
   stopStudy: () => void;
   toggleMark: (cardId: ID) => void;
 }) {
-  const {
-    file,
-    fileName,
-    order,
-    map,
-    revealThen,
-    prevCard,
-    nextCard,
-    judgeAndNext,
-    stopStudy,
-    toggleMark,
-  } = props;
+  const { file, fileName, order, map, revealThen, prevCard, nextCard, judgeAndNext, stopStudy, toggleMark } = props;
 
   const total = order.cardIds.length;
   const cardId = order.cardIds[order.idx];
@@ -1068,16 +1130,13 @@ function StudyView(props: {
   const judged = Object.values(map).filter((s) => s && s.judge !== null).length;
   const correct = Object.values(map).filter((s) => s && s.judge === "correct").length;
   const incorrect = Object.values(map).filter((s) => s && s.judge === "incorrect").length;
-  const accuracy = judged === 0 ? 0 : Math.round((correct / judged) * 1000) / 10; // 0.1%刻み
+  const accuracy = judged === 0 ? 0 : Math.round((correct / judged) * 1000) / 10;
 
   if (!card) {
     return (
       <div>
         <p className="text-sm text-red-600">カードが見つかりませんでした。</p>
-        <button
-          className="mt-3 rounded-xl border px-3 py-2 text-sm"
-          onClick={stopStudy}
-        >
+        <button className="mt-3 rounded-xl border px-3 py-2 text-sm" onClick={stopStudy}>
           戻る
         </button>
       </div>
@@ -1100,11 +1159,7 @@ function StudyView(props: {
             </span>
           </p>
         </div>
-        <button
-          type="button"
-          onClick={stopStudy}
-          className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
-        >
+        <button type="button" onClick={stopStudy} className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50">
           ✕ 終了
         </button>
       </div>
@@ -1115,10 +1170,7 @@ function StudyView(props: {
           <button
             type="button"
             onClick={() => toggleMark(cardId)}
-            className={
-              "text-xs rounded-lg border px-2 py-1 " +
-              (marked ? "bg-yellow-100" : "hover:bg-gray-50")
-            }
+            className={"text-xs rounded-lg border px-2 py-1 " + (marked ? "bg-yellow-100" : "hover:bg-gray-50")}
             title="マーク"
           >
             {marked ? "★ マーク中" : "☆ マーク"}
@@ -1126,19 +1178,11 @@ function StudyView(props: {
         </div>
 
         <div className="rounded-xl border bg-gray-50 px-3 py-2 text-sm whitespace-pre-wrap">
-          {card.ifText?.trim() ? (
-            card.ifText
-          ) : (
-            <span className="text-gray-400">（英文が空です）</span>
-          )}
+          {card.ifText?.trim() ? card.ifText : <span className="text-gray-400">（英文が空です）</span>}
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => revealThen(cardId)}
-            className="rounded-xl bg-black px-3 py-2 text-sm text-white"
-          >
+          <button type="button" onClick={() => revealThen(cardId)} className="rounded-xl bg-black px-3 py-2 text-sm text-white">
             解答をチェック
           </button>
 
@@ -1146,10 +1190,7 @@ function StudyView(props: {
             type="button"
             onClick={() => judgeAndNext(cardId, "correct")}
             disabled={!state.revealed}
-            className={
-              "rounded-xl border px-3 py-2 text-sm " +
-              (!state.revealed ? "text-gray-300" : "hover:bg-gray-50")
-            }
+            className={"rounded-xl border px-3 py-2 text-sm " + (!state.revealed ? "text-gray-300" : "hover:bg-gray-50")}
           >
             正解
           </button>
@@ -1158,10 +1199,7 @@ function StudyView(props: {
             type="button"
             onClick={() => judgeAndNext(cardId, "incorrect")}
             disabled={!state.revealed}
-            className={
-              "rounded-xl border px-3 py-2 text-sm " +
-              (!state.revealed ? "text-gray-300" : "hover:bg-gray-50")
-            }
+            className={"rounded-xl border px-3 py-2 text-sm " + (!state.revealed ? "text-gray-300" : "hover:bg-gray-50")}
           >
             不正解
           </button>
@@ -1170,10 +1208,7 @@ function StudyView(props: {
             type="button"
             onClick={prevCard}
             disabled={atFirst}
-            className={
-              "rounded-xl border px-3 py-2 text-sm " +
-              (atFirst ? "text-gray-300" : "hover:bg-gray-50")
-            }
+            className={"rounded-xl border px-3 py-2 text-sm " + (atFirst ? "text-gray-300" : "hover:bg-gray-50")}
           >
             ← 前へ
           </button>
@@ -1182,25 +1217,18 @@ function StudyView(props: {
             type="button"
             onClick={nextCard}
             disabled={atLast}
-            className={
-              "rounded-xl border px-3 py-2 text-sm " +
-              (atLast ? "text-gray-300" : "hover:bg-gray-50")
-            }
+            className={"rounded-xl border px-3 py-2 text-sm " + (atLast ? "text-gray-300" : "hover:bg-gray-50")}
           >
             次へ →
           </button>
 
           {state.judge && (
-            <span className="text-xs text-gray-600 ml-1">
-              判定：{state.judge === "correct" ? "正解" : "不正解"}
-            </span>
+            <span className="text-xs text-gray-600 ml-1">判定：{state.judge === "correct" ? "正解" : "不正解"}</span>
           )}
         </div>
 
         <div>
-          <div className="text-xs font-semibold text-gray-700 mb-1">
-            Then（正解の和訳）
-          </div>
+          <div className="text-xs font-semibold text-gray-700 mb-1">Then（正解の和訳）</div>
           <div className="rounded-xl border bg-gray-50 px-3 py-2 text-sm whitespace-pre-wrap">
             {state.revealed ? (
               card.thenText?.trim() ? (
@@ -1209,9 +1237,7 @@ function StudyView(props: {
                 <span className="text-gray-400">（和訳が空です）</span>
               )
             ) : (
-              <span className="text-gray-400">
-                （「解答をチェック」を押すと表示されます）
-              </span>
+              <span className="text-gray-400">（「解答をチェック」を押すと表示されます）</span>
             )}
           </div>
         </div>
