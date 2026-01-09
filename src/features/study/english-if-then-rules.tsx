@@ -18,8 +18,9 @@ type Node = {
 
 type Card = {
   id: ID;
-  ifText: string;   // 英文
+  ifText: string; // 英文
   thenText: string; // 和訳
+  marked?: boolean; // ★ 追加（未保存データは false 扱い）
 };
 
 type DeckFile = {
@@ -62,6 +63,19 @@ function createDefaultStore(): Store {
   };
 }
 
+function normalizeStore(s: Store): Store {
+  // 旧データ互換：marked が無いカードは false を補完
+  const nextFiles: Record<ID, DeckFile> = {};
+  for (const [fid, f] of Object.entries(s.files ?? {})) {
+    const cards = (f.cards ?? []).map((c) => ({
+      ...c,
+      marked: Boolean((c as any).marked),
+    }));
+    nextFiles[fid] = { ...f, id: f.id ?? fid, cards };
+  }
+  return { ...s, files: nextFiles, version: 1 };
+}
+
 function loadLocal(): Store {
   try {
     if (typeof window === "undefined") return createDefaultStore();
@@ -71,13 +85,14 @@ function loadLocal(): Store {
     if (!parsed || typeof parsed !== "object") return createDefaultStore();
 
     const def = createDefaultStore();
-    return {
-      nodes: parsed.nodes ?? def.nodes,
-      files: parsed.files ?? {},
-      currentFolderId: parsed.currentFolderId ?? def.currentFolderId,
-      currentFileId: parsed.currentFileId ?? null,
+    const s: Store = {
+      nodes: (parsed.nodes as any) ?? def.nodes,
+      files: (parsed.files as any) ?? {},
+      currentFolderId: (parsed.currentFolderId as any) ?? def.currentFolderId,
+      currentFileId: (parsed.currentFileId as any) ?? null,
       version: 1,
     };
+    return normalizeStore(s);
   } catch {
     return createDefaultStore();
   }
@@ -101,6 +116,7 @@ type DeckJsonV1 = {
   cards: Array<{
     ifText: string;
     thenText: string;
+    marked?: boolean; // ★ 追加（あってもなくてもOK）
   }>;
 };
 
@@ -122,6 +138,7 @@ function validateDeckJsonV1(obj: any): obj is DeckJsonV1 {
     if (!c || typeof c !== "object") return false;
     if (typeof c.ifText !== "string") return false;
     if (typeof c.thenText !== "string") return false;
+    if (c.marked !== undefined && typeof c.marked !== "boolean") return false;
   }
   return true;
 }
@@ -150,9 +167,11 @@ type StudyOrder = {
   idx: number;
 };
 
+type Judge = "correct" | "incorrect";
+
 type PerCardState = {
-  answer: string;
-  revealed: boolean;
+  revealed: boolean; // Then表示済みか
+  judge: Judge | null; // 正解/不正解（未回答はnull）
 };
 
 export default function EnglishIfThenRules() {
@@ -166,6 +185,9 @@ export default function EnglishIfThenRules() {
   const [studyOrder, setStudyOrder] = useState<StudyOrder | null>(null);
   const [studyMap, setStudyMap] = useState<Record<ID, PerCardState>>({});
   const [studyShuffle, setStudyShuffle] = useState(true);
+
+  // ★ 追加：マークされたカードだけで学習
+  const [studyMarkedOnly, setStudyMarkedOnly] = useState(false);
 
   // 左：作成
   const [newFolderName, setNewFolderName] = useState("");
@@ -191,8 +213,9 @@ export default function EnglishIfThenRules() {
         try {
           const remote = await loadUserDoc<Store>(DOC_KEY);
           if (remote && remote.version === 1) {
-            setStore(remote);
-            saveLocal(remote);
+            const normalized = normalizeStore(remote);
+            setStore(normalized);
+            saveLocal(normalized);
           }
         } catch (e) {
           console.warn("[if-then] manual PULL failed:", e);
@@ -214,7 +237,9 @@ export default function EnglishIfThenRules() {
 
   // children
   const children = useMemo(() => {
-    const list = Object.values(nodes).filter((n) => n.parentId === currentFolderId);
+    const list = Object.values(nodes).filter(
+      (n) => n.parentId === currentFolderId
+    );
     return list.sort((a, b) => {
       if (a.kind !== b.kind) return a.kind === "folder" ? -1 : 1;
       return a.name.localeCompare(b.name, "ja");
@@ -240,7 +265,12 @@ export default function EnglishIfThenRules() {
     if (!name) return;
     setStore((s) => {
       const id = uid();
-      const node: Node = { id, name, parentId: s.currentFolderId, kind: "folder" };
+      const node: Node = {
+        id,
+        name,
+        parentId: s.currentFolderId,
+        kind: "folder",
+      };
       return { ...s, nodes: { ...s.nodes, [id]: node } };
     });
     setNewFolderName("");
@@ -268,7 +298,9 @@ export default function EnglishIfThenRules() {
       ...s,
       currentFolderId: id,
       currentFileId:
-        s.currentFileId && s.nodes[s.currentFileId]?.parentId === id ? s.currentFileId : null,
+        s.currentFileId && s.nodes[s.currentFileId]?.parentId === id
+          ? s.currentFileId
+          : null,
     }));
   };
 
@@ -323,8 +355,12 @@ export default function EnglishIfThenRules() {
         if (!toDelete.has(fid)) nextFiles[fid] = file;
       }
 
-      const currentFolderIdNew = toDelete.has(s.currentFolderId ?? "") ? null : s.currentFolderId;
-      const currentFileIdNew = toDelete.has(s.currentFileId ?? "") ? null : s.currentFileId;
+      const currentFolderIdNew = toDelete.has(s.currentFolderId ?? "")
+        ? null
+        : s.currentFolderId;
+      const currentFileIdNew = toDelete.has(s.currentFileId ?? "")
+        ? null
+        : s.currentFileId;
 
       return {
         ...s,
@@ -344,19 +380,27 @@ export default function EnglishIfThenRules() {
       delete nextNodes[id];
       delete nextFiles[id];
       const currentFileIdNew = s.currentFileId === id ? null : s.currentFileId;
-      return { ...s, nodes: nextNodes, files: nextFiles, currentFileId: currentFileIdNew };
+      return {
+        ...s,
+        nodes: nextNodes,
+        files: nextFiles,
+        currentFileId: currentFileIdNew,
+      };
     });
   };
 
   // ----------------- Deck (cards) ops -----------------
   const addCard = () => {
     if (!currentFile) return;
-    const card: Card = { id: uid(), ifText: "", thenText: "" };
+    const card: Card = { id: uid(), ifText: "", thenText: "", marked: false };
     setStore((s) => ({
       ...s,
       files: {
         ...s.files,
-        [currentFile.id]: { ...s.files[currentFile.id], cards: [...(s.files[currentFile.id]?.cards ?? []), card] },
+        [currentFile.id]: {
+          ...s.files[currentFile.id],
+          cards: [...(s.files[currentFile.id]?.cards ?? []), card],
+        },
       },
     }));
   };
@@ -367,8 +411,16 @@ export default function EnglishIfThenRules() {
       const file = s.files[currentFile.id];
       if (!file) return s;
       const cards = file.cards.map((c) => (c.id === cardId ? updater(c) : c));
-      return { ...s, files: { ...s.files, [currentFile.id]: { ...file, cards } } };
+      return {
+        ...s,
+        files: { ...s.files, [currentFile.id]: { ...file, cards } },
+      };
     });
+  };
+
+  const toggleMarkCard = (cardId: ID) => {
+    if (!currentFile) return;
+    updateCard(cardId, (prev) => ({ ...prev, marked: !Boolean(prev.marked) }));
   };
 
   const deleteCard = (cardId: ID) => {
@@ -379,7 +431,13 @@ export default function EnglishIfThenRules() {
       if (!file) return s;
       return {
         ...s,
-        files: { ...s.files, [currentFile.id]: { ...file, cards: file.cards.filter((c) => c.id !== cardId) } },
+        files: {
+          ...s.files,
+          [currentFile.id]: {
+            ...file,
+            cards: file.cards.filter((c) => c.id !== cardId),
+          },
+        },
       };
     });
     setStudyMap((prev) => {
@@ -402,24 +460,40 @@ export default function EnglishIfThenRules() {
       const tmp = next[idx];
       next[idx] = next[j];
       next[j] = tmp;
-      return { ...s, files: { ...s.files, [currentFile.id]: { ...file, cards: next } } };
+      return {
+        ...s,
+        files: { ...s.files, [currentFile.id]: { ...file, cards: next } },
+      };
     });
   };
 
   // ----------------- Study controls -----------------
   const startStudy = () => {
     if (!currentFile) return;
-    if (currentFile.cards.length === 0) {
-      alert("このデッキにはカードがありません。先にカードを追加してください。");
+
+    const cards = currentFile.cards.map((c) => ({
+      ...c,
+      marked: Boolean(c.marked),
+    }));
+
+    const filtered = studyMarkedOnly ? cards.filter((c) => c.marked) : cards;
+
+    if (filtered.length === 0) {
+      alert(
+        studyMarkedOnly
+          ? "マークされたカードがありません。先にカードをマークしてください。"
+          : "このデッキにはカードがありません。先にカードを追加してください。"
+      );
       return;
     }
-    const ids = currentFile.cards.map((c) => c.id);
+
+    const ids = filtered.map((c) => c.id);
     const order = studyShuffle ? shuffle([...ids]) : ids;
+
     setStudyOrder({ cardIds: order, idx: 0 });
 
-    // init states (keep existing answers if you want; here reset)
     const init: Record<ID, PerCardState> = {};
-    for (const id of order) init[id] = { answer: "", revealed: false };
+    for (const id of order) init[id] = { revealed: false, judge: null };
     setStudyMap(init);
 
     setMode("study");
@@ -434,14 +508,14 @@ export default function EnglishIfThenRules() {
   const revealThen = (cardId: ID) => {
     setStudyMap((prev) => ({
       ...prev,
-      [cardId]: { ...(prev[cardId] ?? { answer: "", revealed: false }), revealed: true },
+      [cardId]: { ...(prev[cardId] ?? { revealed: false, judge: null }), revealed: true },
     }));
   };
 
-  const setAnswer = (cardId: ID, text: string) => {
+  const judgeCard = (cardId: ID, judge: Judge) => {
     setStudyMap((prev) => ({
       ...prev,
-      [cardId]: { ...(prev[cardId] ?? { answer: "", revealed: false }), answer: text },
+      [cardId]: { ...(prev[cardId] ?? { revealed: false, judge: null }), judge },
     }));
   };
 
@@ -458,6 +532,17 @@ export default function EnglishIfThenRules() {
       if (!o) return o;
       const nx = Math.max(o.idx - 1, 0);
       return { ...o, idx: nx };
+    });
+  };
+
+  const judgeAndNext = (cardId: ID, judge: Judge) => {
+    judgeCard(cardId, judge);
+    // 最後でなければ自動で次へ
+    setStudyOrder((o) => {
+      if (!o) return o;
+      const atLast = o.idx >= o.cardIds.length - 1;
+      if (atLast) return o;
+      return { ...o, idx: o.idx + 1 };
     });
   };
 
@@ -478,6 +563,7 @@ export default function EnglishIfThenRules() {
       cards: file.cards.map((c) => ({
         ifText: c.ifText ?? "",
         thenText: c.thenText ?? "",
+        marked: Boolean(c.marked),
       })),
     };
 
@@ -493,7 +579,6 @@ export default function EnglishIfThenRules() {
       return;
     }
 
-    // create as new file in current folder
     setStore((s) => {
       const id = uid();
       const node: Node = {
@@ -508,6 +593,7 @@ export default function EnglishIfThenRules() {
           id: uid(),
           ifText: c.ifText ?? "",
           thenText: c.thenText ?? "",
+          marked: Boolean(c.marked),
         })),
       };
       return {
@@ -530,17 +616,22 @@ export default function EnglishIfThenRules() {
       alert("このJSONは対応フォーマットではありません（if_then_deck v1）。");
       return;
     }
-    if (!confirm("現在選択中のデッキを、このJSONで置き換えます。よろしいですか？")) return;
+    if (
+      !confirm("現在選択中のデッキを、このJSONで置き換えます。よろしいですか？")
+    )
+      return;
 
     setStore((s) => {
       const fileId = currentFileId;
       const existing = s.files[fileId];
       if (!existing) return s;
 
-      // rename to json name (optional)
       const nextNodes = {
         ...s.nodes,
-        [fileId]: { ...s.nodes[fileId], name: obj.name?.trim() ? obj.name.trim() : s.nodes[fileId].name },
+        [fileId]: {
+          ...s.nodes[fileId],
+          name: obj.name?.trim() ? obj.name.trim() : s.nodes[fileId].name,
+        },
       };
 
       const nextFile: DeckFile = {
@@ -549,6 +640,7 @@ export default function EnglishIfThenRules() {
           id: uid(),
           ifText: c.ifText ?? "",
           thenText: c.thenText ?? "",
+          marked: Boolean(c.marked),
         })),
       };
 
@@ -586,10 +678,14 @@ export default function EnglishIfThenRules() {
           <div className="flex flex-wrap items-center gap-1">
             <button
               type="button"
-              onClick={() => setStore((s) => ({ ...s, currentFolderId: null, currentFileId: null }))}
+              onClick={() =>
+                setStore((s) => ({ ...s, currentFolderId: null, currentFileId: null }))
+              }
               className={
                 "text-xs rounded-lg px-2 py-1 " +
-                (currentFolderId === null ? "bg-black text-white" : "bg-gray-100 hover:bg-gray-200")
+                (currentFolderId === null
+                  ? "bg-black text-white"
+                  : "bg-gray-100 hover:bg-gray-200")
               }
             >
               ルート
@@ -602,7 +698,9 @@ export default function EnglishIfThenRules() {
                   onClick={() => openFolder(b.id)}
                   className={
                     "text-xs rounded-lg px-2 py-1 " +
-                    (currentFolderId === b.id ? "bg-black text-white" : "bg-gray-100 hover:bg-gray-200")
+                    (currentFolderId === b.id
+                      ? "bg-black text-white"
+                      : "bg-gray-100 hover:bg-gray-200")
                   }
                 >
                   {b.name}
@@ -613,7 +711,11 @@ export default function EnglishIfThenRules() {
         </div>
 
         {currentFolderId !== null && (
-          <button type="button" onClick={goUpFolder} className="mb-3 text-xs text-gray-600 underline">
+          <button
+            type="button"
+            onClick={goUpFolder}
+            className="mb-3 text-xs text-gray-600 underline"
+          >
             上のフォルダに戻る
           </button>
         )}
@@ -630,10 +732,14 @@ export default function EnglishIfThenRules() {
                     onClick={() => (n.kind === "folder" ? openFolder(n.id) : openFile(n.id))}
                     className={
                       "flex-1 text-left rounded-xl px-3 py-1.5 border " +
-                      (currentFileId === n.id ? "bg-blue-600 text-white" : "bg-white hover:bg-gray-50")
+                      (currentFileId === n.id
+                        ? "bg-blue-600 text-white"
+                        : "bg-white hover:bg-gray-50")
                     }
                   >
-                    <span className="mr-2 text-xs text-gray-400">{n.kind === "folder" ? "📁" : "🃏"}</span>
+                    <span className="mr-2 text-xs text-gray-400">
+                      {n.kind === "folder" ? "📁" : "🃏"}
+                    </span>
                     {n.name}
                   </button>
 
@@ -670,7 +776,11 @@ export default function EnglishIfThenRules() {
                 className="flex-1 rounded-xl border px-3 py-2 text-xs"
                 placeholder="例: 文法 / Part5 / 重要表現"
               />
-              <button type="button" onClick={addFolder} className="rounded-xl bg-black px-3 py-2 text-xs text-white">
+              <button
+                type="button"
+                onClick={addFolder}
+                className="rounded-xl bg-black px-3 py-2 text-xs text-white"
+              >
                 追加
               </button>
             </div>
@@ -685,7 +795,11 @@ export default function EnglishIfThenRules() {
                 className="flex-1 rounded-xl border px-3 py-2 text-xs"
                 placeholder="例: 重要If-Then 001 / 条件文まとめ"
               />
-              <button type="button" onClick={addFile} className="rounded-xl bg-black px-3 py-2 text-xs text-white">
+              <button
+                type="button"
+                onClick={addFile}
+                className="rounded-xl bg-black px-3 py-2 text-xs text-white"
+              >
                 追加
               </button>
             </div>
@@ -733,7 +847,8 @@ export default function EnglishIfThenRules() {
               </label>
 
               <p className="text-[11px] text-gray-500 leading-relaxed">
-                フォーマット：kind=if_then_deck, version=1, name, cards[{`{ifText, thenText}`}]。
+                フォーマット：kind=if_then_deck, version=1, name, cards[
+                {`{ifText, thenText, marked?}`} ]。
               </p>
             </div>
           </div>
@@ -747,31 +862,38 @@ export default function EnglishIfThenRules() {
             左のフォルダからデッキ（ファイル）を選択するか、新しいデッキを作成してください。
           </p>
         ) : mode === "study" && studyOrder ? (
-          // ----------------- Study Mode -----------------
           <StudyView
             file={currentFile}
             fileName={currentFileName}
             order={studyOrder}
-            setOrder={setStudyOrder}
             map={studyMap}
-            setAnswer={setAnswer}
             revealThen={revealThen}
-            nextCard={nextCard}
             prevCard={prevCard}
+            nextCard={nextCard}
+            judgeAndNext={judgeAndNext}
             stopStudy={stopStudy}
+            toggleMark={(cardId) => toggleMarkCard(cardId)}
           />
         ) : (
-          // ----------------- Edit Mode -----------------
           <>
             <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
               <div>
                 <h2 className="font-semibold">デッキ：「{currentFileName || "（名称未設定）"}」</h2>
                 <p className="text-xs text-gray-500 mt-0.5">
-                  If=英文 / Then=和訳（学習モードは「解答をチェック」でThenを表示）
+                  If=英文 / Then=和訳（学習モードは「解答をチェック」でThenを表示 → 正解/不正解で記録）
                 </p>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-3">
+                <label className="flex items-center gap-2 text-xs text-gray-700">
+                  <input
+                    type="checkbox"
+                    checked={studyMarkedOnly}
+                    onChange={(e) => setStudyMarkedOnly(e.target.checked)}
+                  />
+                  マークのみで学習
+                </label>
+
                 <label className="flex items-center gap-2 text-xs text-gray-700">
                   <input
                     type="checkbox"
@@ -799,7 +921,11 @@ export default function EnglishIfThenRules() {
               >
                 ＋ カード追加
               </button>
-              <p className="text-xs text-gray-500">カード数：{currentFile.cards.length}</p>
+              <p className="text-xs text-gray-500">
+                カード数：{currentFile.cards.length} / マーク：{
+                  currentFile.cards.filter((c) => Boolean(c.marked)).length
+                }
+              </p>
             </div>
 
             {currentFile.cards.length === 0 ? (
@@ -808,65 +934,95 @@ export default function EnglishIfThenRules() {
               </p>
             ) : (
               <div className="space-y-4">
-                {currentFile.cards.map((card, idx) => (
-                  <div key={card.id} className="rounded-2xl border px-4 py-3 bg-white space-y-3">
-                    <div className="flex items-center justify-between">
-                      <h3 className="text-sm font-semibold">カード {idx + 1}</h3>
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => moveCard(card.id, -1)}
-                          className="text-xs rounded-lg border px-2 py-1 text-gray-600 hover:bg-gray-50"
-                          title="上へ"
-                        >
-                          ↑
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => moveCard(card.id, 1)}
-                          className="text-xs rounded-lg border px-2 py-1 text-gray-600 hover:bg-gray-50"
-                          title="下へ"
-                        >
-                          ↓
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => deleteCard(card.id)}
-                          className="text-xs text-red-500 hover:underline"
-                        >
-                          削除
-                        </button>
-                      </div>
-                    </div>
+                {currentFile.cards.map((card, idx) => {
+                  const marked = Boolean(card.marked);
+                  return (
+                    <div
+                      key={card.id}
+                      className="rounded-2xl border px-4 py-3 bg-white space-y-3"
+                    >
+                      <div className="flex items-center justify-between">
+                        <h3 className="text-sm font-semibold flex items-center gap-2">
+                          <span>カード {idx + 1}</span>
+                          <button
+                            type="button"
+                            onClick={() => toggleMarkCard(card.id)}
+                            className={
+                              "text-xs rounded-lg border px-2 py-1 " +
+                              (marked ? "bg-yellow-100" : "hover:bg-gray-50")
+                            }
+                            title="マーク"
+                          >
+                            {marked ? "★ マーク中" : "☆ マーク"}
+                          </button>
+                        </h3>
 
-                    <div className="grid gap-3 md:grid-cols-2">
-                      <div>
-                        <div className="text-xs font-semibold text-gray-700 mb-1">If（英文）</div>
-                        <textarea
-                          value={card.ifText}
-                          onChange={(e) =>
-                            updateCard(card.id, (prev) => ({ ...prev, ifText: e.target.value }))
-                          }
-                          rows={4}
-                          className="w-full rounded-lg border px-3 py-2 text-xs font-mono"
-                          placeholder="例: If you have any questions, please let me know."
-                        />
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => moveCard(card.id, -1)}
+                            className="text-xs rounded-lg border px-2 py-1 text-gray-600 hover:bg-gray-50"
+                            title="上へ"
+                          >
+                            ↑
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => moveCard(card.id, 1)}
+                            className="text-xs rounded-lg border px-2 py-1 text-gray-600 hover:bg-gray-50"
+                            title="下へ"
+                          >
+                            ↓
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => deleteCard(card.id)}
+                            className="text-xs text-red-500 hover:underline"
+                          >
+                            削除
+                          </button>
+                        </div>
                       </div>
-                      <div>
-                        <div className="text-xs font-semibold text-gray-700 mb-1">Then（和訳）</div>
-                        <textarea
-                          value={card.thenText}
-                          onChange={(e) =>
-                            updateCard(card.id, (prev) => ({ ...prev, thenText: e.target.value }))
-                          }
-                          rows={4}
-                          className="w-full rounded-lg border px-3 py-2 text-xs font-mono"
-                          placeholder="例: もし何か質問があれば、教えてください。"
-                        />
+
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <div>
+                          <div className="text-xs font-semibold text-gray-700 mb-1">
+                            If（英文）
+                          </div>
+                          <textarea
+                            value={card.ifText}
+                            onChange={(e) =>
+                              updateCard(card.id, (prev) => ({
+                                ...prev,
+                                ifText: e.target.value,
+                              }))
+                            }
+                            rows={4}
+                            className="w-full rounded-lg border px-3 py-2 text-xs font-mono"
+                            placeholder="例: If you have any questions, please let me know."
+                          />
+                        </div>
+                        <div>
+                          <div className="text-xs font-semibold text-gray-700 mb-1">
+                            Then（和訳）
+                          </div>
+                          <textarea
+                            value={card.thenText}
+                            onChange={(e) =>
+                              updateCard(card.id, (prev) => ({
+                                ...prev,
+                                thenText: e.target.value,
+                              }))
+                            }
+                            rows={4}
+                            className="w-full rounded-lg border px-3 py-2 text-xs font-mono"
+                            placeholder="例: もし何か質問があれば、教えてください。"
+                          />
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </>
@@ -881,27 +1037,47 @@ function StudyView(props: {
   file: DeckFile;
   fileName: string;
   order: { cardIds: ID[]; idx: number };
-  setOrder: (v: any) => void;
-  map: Record<ID, { answer: string; revealed: boolean }>;
-  setAnswer: (cardId: ID, text: string) => void;
+  map: Record<ID, { revealed: boolean; judge: Judge | null }>;
   revealThen: (cardId: ID) => void;
-  nextCard: () => void;
   prevCard: () => void;
+  nextCard: () => void;
+  judgeAndNext: (cardId: ID, judge: Judge) => void;
   stopStudy: () => void;
+  toggleMark: (cardId: ID) => void;
 }) {
-  const { file, fileName, order, map, setAnswer, revealThen, nextCard, prevCard, stopStudy } = props;
+  const {
+    file,
+    fileName,
+    order,
+    map,
+    revealThen,
+    prevCard,
+    nextCard,
+    judgeAndNext,
+    stopStudy,
+    toggleMark,
+  } = props;
 
   const total = order.cardIds.length;
   const cardId = order.cardIds[order.idx];
   const card = file.cards.find((c) => c.id === cardId);
 
-  const state = map[cardId] ?? { answer: "", revealed: false };
+  const state = map[cardId] ?? { revealed: false, judge: null };
+
+  // stats
+  const judged = Object.values(map).filter((s) => s && s.judge !== null).length;
+  const correct = Object.values(map).filter((s) => s && s.judge === "correct").length;
+  const incorrect = Object.values(map).filter((s) => s && s.judge === "incorrect").length;
+  const accuracy = judged === 0 ? 0 : Math.round((correct / judged) * 1000) / 10; // 0.1%刻み
 
   if (!card) {
     return (
       <div>
         <p className="text-sm text-red-600">カードが見つかりませんでした。</p>
-        <button className="mt-3 rounded-xl border px-3 py-2 text-sm" onClick={stopStudy}>
+        <button
+          className="mt-3 rounded-xl border px-3 py-2 text-sm"
+          onClick={stopStudy}
+        >
           戻る
         </button>
       </div>
@@ -910,6 +1086,7 @@ function StudyView(props: {
 
   const atFirst = order.idx === 0;
   const atLast = order.idx === total - 1;
+  const marked = Boolean(card.marked);
 
   return (
     <>
@@ -917,7 +1094,10 @@ function StudyView(props: {
         <div>
           <h2 className="font-semibold">学習モード：{fileName || "（名称未設定）"}</h2>
           <p className="text-xs text-gray-500 mt-0.5">
-            {order.idx + 1} / {total}
+            {order.idx + 1} / {total}　
+            <span className="ml-2">
+              正答率：{accuracy}%（正解 {correct} / 不正解 {incorrect} / 判定 {judged}）
+            </span>
           </p>
         </div>
         <button
@@ -930,22 +1110,27 @@ function StudyView(props: {
       </div>
 
       <div className="rounded-2xl border px-4 py-4 bg-white space-y-4">
-        <div>
-          <div className="text-xs font-semibold text-gray-700 mb-1">If（英文）</div>
-          <div className="rounded-xl border bg-gray-50 px-3 py-2 text-sm whitespace-pre-wrap">
-            {card.ifText?.trim() ? card.ifText : <span className="text-gray-400">（英文が空です）</span>}
-          </div>
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-xs font-semibold text-gray-700">If（英文）</div>
+          <button
+            type="button"
+            onClick={() => toggleMark(cardId)}
+            className={
+              "text-xs rounded-lg border px-2 py-1 " +
+              (marked ? "bg-yellow-100" : "hover:bg-gray-50")
+            }
+            title="マーク"
+          >
+            {marked ? "★ マーク中" : "☆ マーク"}
+          </button>
         </div>
 
-        <div>
-          <div className="text-xs font-semibold text-gray-700 mb-1">あなたの和訳（入力）</div>
-          <textarea
-            value={state.answer}
-            onChange={(e) => setAnswer(cardId, e.target.value)}
-            rows={4}
-            className="w-full rounded-lg border px-3 py-2 text-xs font-mono"
-            placeholder="ここに自分の和訳を書いてから「解答をチェック」を押してください。"
-          />
+        <div className="rounded-xl border bg-gray-50 px-3 py-2 text-sm whitespace-pre-wrap">
+          {card.ifText?.trim() ? (
+            card.ifText
+          ) : (
+            <span className="text-gray-400">（英文が空です）</span>
+          )}
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -955,6 +1140,30 @@ function StudyView(props: {
             className="rounded-xl bg-black px-3 py-2 text-sm text-white"
           >
             解答をチェック
+          </button>
+
+          <button
+            type="button"
+            onClick={() => judgeAndNext(cardId, "correct")}
+            disabled={!state.revealed}
+            className={
+              "rounded-xl border px-3 py-2 text-sm " +
+              (!state.revealed ? "text-gray-300" : "hover:bg-gray-50")
+            }
+          >
+            正解
+          </button>
+
+          <button
+            type="button"
+            onClick={() => judgeAndNext(cardId, "incorrect")}
+            disabled={!state.revealed}
+            className={
+              "rounded-xl border px-3 py-2 text-sm " +
+              (!state.revealed ? "text-gray-300" : "hover:bg-gray-50")
+            }
+          >
+            不正解
           </button>
 
           <button
@@ -980,10 +1189,18 @@ function StudyView(props: {
           >
             次へ →
           </button>
+
+          {state.judge && (
+            <span className="text-xs text-gray-600 ml-1">
+              判定：{state.judge === "correct" ? "正解" : "不正解"}
+            </span>
+          )}
         </div>
 
         <div>
-          <div className="text-xs font-semibold text-gray-700 mb-1">Then（正解の和訳）</div>
+          <div className="text-xs font-semibold text-gray-700 mb-1">
+            Then（正解の和訳）
+          </div>
           <div className="rounded-xl border bg-gray-50 px-3 py-2 text-sm whitespace-pre-wrap">
             {state.revealed ? (
               card.thenText?.trim() ? (
@@ -992,7 +1209,9 @@ function StudyView(props: {
                 <span className="text-gray-400">（和訳が空です）</span>
               )
             ) : (
-              <span className="text-gray-400">（「解答をチェック」を押すと表示されます）</span>
+              <span className="text-gray-400">
+                （「解答をチェック」を押すと表示されます）
+              </span>
             )}
           </div>
         </div>
