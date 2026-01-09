@@ -123,6 +123,14 @@ export default function StudyPage() {
       href: "/study/sapuri-part2",
       type: "link" as const,
     },
+    {
+      id: "english-if-then-rules",
+      title: "英語 If-Then ルール",
+      description:
+        "If(英文)→Then(和訳)の暗記カード。フォルダ/デッキ管理＋学習モード＋JSON入出力。",
+      href: "/study/english-if-then-rules",
+      type: "link" as const,
+    },
   ] as const;
 
   useEffect(() => {
