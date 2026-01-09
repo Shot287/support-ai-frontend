@@ -403,6 +403,15 @@ export default function EnglishIfThenRules() {
     });
   };
 
+  // ★ StudyView から直接編集できるようにするための薄いラッパ
+  const editCardFields = (cardId: ID, patch: Partial<Pick<Card, "ifText" | "thenText">>) => {
+    updateCard(cardId, (prev) => ({
+      ...prev,
+      ifText: patch.ifText !== undefined ? patch.ifText : prev.ifText,
+      thenText: patch.thenText !== undefined ? patch.thenText : prev.thenText,
+    }));
+  };
+
   const toggleMarkCard = (cardId: ID) => {
     if (!currentFile) return;
     updateCard(cardId, (prev) => ({ ...prev, marked: !Boolean(prev.marked) }));
@@ -600,12 +609,7 @@ export default function EnglishIfThenRules() {
     }
 
     const addCount = obj.cards.length;
-    if (
-      !confirm(
-        `選択中デッキに、JSONのカード ${addCount} 件を追加します。よろしいですか？`
-      )
-    )
-      return;
+    if (!confirm(`選択中デッキに、JSONのカード ${addCount} 件を追加します。よろしいですか？`)) return;
 
     setStore((s) => {
       const fileId = currentFileId;
@@ -706,12 +710,10 @@ export default function EnglishIfThenRules() {
     }
     if (pasteAction === "replace") {
       applyDeckJsonReplaceCurrent(obj);
-      // 置き換えは安全のため内容は残す（誤操作対策）
       return;
     }
     if (pasteAction === "append") {
       applyDeckJsonAppendToCurrent(obj);
-      // 追加も安全のため残す（誤操作対策）
       return;
     }
   };
@@ -902,7 +904,7 @@ export default function EnglishIfThenRules() {
                 />
               </label>
 
-              {/* ★ JSON paste import */}
+              {/* JSON paste import */}
               <div className="mt-2 rounded-2xl border p-3 bg-white">
                 <div className="flex items-center justify-between gap-2 mb-2">
                   <div className="text-xs font-semibold text-gray-700">JSONをペーストしてインポート</div>
@@ -927,11 +929,7 @@ export default function EnglishIfThenRules() {
                 />
 
                 <div className="flex items-center gap-2 mt-2">
-                  <button
-                    type="button"
-                    onClick={runPasteImport}
-                    className="rounded-xl bg-black px-3 py-2 text-xs text-white"
-                  >
+                  <button type="button" onClick={runPasteImport} className="rounded-xl bg-black px-3 py-2 text-xs text-white">
                     実行
                   </button>
                   <button
@@ -948,9 +946,7 @@ export default function EnglishIfThenRules() {
                 </p>
 
                 {(pasteAction === "replace" || pasteAction === "append") && !currentFileId && (
-                  <p className="text-[11px] text-red-600 mt-1">
-                    ※「置き換え / 追加」は、左でデッキを選択してから実行してください。
-                  </p>
+                  <p className="text-[11px] text-red-600 mt-1">※「置き換え / 追加」は、左でデッキを選択してから実行してください。</p>
                 )}
               </div>
             </div>
@@ -976,6 +972,7 @@ export default function EnglishIfThenRules() {
             judgeAndNext={judgeAndNext}
             stopStudy={stopStudy}
             toggleMark={(cardId) => toggleMarkCard(cardId)}
+            editCard={editCardFields} // ★追加：学習中編集
           />
         ) : (
           <>
@@ -989,28 +986,16 @@ export default function EnglishIfThenRules() {
 
               <div className="flex items-center gap-3">
                 <label className="flex items-center gap-2 text-xs text-gray-700">
-                  <input
-                    type="checkbox"
-                    checked={studyMarkedOnly}
-                    onChange={(e) => setStudyMarkedOnly(e.target.checked)}
-                  />
+                  <input type="checkbox" checked={studyMarkedOnly} onChange={(e) => setStudyMarkedOnly(e.target.checked)} />
                   マークのみで学習
                 </label>
 
                 <label className="flex items-center gap-2 text-xs text-gray-700">
-                  <input
-                    type="checkbox"
-                    checked={studyShuffle}
-                    onChange={(e) => setStudyShuffle(e.target.checked)}
-                  />
+                  <input type="checkbox" checked={studyShuffle} onChange={(e) => setStudyShuffle(e.target.checked)} />
                   シャッフル
                 </label>
 
-                <button
-                  type="button"
-                  onClick={startStudy}
-                  className="rounded-xl bg-black px-3 py-2 text-sm text-white"
-                >
+                <button type="button" onClick={startStudy} className="rounded-xl bg-black px-3 py-2 text-sm text-white">
                   ▶ 学習モード開始
                 </button>
               </div>
@@ -1026,9 +1011,7 @@ export default function EnglishIfThenRules() {
             </div>
 
             {currentFile.cards.length === 0 ? (
-              <p className="text-sm text-gray-500">
-                まだカードがありません。「＋ カード追加」から If / Then を入力してください。
-              </p>
+              <p className="text-sm text-gray-500">まだカードがありません。「＋ カード追加」から If / Then を入力してください。</p>
             ) : (
               <div className="space-y-4">
                 {currentFile.cards.map((card, idx) => {
@@ -1117,14 +1100,27 @@ function StudyView(props: {
   judgeAndNext: (cardId: ID, judge: Judge) => void;
   stopStudy: () => void;
   toggleMark: (cardId: ID) => void;
+
+  // ★追加：学習モード中に If/Then を直接編集
+  editCard: (cardId: ID, patch: Partial<{ ifText: string; thenText: string }>) => void;
 }) {
-  const { file, fileName, order, map, revealThen, prevCard, nextCard, judgeAndNext, stopStudy, toggleMark } = props;
+  const { file, fileName, order, map, revealThen, prevCard, nextCard, judgeAndNext, stopStudy, toggleMark, editCard } = props;
 
   const total = order.cardIds.length;
   const cardId = order.cardIds[order.idx];
   const card = file.cards.find((c) => c.id === cardId);
 
   const state = map[cardId] ?? { revealed: false, judge: null };
+
+  // ★編集UI状態（このビュー内だけ）
+  const [editIf, setEditIf] = useState(false);
+  const [editThen, setEditThen] = useState(false);
+
+  // カードが切り替わったら編集状態は閉じる
+  useEffect(() => {
+    setEditIf(false);
+    setEditThen(false);
+  }, [cardId]);
 
   // stats
   const judged = Object.values(map).filter((s) => s && s.judge !== null).length;
@@ -1165,22 +1161,43 @@ function StudyView(props: {
       </div>
 
       <div className="rounded-2xl border px-4 py-4 bg-white space-y-4">
+        {/* If */}
         <div className="flex items-center justify-between gap-2">
           <div className="text-xs font-semibold text-gray-700">If（英文）</div>
-          <button
-            type="button"
-            onClick={() => toggleMark(cardId)}
-            className={"text-xs rounded-lg border px-2 py-1 " + (marked ? "bg-yellow-100" : "hover:bg-gray-50")}
-            title="マーク"
-          >
-            {marked ? "★ マーク中" : "☆ マーク"}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setEditIf((v) => !v)}
+              className="text-xs rounded-lg border px-2 py-1 text-gray-600 hover:bg-gray-50"
+            >
+              {editIf ? "編集を閉じる" : "編集"}
+            </button>
+            <button
+              type="button"
+              onClick={() => toggleMark(cardId)}
+              className={"text-xs rounded-lg border px-2 py-1 " + (marked ? "bg-yellow-100" : "hover:bg-gray-50")}
+              title="マーク"
+            >
+              {marked ? "★ マーク中" : "☆ マーク"}
+            </button>
+          </div>
         </div>
 
-        <div className="rounded-xl border bg-gray-50 px-3 py-2 text-sm whitespace-pre-wrap">
-          {card.ifText?.trim() ? card.ifText : <span className="text-gray-400">（英文が空です）</span>}
-        </div>
+        {editIf ? (
+          <textarea
+            value={card.ifText ?? ""}
+            onChange={(e) => editCard(cardId, { ifText: e.target.value })}
+            rows={4}
+            className="w-full rounded-xl border px-3 py-2 text-sm font-mono"
+            placeholder="例: If you have any questions, please let me know."
+          />
+        ) : (
+          <div className="rounded-xl border bg-gray-50 px-3 py-2 text-sm whitespace-pre-wrap">
+            {card.ifText?.trim() ? card.ifText : <span className="text-gray-400">（英文が空です）</span>}
+          </div>
+        )}
 
+        {/* Controls */}
         <div className="flex flex-wrap items-center gap-2">
           <button type="button" onClick={() => revealThen(cardId)} className="rounded-xl bg-black px-3 py-2 text-sm text-white">
             解答をチェック
@@ -1227,20 +1244,41 @@ function StudyView(props: {
           )}
         </div>
 
-        <div>
-          <div className="text-xs font-semibold text-gray-700 mb-1">Then（正解の和訳）</div>
-          <div className="rounded-xl border bg-gray-50 px-3 py-2 text-sm whitespace-pre-wrap">
-            {state.revealed ? (
-              card.thenText?.trim() ? (
-                card.thenText
-              ) : (
-                <span className="text-gray-400">（和訳が空です）</span>
-              )
-            ) : (
-              <span className="text-gray-400">（「解答をチェック」を押すと表示されます）</span>
-            )}
-          </div>
+        {/* Then */}
+        <div className="flex items-center justify-between">
+          <div className="text-xs font-semibold text-gray-700">Then（正解の和訳）</div>
+          <button
+            type="button"
+            onClick={() => setEditThen((v) => !v)}
+            disabled={!state.revealed}
+            className={
+              "text-xs rounded-lg border px-2 py-1 " + (!state.revealed ? "text-gray-300" : "text-gray-600 hover:bg-gray-50")
+            }
+            title={!state.revealed ? "先に「解答をチェック」を押してください" : "和訳を編集"}
+          >
+            {editThen ? "編集を閉じる" : "編集"}
+          </button>
         </div>
+
+        {state.revealed ? (
+          editThen ? (
+            <textarea
+              value={card.thenText ?? ""}
+              onChange={(e) => editCard(cardId, { thenText: e.target.value })}
+              rows={4}
+              className="w-full rounded-xl border px-3 py-2 text-sm font-mono"
+              placeholder="例: もし何か質問があれば、教えてください。"
+            />
+          ) : (
+            <div className="rounded-xl border bg-gray-50 px-3 py-2 text-sm whitespace-pre-wrap">
+              {card.thenText?.trim() ? card.thenText : <span className="text-gray-400">（和訳が空です）</span>}
+            </div>
+          )
+        ) : (
+          <div className="rounded-xl border bg-gray-50 px-3 py-2 text-sm whitespace-pre-wrap">
+            <span className="text-gray-400">（「解答をチェック」を押すと表示されます）</span>
+          </div>
+        )}
       </div>
     </>
   );
