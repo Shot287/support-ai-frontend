@@ -1097,9 +1097,7 @@ export default function EnglishIfThenRules() {
                             <div className="text-xs font-semibold text-gray-700 mb-1">Then（メモ）</div>
                             <textarea
                               value={card.thenMemo ?? ""}
-                              onChange={(e) =>
-                                updateCard(card.id, (prev) => ({ ...prev, thenMemo: e.target.value }))
-                              }
+                              onChange={(e) => updateCard(card.id, (prev) => ({ ...prev, thenMemo: e.target.value }))}
                               rows={3}
                               className="w-full rounded-lg border px-3 py-2 text-xs font-mono"
                               placeholder="例: 言い換え / 文法ポイント / ひっかかった点 など"
@@ -1135,7 +1133,8 @@ function StudyView(props: {
   // ★ 学習モード中に If/Then/メモ を直接編集
   editCard: (cardId: ID, patch: Partial<{ ifText: string; thenText: string; thenMemo: string }>) => void;
 }) {
-  const { file, fileName, order, map, revealThen, prevCard, nextCard, judgeAndNext, stopStudy, toggleMark, editCard } = props;
+  const { file, fileName, order, map, revealThen, prevCard, nextCard, judgeAndNext, stopStudy, toggleMark, editCard } =
+    props;
 
   const total = order.cardIds.length;
   const cardId = order.cardIds[order.idx];
@@ -1147,8 +1146,7 @@ function StudyView(props: {
   const [editIf, setEditIf] = useState(false);
   const [editThen, setEditThen] = useState(false);
 
-  // ★追加：メモは常に入力できる（表示は Then の下に固定）
-  // ※カード切替で編集トグルは閉じる
+  // カード切替で編集トグルは閉じる
   useEffect(() => {
     setEditIf(false);
     setEditThen(false);
@@ -1284,7 +1282,8 @@ function StudyView(props: {
             onClick={() => setEditThen((v) => !v)}
             disabled={!state.revealed}
             className={
-              "text-xs rounded-lg border px-2 py-1 " + (!state.revealed ? "text-gray-300" : "text-gray-600 hover:bg-gray-50")
+              "text-xs rounded-lg border px-2 py-1 " +
+              (!state.revealed ? "text-gray-300" : "text-gray-600 hover:bg-gray-50")
             }
             title={!state.revealed ? "先に「解答をチェック」を押してください" : "和訳を編集"}
           >
@@ -1312,19 +1311,23 @@ function StudyView(props: {
           </div>
         )}
 
-        {/* ★追加：Then（メモ） */}
+        {/* ★ Then（メモ）も「解答をチェック」後に表示 */}
         <div>
           <div className="text-xs font-semibold text-gray-700 mb-1">Then（メモ）</div>
-          <textarea
-            value={card.thenMemo ?? ""}
-            onChange={(e) => editCard(cardId, { thenMemo: e.target.value })}
-            rows={3}
-            className="w-full rounded-xl border px-3 py-2 text-sm font-mono"
-            placeholder="例: 言い換え / 文法ポイント / ひっかかった点 など"
-          />
-          <p className="text-[11px] text-gray-500 mt-1">
-            ※メモは学習中いつでも入力できます（正解表示の有無とは独立）。
-          </p>
+
+          {state.revealed ? (
+            <textarea
+              value={card.thenMemo ?? ""}
+              onChange={(e) => editCard(cardId, { thenMemo: e.target.value })}
+              rows={3}
+              className="w-full rounded-xl border px-3 py-2 text-sm font-mono"
+              placeholder="例: 言い換え / 文法ポイント / ひっかかった点 など"
+            />
+          ) : (
+            <div className="rounded-xl border bg-gray-50 px-3 py-2 text-sm whitespace-pre-wrap">
+              <span className="text-gray-400">（「解答をチェック」を押すと表示されます）</span>
+            </div>
+          )}
         </div>
       </div>
     </>
