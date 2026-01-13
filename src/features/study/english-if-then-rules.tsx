@@ -19,7 +19,8 @@ type Node = {
 type Card = {
   id: ID;
   ifText: string; // 英文
-  thenText: string; // 和訳
+  thenText: string; // 和訳（正解）
+  thenMemo?: string; // ★ 追加：和訳のメモ
   marked?: boolean; // ★（未保存データは false 扱い）
 };
 
@@ -64,12 +65,13 @@ function createDefaultStore(): Store {
 }
 
 function normalizeStore(s: Store): Store {
-  // 旧データ互換：marked が無いカードは false を補完
+  // 旧データ互換：marked / thenMemo が無いカードは補完
   const nextFiles: Record<ID, DeckFile> = {};
   for (const [fid, f] of Object.entries(s.files ?? {})) {
     const cards = (f.cards ?? []).map((c) => ({
       ...c,
       marked: Boolean((c as any).marked),
+      thenMemo: typeof (c as any).thenMemo === "string" ? (c as any).thenMemo : "",
     }));
     nextFiles[fid] = { ...f, id: (f as any).id ?? fid, cards };
   }
@@ -116,6 +118,7 @@ type DeckJsonV1 = {
   cards: Array<{
     ifText: string;
     thenText: string;
+    thenMemo?: string; // ★ 追加
     marked?: boolean; // ★（あってもなくてもOK）
   }>;
 };
@@ -138,6 +141,7 @@ function validateDeckJsonV1(obj: any): obj is DeckJsonV1 {
     if (!c || typeof c !== "object") return false;
     if (typeof c.ifText !== "string") return false;
     if (typeof c.thenText !== "string") return false;
+    if (c.thenMemo !== undefined && typeof c.thenMemo !== "string") return false;
     if (c.marked !== undefined && typeof c.marked !== "boolean") return false;
   }
   return true;
@@ -380,7 +384,7 @@ export default function EnglishIfThenRules() {
   // ----------------- Deck (cards) ops -----------------
   const addCard = () => {
     if (!currentFile) return;
-    const card: Card = { id: uid(), ifText: "", thenText: "", marked: false };
+    const card: Card = { id: uid(), ifText: "", thenText: "", thenMemo: "", marked: false };
     setStore((s) => ({
       ...s,
       files: {
@@ -404,11 +408,15 @@ export default function EnglishIfThenRules() {
   };
 
   // ★ StudyView から直接編集できるようにするための薄いラッパ
-  const editCardFields = (cardId: ID, patch: Partial<Pick<Card, "ifText" | "thenText">>) => {
+  const editCardFields = (
+    cardId: ID,
+    patch: Partial<Pick<Card, "ifText" | "thenText" | "thenMemo">>
+  ) => {
     updateCard(cardId, (prev) => ({
       ...prev,
       ifText: patch.ifText !== undefined ? patch.ifText : prev.ifText,
       thenText: patch.thenText !== undefined ? patch.thenText : prev.thenText,
+      thenMemo: patch.thenMemo !== undefined ? patch.thenMemo : (prev.thenMemo ?? ""),
     }));
   };
 
@@ -459,7 +467,11 @@ export default function EnglishIfThenRules() {
   const startStudy = () => {
     if (!currentFile) return;
 
-    const cards = currentFile.cards.map((c) => ({ ...c, marked: Boolean(c.marked) }));
+    const cards = currentFile.cards.map((c) => ({
+      ...c,
+      marked: Boolean(c.marked),
+      thenMemo: typeof c.thenMemo === "string" ? c.thenMemo : "",
+    }));
     const filtered = studyMarkedOnly ? cards.filter((c) => c.marked) : cards;
 
     if (filtered.length === 0) {
@@ -551,6 +563,7 @@ export default function EnglishIfThenRules() {
           id: uid(),
           ifText: c.ifText ?? "",
           thenText: c.thenText ?? "",
+          thenMemo: c.thenMemo ?? "",
           marked: Boolean(c.marked),
         })),
       };
@@ -590,6 +603,7 @@ export default function EnglishIfThenRules() {
           id: uid(),
           ifText: c.ifText ?? "",
           thenText: c.thenText ?? "",
+          thenMemo: c.thenMemo ?? "",
           marked: Boolean(c.marked),
         })),
       };
@@ -620,6 +634,7 @@ export default function EnglishIfThenRules() {
         id: uid(),
         ifText: c.ifText ?? "",
         thenText: c.thenText ?? "",
+        thenMemo: c.thenMemo ?? "",
         marked: Boolean(c.marked),
       }));
 
@@ -652,6 +667,7 @@ export default function EnglishIfThenRules() {
       cards: file.cards.map((c) => ({
         ifText: c.ifText ?? "",
         thenText: c.thenText ?? "",
+        thenMemo: c.thenMemo ?? "",
         marked: Boolean(c.marked),
       })),
     };
@@ -925,7 +941,7 @@ export default function EnglishIfThenRules() {
                   onChange={(e) => setPasteJsonText(e.target.value)}
                   rows={6}
                   className="w-full rounded-xl border px-3 py-2 text-[11px] font-mono"
-                  placeholder={`ここに if_then_deck v1 のJSONをペースト\n例: {"kind":"if_then_deck","version":1,"name":"...","cards":[{"ifText":"...","thenText":"..."}]}`}
+                  placeholder={`ここに if_then_deck v1 のJSONをペースト\n例: {"kind":"if_then_deck","version":1,"name":"...","cards":[{"ifText":"...","thenText":"...","thenMemo":"..."}]}`}
                 />
 
                 <div className="flex items-center gap-2 mt-2">
@@ -942,7 +958,7 @@ export default function EnglishIfThenRules() {
                 </div>
 
                 <p className="text-[11px] text-gray-500 leading-relaxed mt-2">
-                  フォーマット：kind=if_then_deck, version=1, name, cards[{`{ifText, thenText, marked?}`}]。
+                  フォーマット：kind=if_then_deck, version=1, name, cards[{`{ifText, thenText, thenMemo?, marked?}`}]。
                 </p>
 
                 {(pasteAction === "replace" || pasteAction === "append") && !currentFileId && (
@@ -972,7 +988,7 @@ export default function EnglishIfThenRules() {
             judgeAndNext={judgeAndNext}
             stopStudy={stopStudy}
             toggleMark={(cardId) => toggleMarkCard(cardId)}
-            editCard={editCardFields} // ★追加：学習中編集
+            editCard={editCardFields}
           />
         ) : (
           <>
@@ -1065,15 +1081,30 @@ export default function EnglishIfThenRules() {
                             placeholder="例: If you have any questions, please let me know."
                           />
                         </div>
-                        <div>
-                          <div className="text-xs font-semibold text-gray-700 mb-1">Then（和訳）</div>
-                          <textarea
-                            value={card.thenText}
-                            onChange={(e) => updateCard(card.id, (prev) => ({ ...prev, thenText: e.target.value }))}
-                            rows={4}
-                            className="w-full rounded-lg border px-3 py-2 text-xs font-mono"
-                            placeholder="例: もし何か質問があれば、教えてください。"
-                          />
+                        <div className="space-y-3">
+                          <div>
+                            <div className="text-xs font-semibold text-gray-700 mb-1">Then（和訳）</div>
+                            <textarea
+                              value={card.thenText}
+                              onChange={(e) => updateCard(card.id, (prev) => ({ ...prev, thenText: e.target.value }))}
+                              rows={4}
+                              className="w-full rounded-lg border px-3 py-2 text-xs font-mono"
+                              placeholder="例: もし何か質問があれば、教えてください。"
+                            />
+                          </div>
+
+                          <div>
+                            <div className="text-xs font-semibold text-gray-700 mb-1">Then（メモ）</div>
+                            <textarea
+                              value={card.thenMemo ?? ""}
+                              onChange={(e) =>
+                                updateCard(card.id, (prev) => ({ ...prev, thenMemo: e.target.value }))
+                              }
+                              rows={3}
+                              className="w-full rounded-lg border px-3 py-2 text-xs font-mono"
+                              placeholder="例: 言い換え / 文法ポイント / ひっかかった点 など"
+                            />
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -1101,8 +1132,8 @@ function StudyView(props: {
   stopStudy: () => void;
   toggleMark: (cardId: ID) => void;
 
-  // ★追加：学習モード中に If/Then を直接編集
-  editCard: (cardId: ID, patch: Partial<{ ifText: string; thenText: string }>) => void;
+  // ★ 学習モード中に If/Then/メモ を直接編集
+  editCard: (cardId: ID, patch: Partial<{ ifText: string; thenText: string; thenMemo: string }>) => void;
 }) {
   const { file, fileName, order, map, revealThen, prevCard, nextCard, judgeAndNext, stopStudy, toggleMark, editCard } = props;
 
@@ -1112,11 +1143,12 @@ function StudyView(props: {
 
   const state = map[cardId] ?? { revealed: false, judge: null };
 
-  // ★編集UI状態（このビュー内だけ）
+  // 編集UI状態（このビュー内だけ）
   const [editIf, setEditIf] = useState(false);
   const [editThen, setEditThen] = useState(false);
 
-  // カードが切り替わったら編集状態は閉じる
+  // ★追加：メモは常に入力できる（表示は Then の下に固定）
+  // ※カード切替で編集トグルは閉じる
   useEffect(() => {
     setEditIf(false);
     setEditThen(false);
@@ -1244,7 +1276,7 @@ function StudyView(props: {
           )}
         </div>
 
-        {/* Then */}
+        {/* Then（正解の和訳） */}
         <div className="flex items-center justify-between">
           <div className="text-xs font-semibold text-gray-700">Then（正解の和訳）</div>
           <button
@@ -1279,6 +1311,21 @@ function StudyView(props: {
             <span className="text-gray-400">（「解答をチェック」を押すと表示されます）</span>
           </div>
         )}
+
+        {/* ★追加：Then（メモ） */}
+        <div>
+          <div className="text-xs font-semibold text-gray-700 mb-1">Then（メモ）</div>
+          <textarea
+            value={card.thenMemo ?? ""}
+            onChange={(e) => editCard(cardId, { thenMemo: e.target.value })}
+            rows={3}
+            className="w-full rounded-xl border px-3 py-2 text-sm font-mono"
+            placeholder="例: 言い換え / 文法ポイント / ひっかかった点 など"
+          />
+          <p className="text-[11px] text-gray-500 mt-1">
+            ※メモは学習中いつでも入力できます（正解表示の有無とは独立）。
+          </p>
+        </div>
       </div>
     </>
   );
