@@ -408,10 +408,7 @@ export default function EnglishIfThenRules() {
   };
 
   // ★ StudyView から直接編集できるようにするための薄いラッパ
-  const editCardFields = (
-    cardId: ID,
-    patch: Partial<Pick<Card, "ifText" | "thenText" | "thenMemo">>
-  ) => {
+  const editCardFields = (cardId: ID, patch: Partial<Pick<Card, "ifText" | "thenText" | "thenMemo">>) => {
     updateCard(cardId, (prev) => ({
       ...prev,
       ifText: patch.ifText !== undefined ? patch.ifText : prev.ifText,
@@ -945,7 +942,11 @@ export default function EnglishIfThenRules() {
                 />
 
                 <div className="flex items-center gap-2 mt-2">
-                  <button type="button" onClick={runPasteImport} className="rounded-xl bg-black px-3 py-2 text-xs text-white">
+                  <button
+                    type="button"
+                    onClick={runPasteImport}
+                    className="rounded-xl bg-black px-3 py-2 text-xs text-white"
+                  >
                     実行
                   </button>
                   <button
@@ -962,7 +963,9 @@ export default function EnglishIfThenRules() {
                 </p>
 
                 {(pasteAction === "replace" || pasteAction === "append") && !currentFileId && (
-                  <p className="text-[11px] text-red-600 mt-1">※「置き換え / 追加」は、左でデッキを選択してから実行してください。</p>
+                  <p className="text-[11px] text-red-600 mt-1">
+                    ※「置き換え / 追加」は、左でデッキを選択してから実行してください。
+                  </p>
                 )}
               </div>
             </div>
@@ -1002,12 +1005,20 @@ export default function EnglishIfThenRules() {
 
               <div className="flex items-center gap-3">
                 <label className="flex items-center gap-2 text-xs text-gray-700">
-                  <input type="checkbox" checked={studyMarkedOnly} onChange={(e) => setStudyMarkedOnly(e.target.checked)} />
+                  <input
+                    type="checkbox"
+                    checked={studyMarkedOnly}
+                    onChange={(e) => setStudyMarkedOnly(e.target.checked)}
+                  />
                   マークのみで学習
                 </label>
 
                 <label className="flex items-center gap-2 text-xs text-gray-700">
-                  <input type="checkbox" checked={studyShuffle} onChange={(e) => setStudyShuffle(e.target.checked)} />
+                  <input
+                    type="checkbox"
+                    checked={studyShuffle}
+                    onChange={(e) => setStudyShuffle(e.target.checked)}
+                  />
                   シャッフル
                 </label>
 
@@ -1202,14 +1213,6 @@ function StudyView(props: {
             >
               {editIf ? "編集を閉じる" : "編集"}
             </button>
-            <button
-              type="button"
-              onClick={() => toggleMark(cardId)}
-              className={"text-xs rounded-lg border px-2 py-1 " + (marked ? "bg-yellow-100" : "hover:bg-gray-50")}
-              title="マーク"
-            >
-              {marked ? "★ マーク中" : "☆ マーク"}
-            </button>
           </div>
         </div>
 
@@ -1249,6 +1252,16 @@ function StudyView(props: {
             className={"rounded-xl border px-3 py-2 text-sm " + (!state.revealed ? "text-gray-300" : "hover:bg-gray-50")}
           >
             不正解
+          </button>
+
+          {/* ★ マークボタンを「不正解」の右隣へ移動 */}
+          <button
+            type="button"
+            onClick={() => toggleMark(cardId)}
+            className={"rounded-xl border px-3 py-2 text-sm " + (marked ? "bg-yellow-100" : "hover:bg-gray-50")}
+            title="マーク"
+          >
+            {marked ? "★ マーク中" : "☆ マーク"}
           </button>
 
           <button
