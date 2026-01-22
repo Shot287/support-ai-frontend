@@ -131,6 +131,14 @@ export default function StudyPage() {
       href: "/study/english-if-then-rules",
       type: "link" as const,
     },
+    {
+      id: "close-reading",
+      title: "精読（SVOCMタグ付け）",
+      description:
+        "英文を単語に分解して、S/V/O/C/M などの役割をクリックで割り当て。精読の練習用。",
+      href: "/study/close-reading",
+      type: "link" as const,
+    },
   ] as const;
 
   useEffect(() => {
