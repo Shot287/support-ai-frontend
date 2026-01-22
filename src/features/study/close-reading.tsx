@@ -20,13 +20,12 @@ type Role =
 type Token = {
   id: string;
   text: string;
-  // v1互換のため残す（v2では表示/編集の主役は group）
-  role?: Role;
+  role?: Role; // v1互換のため残す（v2では group が主役）
 };
 
 type Group = {
   id: string;
-  tokenIds: string[]; // 順序は tokens の並び順に合わせて保存
+  tokenIds: string[]; // tokens順に正規化して保存
   role: Role; // グループの役割（表示は1つだけ）
 };
 
@@ -41,7 +40,7 @@ type StoreV2 = {
   version: 2;
   inputText: string;
   tokens: Token[];
-  groups: Group[]; // ★追加：まとまり
+  groups: Group[];
   updatedAt: number;
 };
 
@@ -54,7 +53,6 @@ const SYNC_CHANNEL = "support-ai-sync";
 const STORAGE_KEY_RESET_REQ = "support-ai:sync:reset:req";
 const LOCAL_APPLIED_TYPE = "LOCAL_DOC_APPLIED";
 
-// 役割の表示名（必要なら増やしてOK）
 const ROLE_LABELS: { role: Role; label: string }[] = [
   { role: "S", label: "S（主語）" },
   { role: "V", label: "V（動詞）" },
@@ -73,19 +71,11 @@ function newId() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
-/**
- * 英文を「単語/記号」単位に分割して Token 化
- * - 句読点 .,!?;:() などは別トークン
- * - 空白は捨てる
- */
+/** 英文を「単語/記号」単位に分割（空白は捨てる） */
 function tokenize(text: string): Token[] {
   const re = /[A-Za-z]+(?:'[A-Za-z]+)?|\d+(?:\.\d+)?|[^\sA-Za-z0-9]/g;
   const raw = text.match(re) ?? [];
-  return raw.map((t) => ({
-    id: newId(),
-    text: t,
-    role: "NONE",
-  }));
+  return raw.map((t) => ({ id: newId(), text: t, role: "NONE" }));
 }
 
 function defaultStoreV2(): StoreV2 {
@@ -137,21 +127,42 @@ function classForRole(role: Role) {
 }
 
 function roleShort(role: Role) {
-  if (role === "NONE") return "";
-  return role;
+  return role === "NONE" ? "" : role;
 }
 
 function uniq(arr: string[]) {
   return Array.from(new Set(arr));
 }
 
-/** tokens配列の順序で tokenIds を並べ替える */
-function sortTokenIdsByTokenOrder(tokenIds: string[], tokens: Token[]) {
-  const idx = new Map(tokens.map((t, i) => [t.id, i]));
-  return [...tokenIds].sort((a, b) => (idx.get(a) ?? 1e9) - (idx.get(b) ?? 1e9));
+/** tokens順に tokenIds を正規化 */
+function normalizeTokenIds(tokenIds: string[], idToIndex: Map<string, number>) {
+  const dedup = Array.from(new Set(tokenIds));
+  dedup.sort((a, b) => (idToIndex.get(a) ?? 1e9) - (idToIndex.get(b) ?? 1e9));
+  return dedup;
 }
 
-/** v1 -> v2 変換：token.roleが付いていたものは「1語グループ」にする */
+/** 選択が飛び飛びなら、最小～最大の“連続範囲”に寄せる（意図しない混入を防ぐ） */
+function coerceToContiguousSelection(
+  selectedIds: string[],
+  idToIndex: Map<string, number>,
+  tokens: Token[]
+) {
+  if (selectedIds.length <= 1) return selectedIds;
+
+  const idxs = selectedIds
+    .map((id) => idToIndex.get(id))
+    .filter((x): x is number => typeof x === "number");
+
+  if (idxs.length <= 1) return selectedIds;
+
+  const min = Math.min(...idxs);
+  const max = Math.max(...idxs);
+
+  // 連続範囲のIDs（必ず tokens の順）
+  return tokens.slice(min, max + 1).map((t) => t.id);
+}
+
+/** v1/v2 を v2 に吸収 */
 function migrate(raw: any): StoreV2 {
   const base = defaultStoreV2();
   if (!raw || typeof raw !== "object") return base;
@@ -174,19 +185,22 @@ function migrate(raw: any): StoreV2 {
           .filter(Boolean) as Token[]
       : [];
 
+    const idToIndex = new Map(tokens.map((t, i) => [t.id, i]));
+    const tokenSet = new Set(tokens.map((t) => t.id));
+
     const groups: Group[] = Array.isArray(raw.groups)
       ? raw.groups
           .map((g: any) => {
             if (!g || typeof g !== "object") return null;
             const role = typeof g.role === "string" ? (g.role as Role) : "NONE";
-            const tokenIds = Array.isArray(g.tokenIds)
-              ? g.tokenIds.filter((id: any) => typeof id === "string")
+            const tokenIdsRaw = Array.isArray(g.tokenIds)
+              ? g.tokenIds.filter((id: any) => typeof id === "string" && tokenSet.has(id))
               : [];
-            if (tokenIds.length === 0) return null;
+            if (tokenIdsRaw.length === 0) return null;
             return {
               id: typeof g.id === "string" ? g.id : newId(),
               role,
-              tokenIds,
+              tokenIds: normalizeTokenIds(tokenIdsRaw, idToIndex),
             };
           })
           .filter(Boolean) as Group[]
@@ -194,25 +208,7 @@ function migrate(raw: any): StoreV2 {
 
     const updatedAt = typeof raw.updatedAt === "number" ? raw.updatedAt : Date.now();
 
-    // グループ内 tokenIds を tokens順で正規化 & 存在しないIDを除去
-    const tokenSet = new Set(tokens.map((t) => t.id));
-    const normalizedGroups = groups
-      .map((g) => ({
-        ...g,
-        tokenIds: sortTokenIdsByTokenOrder(
-          g.tokenIds.filter((id) => tokenSet.has(id)),
-          tokens
-        ),
-      }))
-      .filter((g) => g.tokenIds.length > 0);
-
-    return {
-      version: 2,
-      inputText,
-      tokens,
-      groups: normalizedGroups,
-      updatedAt,
-    };
+    return { version: 2, inputText, tokens, groups, updatedAt };
   }
 
   // v1
@@ -231,20 +227,20 @@ function migrate(raw: any): StoreV2 {
           .filter(Boolean) as Token[]
       : [];
 
+    const idToIndex = new Map(tokens.map((t, i) => [t.id, i]));
     const groups: Group[] = [];
+
     for (const t of tokens) {
       const r = t.role ?? "NONE";
-      if (r !== "NONE") {
-        groups.push({ id: newId(), tokenIds: [t.id], role: r });
-      }
-      // v2以降は groupが主役なので、token.roleは保存しておくが表示は group優先
-      // ここでは role情報の二重管理を避けるため、token.roleをNONEに寄せる
-      t.role = "NONE";
+      if (r !== "NONE") groups.push({ id: newId(), tokenIds: [t.id], role: r });
+      t.role = "NONE"; // 二重管理を避ける
     }
 
-    const updatedAt = typeof v1.updatedAt === "number" ? v1.updatedAt : Date.now();
+    // 念のため正規化
+    const normalized = groups.map((g) => ({ ...g, tokenIds: normalizeTokenIds(g.tokenIds, idToIndex) }));
 
-    return { version: 2, inputText, tokens, groups, updatedAt };
+    const updatedAt = typeof v1.updatedAt === "number" ? v1.updatedAt : Date.now();
+    return { version: 2, inputText, tokens, groups: normalized, updatedAt };
   }
 
   return base;
@@ -269,39 +265,37 @@ export default function CloseReading() {
   const [store, setStore] = useState<Store>(() => loadLocal());
   const storeRef = useRef<Store>(store);
 
-  // UI状態：複数選択
+  // 選択（ID）
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const lastClickedIndexRef = useRef<number | null>(null);
+  // Shift用アンカー（最後に“通常クリック”or“Shiftクリックの起点”になった index）
+  const anchorIndexRef = useRef<number | null>(null);
+
+  // tokens順の index map（順番固定の要）
+  const idToIndex = useMemo(() => new Map(store.tokens.map((t, i) => [t.id, i])), [store.tokens]);
 
   // tokenId -> group
   const groupByTokenId = useMemo(() => {
     const m = new Map<string, Group>();
-    for (const g of store.groups) {
-      for (const tid of g.tokenIds) m.set(tid, g);
-    }
+    for (const g of store.groups) for (const tid of g.tokenIds) m.set(tid, g);
     return m;
   }, [store.groups]);
 
   const selectedTokens = useMemo(() => {
     const set = new Set(selectedIds);
-    return store.tokens.filter((t) => set.has(t.id));
+    return store.tokens.filter((t) => set.has(t.id)); // tokens順で返る
   }, [store.tokens, selectedIds]);
 
-  const selectedText = useMemo(() => {
-    if (selectedTokens.length === 0) return "";
-    return selectedTokens.map((t) => t.text).join(" ");
-  }, [selectedTokens]);
+  const selectedText = useMemo(() => selectedTokens.map((t) => t.text).join(" "), [selectedTokens]);
 
-  // 選択が「単一グループのみ」か判定
   const selectedGroup = useMemo(() => {
     if (selectedIds.length === 0) return null;
-    const gs = uniq(
+    const groupIds = uniq(
       selectedIds
         .map((id) => groupByTokenId.get(id)?.id ?? "")
         .filter((x) => x)
     );
-    if (gs.length !== 1) return null;
-    return store.groups.find((g) => g.id === gs[0]) ?? null;
+    if (groupIds.length !== 1) return null;
+    return store.groups.find((g) => g.id === groupIds[0]) ?? null;
   }, [selectedIds, groupByTokenId, store.groups]);
 
   // ローカル即時保存
@@ -310,7 +304,7 @@ export default function CloseReading() {
     saveLocal(store);
   }, [store]);
 
-  // 手動同期購読（PULL / PUSH / LOCAL_DOC_APPLIED / storage）
+  // 手動同期購読
   useEffect(() => {
     if (typeof window === "undefined") return;
 
@@ -346,9 +340,9 @@ export default function CloseReading() {
           if (t.includes("PULL")) doPull();
           else if (t.includes("PUSH")) doPush();
           else if (t.includes("RESET")) {
-            // noop（直後にPULL）
+            // noop
           } else if (t === LOCAL_APPLIED_TYPE && msg.docKey === DOC_KEY) {
-            setStore(loadLocal()); // ホームがlocalStorageを書いた合図
+            setStore(loadLocal());
           }
         };
       }
@@ -387,7 +381,7 @@ export default function CloseReading() {
     };
   }, []);
 
-  // 入力文からトークン生成（既存タグはリセット）
+  // 入力文からトークン生成
   const onBuild = () => {
     const tokens = tokenize(store.inputText);
     setStore((prev) => ({
@@ -397,10 +391,9 @@ export default function CloseReading() {
       updatedAt: Date.now(),
     }));
     setSelectedIds([]);
-    lastClickedIndexRef.current = null;
+    anchorIndexRef.current = null;
   };
 
-  // タグ全解除：グループを消す（下線表示は「全トークンが単体ユニット」になるので残る）
   const onClearTags = () => {
     setStore((prev) => ({
       ...prev,
@@ -409,52 +402,100 @@ export default function CloseReading() {
     }));
   };
 
-  // 選択に role を付与：
-  // - 選択が既存グループ1つに完全一致 → そのグループのrole更新
-  // - それ以外 → 選択tokenを既存グループから外し、新しいグループを作成（1語でも作る）
+  // クリック選択：
+  // - 通常クリック：単一選択＆アンカー更新
+  // - Shift：アンカー～クリック位置の「範囲で置き換え」（不安定の原因を除去）
+  // - Ctrl/Cmd：トグル（追加/解除）＆アンカー更新
+  const onTokenClick = (index: number, id: string, ev: React.MouseEvent) => {
+    const isShift = ev.shiftKey;
+    const isMeta = ev.metaKey || ev.ctrlKey;
+
+    if (isShift) {
+      const anchor = anchorIndexRef.current ?? index;
+      const [from, to] = anchor < index ? [anchor, index] : [index, anchor];
+      const rangeIds = store.tokens.slice(from, to + 1).map((t) => t.id);
+
+      // Shiftは「置き換え」
+      setSelectedIds(rangeIds);
+      // アンカーは固定（一般的な挙動）。次のShiftでも同じアンカーから伸びる
+      // ただし“起点を変えたい”ときは通常クリックすれば更新される
+      return;
+    }
+
+    if (isMeta) {
+      setSelectedIds((prev) => {
+        const s = new Set(prev);
+        if (s.has(id)) s.delete(id);
+        else s.add(id);
+        return Array.from(s);
+      });
+      anchorIndexRef.current = index;
+      return;
+    }
+
+    setSelectedIds([id]);
+    anchorIndexRef.current = index;
+  };
+
+  const clearSelection = () => {
+    setSelectedIds([]);
+    anchorIndexRef.current = null;
+  };
+
+  // role付与（選択が飛び飛びの場合は “連続範囲” に自動補正してから処理）
   const setRoleToSelected = (role: Role) => {
     if (selectedIds.length === 0) return;
 
-    const selectedSet = new Set(selectedIds);
+    const coerced = coerceToContiguousSelection(selectedIds, idToIndex, store.tokens);
+    const selectedSet = new Set(coerced);
 
-    // 既存グループと完全一致しているなら roleだけ更新
+    // 既存グループと完全一致なら role だけ更新
     if (selectedGroup) {
       const gSet = new Set(selectedGroup.tokenIds);
       const same =
-        selectedGroup.tokenIds.length === selectedIds.length &&
-        selectedIds.every((id) => gSet.has(id));
+        selectedGroup.tokenIds.length === coerced.length && coerced.every((x) => gSet.has(x));
       if (same) {
         setStore((prev) => ({
           ...prev,
           groups: prev.groups.map((g) => (g.id === selectedGroup.id ? { ...g, role } : g)),
           updatedAt: Date.now(),
         }));
+        setSelectedIds(coerced);
         return;
       }
     }
 
     setStore((prev) => {
-      // 1) 選択tokenを既存グループから除去（残りが0ならグループ削除）
+      const idToIndex2 = new Map(prev.tokens.map((t, i) => [t.id, i]));
+
+      // 1) 選択tokenを既存グループから除去（空なら削除）
       const nextGroups: Group[] = [];
       for (const g of prev.groups) {
         const rest = g.tokenIds.filter((tid) => !selectedSet.has(tid));
-        if (rest.length > 0) nextGroups.push({ ...g, tokenIds: rest });
+        if (rest.length > 0) nextGroups.push({ ...g, tokenIds: normalizeTokenIds(rest, idToIndex2) });
       }
 
-      // 2) 新グループ作成（選択tokenを tokens順で並べる）
-      const ordered = sortTokenIdsByTokenOrder(selectedIds, prev.tokens);
+      // 2) 新グループ作成（tokens順に正規化）
       nextGroups.push({
         id: newId(),
-        tokenIds: ordered,
+        tokenIds: normalizeTokenIds(coerced, idToIndex2),
         role,
+      });
+
+      // 3) グループ内の tokenIds は tokens順で保持、表示順も tokens順で安定化
+      nextGroups.sort((a, b) => {
+        const amin = Math.min(...a.tokenIds.map((id) => idToIndex2.get(id) ?? 1e9));
+        const bmin = Math.min(...b.tokenIds.map((id) => idToIndex2.get(id) ?? 1e9));
+        return amin - bmin;
       });
 
       return { ...prev, groups: nextGroups, updatedAt: Date.now() };
     });
+
+    setSelectedIds(coerced);
   };
 
   const autoHint = () => {
-    // 超簡易：Vっぽい単語を「1語グループ(V)」として付与（既存のrole付与と共存）
     const vSet = new Set([
       "am",
       "is",
@@ -493,118 +534,63 @@ export default function CloseReading() {
     ]);
 
     setStore((prev) => {
-      const tokenIndex = new Map(prev.tokens.map((t, i) => [t.id, i]));
-      const alreadyGrouped = new Set(prev.groups.flatMap((g) => g.tokenIds));
-
+      const idToIndex2 = new Map(prev.tokens.map((t, i) => [t.id, i]));
+      const tokenSetInGroups = new Set(prev.groups.flatMap((g) => g.tokenIds));
       const nextGroups = [...prev.groups];
 
       for (const t of prev.tokens) {
         if (!isWordToken(t.text)) continue;
         const key = t.text.toLowerCase();
         if (!vSet.has(key)) continue;
-        if (alreadyGrouped.has(t.id)) continue;
-
+        if (tokenSetInGroups.has(t.id)) continue; // 既に何かのまとまりに含まれてるなら触らない
         nextGroups.push({ id: newId(), tokenIds: [t.id], role: "V" });
       }
 
-      // グループ正規化（順序）
-      const normalized = nextGroups
-        .map((g) => ({
-          ...g,
-          tokenIds: [...g.tokenIds].sort(
-            (a, b) => (tokenIndex.get(a) ?? 1e9) - (tokenIndex.get(b) ?? 1e9)
-          ),
-        }))
-        .sort((a, b) => {
-          const amin = Math.min(...a.tokenIds.map((id) => tokenIndex.get(id) ?? 1e9));
-          const bmin = Math.min(...b.tokenIds.map((id) => tokenIndex.get(id) ?? 1e9));
-          return amin - bmin;
-        });
-
-      return { ...prev, groups: normalized, updatedAt: Date.now() };
-    });
-  };
-
-  // クリック選択：Shift=範囲、Ctrl/Cmd=追加、通常=単一
-  const onTokenClick = (index: number, id: string, ev: React.MouseEvent) => {
-    const isShift = ev.shiftKey;
-    const isMeta = ev.metaKey || ev.ctrlKey;
-
-    if (isShift && lastClickedIndexRef.current !== null) {
-      const a = lastClickedIndexRef.current;
-      const b = index;
-      const [from, to] = a < b ? [a, b] : [b, a];
-      const rangeIds = store.tokens.slice(from, to + 1).map((t) => t.id);
-      setSelectedIds((prev) => uniq([...prev, ...rangeIds]));
-      return;
-    }
-
-    if (isMeta) {
-      setSelectedIds((prev) => {
-        const set = new Set(prev);
-        if (set.has(id)) set.delete(id);
-        else set.add(id);
-        return Array.from(set);
+      // 安定化（tokens順）
+      for (const g of nextGroups) g.tokenIds = normalizeTokenIds(g.tokenIds, idToIndex2);
+      nextGroups.sort((a, b) => {
+        const amin = Math.min(...a.tokenIds.map((id) => idToIndex2.get(id) ?? 1e9));
+        const bmin = Math.min(...b.tokenIds.map((id) => idToIndex2.get(id) ?? 1e9));
+        return amin - bmin;
       });
-      lastClickedIndexRef.current = index;
-      return;
-    }
 
-    setSelectedIds([id]);
-    lastClickedIndexRef.current = index;
-  };
-
-  const clearSelection = () => {
-    setSelectedIds([]);
-    lastClickedIndexRef.current = null;
+      return { ...prev, groups: nextGroups, updatedAt: Date.now() };
+    });
   };
 
   const roleHintText =
     selectedTokens.length >= 2
-      ? `（${selectedTokens.length}語に一括適用）`
+      ? `（${selectedTokens.length}語）`
       : selectedTokens.length === 1
       ? "（1語）"
       : "";
 
-  // 表示ユニット作成：
-  // - グループがあれば、その最初tokenでユニット開始（role表示は1回）
-  // - グループに属さないtokenは単体ユニット（role表示なし）
-  // - 下線は「すべてのユニット」に付与（1語でも付く）
+  // 表示ユニット（順番が絶対に入れ替わらないように tokens を左→右に走査して生成）
   const displayUnits = useMemo(() => {
-    const tokenIndex = new Map(store.tokens.map((t, i) => [t.id, i]));
-
-    // groupId -> group（開始位置順で）
-    const groupsSorted = [...store.groups]
-      .map((g) => ({
-        ...g,
-        tokenIds: sortTokenIdsByTokenOrder(g.tokenIds, store.tokens),
-      }))
-      .sort((a, b) => {
-        const amin = Math.min(...a.tokenIds.map((id) => tokenIndex.get(id) ?? 1e9));
-        const bmin = Math.min(...b.tokenIds.map((id) => tokenIndex.get(id) ?? 1e9));
-        return amin - bmin;
-      });
-
-    const groupByToken = new Map<string, Group>();
-    for (const g of groupsSorted) for (const id of g.tokenIds) groupByToken.set(id, g);
+    // token -> group（同じtokenが複数groupに入るのは想定外だが、最後に来たものを採用）
+    const tokenToGroup = new Map<string, Group>();
+    for (const g of store.groups) for (const tid of g.tokenIds) tokenToGroup.set(tid, g);
 
     const started = new Set<string>();
     const units: { tokenIds: string[]; roleToShow: Role }[] = [];
 
     for (const t of store.tokens) {
-      const g = groupByToken.get(t.id);
+      const g = tokenToGroup.get(t.id);
       if (!g) {
-        units.push({ tokenIds: [t.id], roleToShow: "NONE" }); // 単体ユニット（下線あり、role表示なし）
+        units.push({ tokenIds: [t.id], roleToShow: "NONE" });
         continue;
       }
       if (started.has(g.id)) continue;
 
       started.add(g.id);
-      units.push({ tokenIds: g.tokenIds, roleToShow: g.role }); // グループユニット（role表示1回）
+
+      // ★ここで必ず tokens順にしておく（表示の安定）
+      const ordered = normalizeTokenIds(g.tokenIds, idToIndex);
+      units.push({ tokenIds: ordered, roleToShow: g.role });
     }
 
     return units;
-  }, [store.tokens, store.groups]);
+  }, [store.tokens, store.groups, idToIndex]);
 
   return (
     <div className="mx-auto max-w-5xl p-4 space-y-4">
@@ -660,15 +646,15 @@ export default function CloseReading() {
         </div>
 
         <div className="text-xs text-gray-500">
-          選択操作：クリック=1語 / Shift+クリック=範囲（2語OK） / Ctrl(or Cmd)+クリック=追加
+          選択：クリック=1語 / Shift+クリック=範囲（置き換えで安定） / Ctrl(or Cmd)+クリック=追加/解除
         </div>
       </div>
 
-      {/* トークン表示：下線＋roleはグループで1回だけ */}
+      {/* 表示 */}
       <div className="rounded-2xl border bg-white p-4 shadow-sm space-y-3">
         <div className="flex items-center justify-between gap-3">
           <div className="text-sm font-medium">
-            単語（上）／役割（下） ※roleは「まとまり」で1つだけ表示、下線でまとまり可視化
+            単語（上）／役割（下） ※roleは「まとまり」で1つだけ表示、下線で可視化
           </div>
           <button
             className="text-xs rounded-lg border px-2 py-1 hover:bg-gray-50"
@@ -688,19 +674,17 @@ export default function CloseReading() {
           <div className="flex flex-wrap gap-3 items-end">
             {displayUnits.map((u, ui) => {
               const roleText = roleShort(u.roleToShow);
+              const roleClass = classForRole(u.roleToShow === "NONE" ? "NONE" : u.roleToShow);
 
               return (
                 <div key={`${ui}-${u.tokenIds.join(",")}`} className="flex flex-col items-center">
-                  {/* 下線：1語でも必ず表示。グループ単位で1本になる */}
                   <div className="inline-flex items-end border-b border-gray-700 pb-1">
                     {u.tokenIds.map((tid) => {
-                      const token = store.tokens.find((t) => t.id === tid);
-                      if (!token) return null;
-                      const idx = store.tokens.findIndex((t) => t.id === tid);
-                      const selected = selectedIds.includes(tid);
+                      const idx = idToIndex.get(tid);
+                      const token = idx !== undefined ? store.tokens[idx] : null;
+                      if (!token || idx === undefined) return null;
 
-                      // グループ色は roleToShow 基準（未設定は白）
-                      const roleClass = classForRole(u.roleToShow === "NONE" ? "NONE" : u.roleToShow);
+                      const selected = selectedIds.includes(tid);
 
                       return (
                         <button
@@ -720,7 +704,6 @@ export default function CloseReading() {
                     })}
                   </div>
 
-                  {/* role表示：グループで1回だけ。単体未設定ユニットは空 */}
                   <div className="mt-1 text-[10px] text-gray-600 min-h-[12px]">
                     {roleText}
                   </div>
@@ -731,11 +714,9 @@ export default function CloseReading() {
         )}
       </div>
 
-      {/* 役割パネル：選択中の語（複数OK）に一括適用 */}
+      {/* 役割パネル */}
       <div className="rounded-2xl border bg-white p-4 shadow-sm space-y-3">
-        <div className="text-sm font-medium">
-          選択中の単語に役割を設定 {roleHintText}
-        </div>
+        <div className="text-sm font-medium">選択中の単語に役割を設定 {roleHintText}</div>
 
         {selectedTokens.length === 0 ? (
           <div className="text-sm text-gray-500">
@@ -767,7 +748,7 @@ export default function CloseReading() {
             </div>
 
             <div className="text-xs text-gray-500">
-              ※「that place」を2語選択して S にすると、下線が2語をまとめて1本になり、roleは1回だけ表示されます。
+              ※飛び飛びに選ばれている場合は、最小〜最大の連続範囲に自動補正して「まとまり」を作成します。
             </div>
           </div>
         )}
