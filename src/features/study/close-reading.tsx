@@ -62,8 +62,6 @@ function newId() {
  * - 空白は捨てる
  */
 function tokenize(text: string): Token[] {
-  // 単語（アポストロフィ含む） or 数字 or 記号 を拾う
-  // e.g. don't, I'm, 24, ( ), , .
   const re = /[A-Za-z]+(?:'[A-Za-z]+)?|\d+(?:\.\d+)?|[^\sA-Za-z0-9]/g;
   const raw = text.match(re) ?? [];
   return raw.map((t) => ({
@@ -92,9 +90,7 @@ function safeParseJSON<T>(s: string | null): T | null {
 }
 
 function migrate(raw: any): StoreV1 {
-  // v1のみ想定（将来v2を作るならここで吸収）
   const base = defaultStore();
-
   if (!raw || typeof raw !== "object") return base;
   if (raw.version !== 1) return base;
 
@@ -113,12 +109,7 @@ function migrate(raw: any): StoreV1 {
 
   const updatedAt = typeof raw.updatedAt === "number" ? raw.updatedAt : Date.now();
 
-  return {
-    version: 1,
-    inputText,
-    tokens,
-    updatedAt,
-  };
+  return { version: 1, inputText, tokens, updatedAt };
 }
 
 function loadLocal(): StoreV1 {
@@ -138,6 +129,12 @@ function saveLocal(s: StoreV1) {
 
 function isWordToken(t: string) {
   return /^[A-Za-z]+(?:'[A-Za-z]+)?$/.test(t) || /^\d+(?:\.\d+)?$/.test(t);
+}
+
+function roleShort(role: Role) {
+  // 下に出す「品詞ラベル」は短く（画像っぽく）表示
+  if (role === "NONE") return "";
+  return role;
 }
 
 function classForRole(role: Role) {
@@ -166,17 +163,28 @@ function classForRole(role: Role) {
   }
 }
 
+function uniq(arr: string[]) {
+  return Array.from(new Set(arr));
+}
+
 export default function CloseReading() {
   const [store, setStore] = useState<StoreV1>(() => loadLocal());
   const storeRef = useRef<StoreV1>(store);
 
-  // UI状態（選択中トークン）
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // UI状態：複数選択対応（2語で1役割もここで実現）
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const lastClickedIndexRef = useRef<number | null>(null);
 
-  const selectedToken = useMemo(
-    () => store.tokens.find((t) => t.id === selectedId) ?? null,
-    [store.tokens, selectedId]
-  );
+  const selectedTokens = useMemo(() => {
+    const set = new Set(selectedIds);
+    return store.tokens.filter((t) => set.has(t.id));
+  }, [store.tokens, selectedIds]);
+
+  const selectedText = useMemo(() => {
+    if (selectedTokens.length === 0) return "";
+    // 表示は元の並び順で
+    return selectedTokens.map((t) => t.text).join(" ");
+  }, [selectedTokens]);
 
   // ローカル即時保存
   useEffect(() => {
@@ -269,7 +277,8 @@ export default function CloseReading() {
       tokens,
       updatedAt: Date.now(),
     }));
-    setSelectedId(null);
+    setSelectedIds([]);
+    lastClickedIndexRef.current = null;
   };
 
   const onClearTags = () => {
@@ -280,17 +289,18 @@ export default function CloseReading() {
     }));
   };
 
-  const setRole = (id: string, role: Role) => {
+  // 複数選択の全てに role を付与（= 2語で1品詞もここで実現）
+  const setRoleToSelected = (role: Role) => {
+    if (selectedIds.length === 0) return;
+    const set = new Set(selectedIds);
     setStore((prev) => ({
       ...prev,
-      tokens: prev.tokens.map((t) => (t.id === id ? { ...t, role } : t)),
+      tokens: prev.tokens.map((t) => (set.has(t.id) ? { ...t, role } : t)),
       updatedAt: Date.now(),
     }));
   };
 
   const autoHint = () => {
-    // 超簡易ヒント：Vっぽい単語（be動詞/一般動詞の一部）だけ V にする例
-    // 本格自動判定は別途（品詞辞書やルール拡張）で作るのがおすすめ
     const vSet = new Set([
       "am",
       "is",
@@ -338,6 +348,47 @@ export default function CloseReading() {
       updatedAt: Date.now(),
     }));
   };
+
+  // クリック選択：Shift=範囲、Ctrl/Cmd=追加、通常=単一
+  const onTokenClick = (index: number, id: string, ev: React.MouseEvent) => {
+    const isShift = ev.shiftKey;
+    const isMeta = ev.metaKey || ev.ctrlKey;
+
+    if (isShift && lastClickedIndexRef.current !== null) {
+      const a = lastClickedIndexRef.current;
+      const b = index;
+      const [from, to] = a < b ? [a, b] : [b, a];
+      const rangeIds = store.tokens.slice(from, to + 1).map((t) => t.id);
+      setSelectedIds((prev) => uniq([...prev, ...rangeIds]));
+      return;
+    }
+
+    if (isMeta) {
+      setSelectedIds((prev) => {
+        const set = new Set(prev);
+        if (set.has(id)) set.delete(id);
+        else set.add(id);
+        return Array.from(set);
+      });
+      lastClickedIndexRef.current = index;
+      return;
+    }
+
+    setSelectedIds([id]);
+    lastClickedIndexRef.current = index;
+  };
+
+  const clearSelection = () => {
+    setSelectedIds([]);
+    lastClickedIndexRef.current = null;
+  };
+
+  const roleHintText =
+    selectedTokens.length >= 2
+      ? `（${selectedTokens.length}語に一括適用）`
+      : selectedTokens.length === 1
+      ? "（1語）"
+      : "";
 
   return (
     <div className="mx-auto max-w-5xl p-4 space-y-4">
@@ -391,15 +442,27 @@ export default function CloseReading() {
             更新: {new Date(store.updatedAt).toLocaleString()}
           </div>
         </div>
+
+        <div className="text-xs text-gray-500">
+          選択操作：クリック=1語 / Shift+クリック=範囲（2語もこれでOK） / Ctrl(or
+          Cmd)+クリック=追加選択
+        </div>
       </div>
 
-      {/* トークン表示 */}
+      {/* トークン表示（画像のように「単語の真下に品詞」） */}
       <div className="rounded-2xl border bg-white p-4 shadow-sm space-y-3">
         <div className="flex items-center justify-between gap-3">
-          <div className="text-sm font-medium">単語（クリックして役割を割り当て）</div>
-          <div className="text-xs text-gray-500">
-            画像の考え方：まずV → 直前の名詞がS、など
+          <div className="text-sm font-medium">
+            単語（上）／役割（下） ※複数語を選んで1つの役割を付けられます
           </div>
+          <button
+            className="text-xs rounded-lg border px-2 py-1 hover:bg-gray-50"
+            onClick={clearSelection}
+            disabled={selectedIds.length === 0}
+            title="選択解除"
+          >
+            選択解除
+          </button>
         </div>
 
         {store.tokens.length === 0 ? (
@@ -407,22 +470,31 @@ export default function CloseReading() {
             まだ分解されていません。「単語に分解（タグ付け開始）」を押してください。
           </div>
         ) : (
-          <div className="flex flex-wrap gap-2 leading-8">
-            {store.tokens.map((t) => {
-              const selected = t.id === selectedId;
+          <div className="flex flex-wrap gap-2 items-end">
+            {store.tokens.map((t, idx) => {
+              const selected = selectedIds.includes(t.id);
+              const roleText = roleShort(t.role);
+
               return (
                 <button
                   key={t.id}
-                  onClick={() => setSelectedId(t.id)}
+                  onClick={(ev) => onTokenClick(idx, t.id, ev)}
                   className={[
-                    "rounded-xl border px-2 py-1 text-sm transition",
+                    "rounded-xl border px-2 py-1 transition",
                     classForRole(t.role),
-                    selected ? "ring-2 ring-black/10" : "hover:bg-gray-50",
+                    selected ? "ring-2 ring-black/15" : "hover:bg-gray-50",
                     !isWordToken(t.text) ? "opacity-80" : "",
                   ].join(" ")}
                   title={`role: ${t.role}`}
                 >
-                  {t.text}
+                  <div className="flex flex-col items-center leading-none">
+                    {/* 上：単語 */}
+                    <div className="text-sm">{t.text}</div>
+                    {/* 下：品詞（role） */}
+                    <div className="mt-1 text-[10px] text-gray-600 min-h-[12px]">
+                      {roleText}
+                    </div>
+                  </div>
                 </button>
               );
             })}
@@ -430,21 +502,26 @@ export default function CloseReading() {
         )}
       </div>
 
-      {/* 役割パネル */}
+      {/* 役割パネル：選択中の語（複数OK）に一括適用 */}
       <div className="rounded-2xl border bg-white p-4 shadow-sm space-y-3">
-        <div className="text-sm font-medium">選択中の単語に役割を設定</div>
+        <div className="text-sm font-medium">
+          選択中の単語に役割を設定 {roleHintText}
+        </div>
 
-        {!selectedToken ? (
-          <div className="text-sm text-gray-500">上の単語をクリックしてください。</div>
+        {selectedTokens.length === 0 ? (
+          <div className="text-sm text-gray-500">
+            上の単語をクリックしてください（2語なら Shift+クリック で範囲選択）。
+          </div>
         ) : (
           <div className="space-y-3">
             <div className="flex flex-wrap items-center gap-2">
               <div className="text-sm">
-                選択:{" "}
-                <span className="font-semibold">{selectedToken.text}</span>
+                選択: <span className="font-semibold">{selectedText}</span>
               </div>
               <div className="text-xs text-gray-500">
-                現在: {selectedToken.role}
+                {selectedTokens.length === 1
+                  ? `現在: ${selectedTokens[0].role}`
+                  : "現在:（複数語。役割を押すと一括で上書き）"}
               </div>
             </div>
 
@@ -452,15 +529,16 @@ export default function CloseReading() {
               {ROLE_LABELS.map(({ role, label }) => (
                 <button
                   key={role}
-                  onClick={() => setRole(selectedToken.id, role)}
-                  className={[
-                    "rounded-xl border px-3 py-2 text-sm hover:bg-gray-50",
-                    role === selectedToken.role ? "ring-2 ring-black/10" : "",
-                  ].join(" ")}
+                  onClick={() => setRoleToSelected(role)}
+                  className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
                 >
                   {label}
                 </button>
               ))}
+            </div>
+
+            <div className="text-xs text-gray-500">
+              ※「that place」を2語選択して S にする、のような使い方ができます。
             </div>
           </div>
         )}
