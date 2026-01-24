@@ -17,16 +17,32 @@ type Role =
   | "OTHER"
   | "NONE";
 
+// 単語の上に出す「詳細タグ（品詞など）」
+type Detail =
+  | "名"
+  | "動"
+  | "形"
+  | "副"
+  | "前"
+  | "冠"
+  | "代"
+  | "助"
+  | "接"
+  | "等"
+  | "他"
+  | "NONE";
+
 type Token = {
   id: string;
   text: string;
-  role?: Role; // v1互換のため残す（v2では group が主役）
+  role?: Role; // v1互換のため残す（v2以降は group が主役）
+  detail?: Detail; // ★追加：単語の上に出す詳細タグ
 };
 
 type Group = {
   id: string;
   tokenIds: string[]; // tokens順に正規化して保存
-  role: Role; // グループの役割（表示は1つだけ）
+  role: Role; // 下線の下に出す SVOCM 等（グループで1つだけ表示）
 };
 
 type StoreV1 = {
@@ -44,7 +60,15 @@ type StoreV2 = {
   updatedAt: number;
 };
 
-type Store = StoreV2;
+type StoreV3 = {
+  version: 3;
+  inputText: string;
+  tokens: Token[]; // detail を使う
+  groups: Group[];
+  updatedAt: number;
+};
+
+type Store = StoreV3;
 
 const LOCAL_KEY = "study_close_reading_v1";
 const DOC_KEY = "study_close_reading_v1";
@@ -67,6 +91,21 @@ const ROLE_LABELS: { role: Role; label: string }[] = [
   { role: "NONE", label: "未設定" },
 ];
 
+const DETAIL_LABELS: { detail: Detail; label: string }[] = [
+  { detail: "形", label: "形（形容詞）" },
+  { detail: "副", label: "副（副詞）" },
+  { detail: "名", label: "名（名詞）" },
+  { detail: "代", label: "代（代名詞）" },
+  { detail: "動", label: "動（動詞）" },
+  { detail: "前", label: "前（前置詞）" },
+  { detail: "冠", label: "冠（冠詞）" },
+  { detail: "助", label: "助（助動詞）" },
+  { detail: "接", label: "接（接続詞）" },
+  { detail: "等", label: "等（等位・並列）" },
+  { detail: "他", label: "他（その他）" },
+  { detail: "NONE", label: "未設定" },
+];
+
 function newId() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
@@ -75,12 +114,17 @@ function newId() {
 function tokenize(text: string): Token[] {
   const re = /[A-Za-z]+(?:'[A-Za-z]+)?|\d+(?:\.\d+)?|[^\sA-Za-z0-9]/g;
   const raw = text.match(re) ?? [];
-  return raw.map((t) => ({ id: newId(), text: t, role: "NONE" }));
+  return raw.map((t) => ({
+    id: newId(),
+    text: t,
+    role: "NONE",
+    detail: "NONE",
+  }));
 }
 
-function defaultStoreV2(): StoreV2 {
+function defaultStoreV3(): StoreV3 {
   return {
-    version: 2,
+    version: 3,
     inputText: "",
     tokens: [],
     groups: [],
@@ -130,6 +174,10 @@ function roleShort(role: Role) {
   return role === "NONE" ? "" : role;
 }
 
+function detailShort(detail: Detail) {
+  return detail === "NONE" ? "" : `(${detail})`;
+}
+
 function uniq(arr: string[]) {
   return Array.from(new Set(arr));
 }
@@ -141,7 +189,7 @@ function normalizeTokenIds(tokenIds: string[], idToIndex: Map<string, number>) {
   return dedup;
 }
 
-/** 選択が飛び飛びなら、最小～最大の“連続範囲”に寄せる（意図しない混入を防ぐ） */
+/** 選択が飛び飛びなら、最小～最大の“連続範囲”に寄せる */
 function coerceToContiguousSelection(
   selectedIds: string[],
   idToIndex: Map<string, number>,
@@ -157,29 +205,32 @@ function coerceToContiguousSelection(
 
   const min = Math.min(...idxs);
   const max = Math.max(...idxs);
-
-  // 連続範囲のIDs（必ず tokens の順）
   return tokens.slice(min, max + 1).map((t) => t.id);
 }
 
-/** v1/v2 を v2 に吸収 */
-function migrate(raw: any): StoreV2 {
-  const base = defaultStoreV2();
+/** v1/v2/v3 を v3 に吸収 */
+function migrate(raw: any): StoreV3 {
+  const base = defaultStoreV3();
   if (!raw || typeof raw !== "object") return base;
 
-  // v2
-  if (raw.version === 2) {
+  // v3
+  if (raw.version === 3) {
     const inputText = typeof raw.inputText === "string" ? raw.inputText : "";
+
     const tokens: Token[] = Array.isArray(raw.tokens)
       ? raw.tokens
           .map((x: any) => {
             if (!x || typeof x !== "object") return null;
             const text = typeof x.text === "string" ? x.text : null;
             if (!text) return null;
+            const role = typeof x.role === "string" ? (x.role as Role) : "NONE";
+            const detail =
+              typeof x.detail === "string" ? (x.detail as Detail) : "NONE";
             return {
               id: typeof x.id === "string" ? x.id : newId(),
               text,
-              role: typeof x.role === "string" ? (x.role as Role) : "NONE",
+              role,
+              detail,
             };
           })
           .filter(Boolean) as Token[]
@@ -194,7 +245,9 @@ function migrate(raw: any): StoreV2 {
             if (!g || typeof g !== "object") return null;
             const role = typeof g.role === "string" ? (g.role as Role) : "NONE";
             const tokenIdsRaw = Array.isArray(g.tokenIds)
-              ? g.tokenIds.filter((id: any) => typeof id === "string" && tokenSet.has(id))
+              ? g.tokenIds.filter(
+                  (id: any) => typeof id === "string" && tokenSet.has(id)
+                )
               : [];
             if (tokenIdsRaw.length === 0) return null;
             return {
@@ -206,15 +259,67 @@ function migrate(raw: any): StoreV2 {
           .filter(Boolean) as Group[]
       : [];
 
-    const updatedAt = typeof raw.updatedAt === "number" ? raw.updatedAt : Date.now();
+    const updatedAt =
+      typeof raw.updatedAt === "number" ? raw.updatedAt : Date.now();
 
-    return { version: 2, inputText, tokens, groups, updatedAt };
+    return { version: 3, inputText, tokens, groups, updatedAt };
+  }
+
+  // v2
+  if (raw.version === 2) {
+    const v2 = raw as StoreV2;
+    const inputText = typeof v2.inputText === "string" ? v2.inputText : "";
+
+    const tokens: Token[] = Array.isArray(v2.tokens)
+      ? v2.tokens
+          .map((x: any) => {
+            if (!x || typeof x !== "object") return null;
+            const text = typeof x.text === "string" ? x.text : null;
+            if (!text) return null;
+            return {
+              id: typeof x.id === "string" ? x.id : newId(),
+              text,
+              role: typeof x.role === "string" ? (x.role as Role) : "NONE",
+              detail: "NONE",
+            };
+          })
+          .filter(Boolean) as Token[]
+      : [];
+
+    const idToIndex = new Map(tokens.map((t, i) => [t.id, i]));
+    const tokenSet = new Set(tokens.map((t) => t.id));
+
+    const groups: Group[] = Array.isArray(v2.groups)
+      ? v2.groups
+          .map((g: any) => {
+            if (!g || typeof g !== "object") return null;
+            const role = typeof g.role === "string" ? (g.role as Role) : "NONE";
+            const tokenIdsRaw = Array.isArray(g.tokenIds)
+              ? g.tokenIds.filter(
+                  (id: any) => typeof id === "string" && tokenSet.has(id)
+                )
+              : [];
+            if (tokenIdsRaw.length === 0) return null;
+            return {
+              id: typeof g.id === "string" ? g.id : newId(),
+              role,
+              tokenIds: normalizeTokenIds(tokenIdsRaw, idToIndex),
+            };
+          })
+          .filter(Boolean) as Group[]
+      : [];
+
+    const updatedAt =
+      typeof v2.updatedAt === "number" ? v2.updatedAt : Date.now();
+
+    return { version: 3, inputText, tokens, groups, updatedAt };
   }
 
   // v1
   if (raw.version === 1) {
     const v1 = raw as StoreV1;
     const inputText = typeof v1.inputText === "string" ? v1.inputText : "";
+
     const tokens: Token[] = Array.isArray(v1.tokens)
       ? v1.tokens
           .map((x: any) => {
@@ -222,7 +327,12 @@ function migrate(raw: any): StoreV2 {
             const text = typeof x.text === "string" ? x.text : null;
             if (!text) return null;
             const role = typeof x.role === "string" ? (x.role as Role) : "NONE";
-            return { id: typeof x.id === "string" ? x.id : newId(), text, role };
+            return {
+              id: typeof x.id === "string" ? x.id : newId(),
+              text,
+              role,
+              detail: "NONE",
+            };
           })
           .filter(Boolean) as Token[]
       : [];
@@ -233,26 +343,30 @@ function migrate(raw: any): StoreV2 {
     for (const t of tokens) {
       const r = t.role ?? "NONE";
       if (r !== "NONE") groups.push({ id: newId(), tokenIds: [t.id], role: r });
-      t.role = "NONE"; // 二重管理を避ける
+      t.role = "NONE"; // 二重管理を避ける（v3は group 主役）
     }
 
-    // 念のため正規化
-    const normalized = groups.map((g) => ({ ...g, tokenIds: normalizeTokenIds(g.tokenIds, idToIndex) }));
+    const normalized = groups.map((g) => ({
+      ...g,
+      tokenIds: normalizeTokenIds(g.tokenIds, idToIndex),
+    }));
 
-    const updatedAt = typeof v1.updatedAt === "number" ? v1.updatedAt : Date.now();
-    return { version: 2, inputText, tokens, groups: normalized, updatedAt };
+    const updatedAt =
+      typeof v1.updatedAt === "number" ? v1.updatedAt : Date.now();
+
+    return { version: 3, inputText, tokens, groups: normalized, updatedAt };
   }
 
   return base;
 }
 
-function loadLocal(): StoreV2 {
-  if (typeof window === "undefined") return defaultStoreV2();
+function loadLocal(): StoreV3 {
+  if (typeof window === "undefined") return defaultStoreV3();
   const raw = safeParseJSON<any>(localStorage.getItem(LOCAL_KEY));
   return migrate(raw);
 }
 
-function saveLocal(s: StoreV2) {
+function saveLocal(s: StoreV3) {
   if (typeof window === "undefined") return;
   try {
     localStorage.setItem(LOCAL_KEY, JSON.stringify(s));
@@ -267,11 +381,14 @@ export default function CloseReading() {
 
   // 選択（ID）
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  // Shift用アンカー（最後に“通常クリック”or“Shiftクリックの起点”になった index）
+  // Shift用アンカー（最後に“通常クリック”or“Ctrl/Cmdクリック”した index）
   const anchorIndexRef = useRef<number | null>(null);
 
   // tokens順の index map（順番固定の要）
-  const idToIndex = useMemo(() => new Map(store.tokens.map((t, i) => [t.id, i])), [store.tokens]);
+  const idToIndex = useMemo(
+    () => new Map(store.tokens.map((t, i) => [t.id, i])),
+    [store.tokens]
+  );
 
   // tokenId -> group
   const groupByTokenId = useMemo(() => {
@@ -285,7 +402,10 @@ export default function CloseReading() {
     return store.tokens.filter((t) => set.has(t.id)); // tokens順で返る
   }, [store.tokens, selectedIds]);
 
-  const selectedText = useMemo(() => selectedTokens.map((t) => t.text).join(" "), [selectedTokens]);
+  const selectedText = useMemo(
+    () => selectedTokens.map((t) => t.text).join(" "),
+    [selectedTokens]
+  );
 
   const selectedGroup = useMemo(() => {
     if (selectedIds.length === 0) return null;
@@ -297,6 +417,15 @@ export default function CloseReading() {
     if (groupIds.length !== 1) return null;
     return store.groups.find((g) => g.id === groupIds[0]) ?? null;
   }, [selectedIds, groupByTokenId, store.groups]);
+
+  const selectedDetailState = useMemo(() => {
+    if (selectedTokens.length === 0) return "";
+    const details = uniq(
+      selectedTokens.map((t) => (t.detail ?? "NONE") as string)
+    );
+    if (details.length === 1) return details[0] === "NONE" ? "NONE" : details[0];
+    return "MIXED";
+  }, [selectedTokens]);
 
   // ローカル即時保存
   useEffect(() => {
@@ -312,7 +441,7 @@ export default function CloseReading() {
       try {
         const remote = await loadUserDoc<any>(DOC_KEY);
         const migrated = migrate(remote);
-        if (migrated && migrated.version === 2) {
+        if (migrated && migrated.version === 3) {
           setStore(migrated);
           saveLocal(migrated);
         }
@@ -386,6 +515,7 @@ export default function CloseReading() {
     const tokens = tokenize(store.inputText);
     setStore((prev) => ({
       ...prev,
+      version: 3,
       tokens,
       groups: [],
       updatedAt: Date.now(),
@@ -404,7 +534,7 @@ export default function CloseReading() {
 
   // クリック選択：
   // - 通常クリック：単一選択＆アンカー更新
-  // - Shift：アンカー～クリック位置の「範囲で置き換え」（不安定の原因を除去）
+  // - Shift：アンカー～クリック位置の「範囲で置き換え」（安定）
   // - Ctrl/Cmd：トグル（追加/解除）＆アンカー更新
   const onTokenClick = (index: number, id: string, ev: React.MouseEvent) => {
     const isShift = ev.shiftKey;
@@ -414,11 +544,7 @@ export default function CloseReading() {
       const anchor = anchorIndexRef.current ?? index;
       const [from, to] = anchor < index ? [anchor, index] : [index, anchor];
       const rangeIds = store.tokens.slice(from, to + 1).map((t) => t.id);
-
-      // Shiftは「置き換え」
-      setSelectedIds(rangeIds);
-      // アンカーは固定（一般的な挙動）。次のShiftでも同じアンカーから伸びる
-      // ただし“起点を変えたい”ときは通常クリックすれば更新される
+      setSelectedIds(rangeIds); // Shiftは常に置き換え
       return;
     }
 
@@ -446,18 +572,25 @@ export default function CloseReading() {
   const setRoleToSelected = (role: Role) => {
     if (selectedIds.length === 0) return;
 
-    const coerced = coerceToContiguousSelection(selectedIds, idToIndex, store.tokens);
+    const coerced = coerceToContiguousSelection(
+      selectedIds,
+      idToIndex,
+      store.tokens
+    );
     const selectedSet = new Set(coerced);
 
     // 既存グループと完全一致なら role だけ更新
     if (selectedGroup) {
       const gSet = new Set(selectedGroup.tokenIds);
       const same =
-        selectedGroup.tokenIds.length === coerced.length && coerced.every((x) => gSet.has(x));
+        selectedGroup.tokenIds.length === coerced.length &&
+        coerced.every((x) => gSet.has(x));
       if (same) {
         setStore((prev) => ({
           ...prev,
-          groups: prev.groups.map((g) => (g.id === selectedGroup.id ? { ...g, role } : g)),
+          groups: prev.groups.map((g) =>
+            g.id === selectedGroup.id ? { ...g, role } : g
+          ),
           updatedAt: Date.now(),
         }));
         setSelectedIds(coerced);
@@ -472,7 +605,12 @@ export default function CloseReading() {
       const nextGroups: Group[] = [];
       for (const g of prev.groups) {
         const rest = g.tokenIds.filter((tid) => !selectedSet.has(tid));
-        if (rest.length > 0) nextGroups.push({ ...g, tokenIds: normalizeTokenIds(rest, idToIndex2) });
+        if (rest.length > 0) {
+          nextGroups.push({
+            ...g,
+            tokenIds: normalizeTokenIds(rest, idToIndex2),
+          });
+        }
       }
 
       // 2) 新グループ作成（tokens順に正規化）
@@ -482,7 +620,7 @@ export default function CloseReading() {
         role,
       });
 
-      // 3) グループ内の tokenIds は tokens順で保持、表示順も tokens順で安定化
+      // 3) 表示順安定化（tokens順）
       nextGroups.sort((a, b) => {
         const amin = Math.min(...a.tokenIds.map((id) => idToIndex2.get(id) ?? 1e9));
         const bmin = Math.min(...b.tokenIds.map((id) => idToIndex2.get(id) ?? 1e9));
@@ -491,6 +629,28 @@ export default function CloseReading() {
 
       return { ...prev, groups: nextGroups, updatedAt: Date.now() };
     });
+
+    setSelectedIds(coerced);
+  };
+
+  // 詳細タグ（単語の上）を付与：複数選択ならまとめて付ける（必要なら1語ずつも可）
+  const setDetailToSelected = (detail: Detail) => {
+    if (selectedIds.length === 0) return;
+
+    const coerced = coerceToContiguousSelection(
+      selectedIds,
+      idToIndex,
+      store.tokens
+    );
+    const set = new Set(coerced);
+
+    setStore((prev) => ({
+      ...prev,
+      tokens: prev.tokens.map((t) =>
+        set.has(t.id) ? { ...t, detail } : t
+      ),
+      updatedAt: Date.now(),
+    }));
 
     setSelectedIds(coerced);
   };
@@ -538,7 +698,16 @@ export default function CloseReading() {
       const tokenSetInGroups = new Set(prev.groups.flatMap((g) => g.tokenIds));
       const nextGroups = [...prev.groups];
 
-      for (const t of prev.tokens) {
+      const nextTokens = prev.tokens.map((t) => {
+        if (!isWordToken(t.text)) return t;
+        const key = t.text.toLowerCase();
+        if (!vSet.has(key)) return t;
+        // 上の詳細タグ：未設定なら動にしておく（邪魔なら外してOK）
+        const nextDetail = (t.detail ?? "NONE") === "NONE" ? "動" : t.detail;
+        return { ...t, detail: nextDetail };
+      });
+
+      for (const t of nextTokens) {
         if (!isWordToken(t.text)) continue;
         const key = t.text.toLowerCase();
         if (!vSet.has(key)) continue;
@@ -554,7 +723,7 @@ export default function CloseReading() {
         return amin - bmin;
       });
 
-      return { ...prev, groups: nextGroups, updatedAt: Date.now() };
+      return { ...prev, tokens: nextTokens, groups: nextGroups, updatedAt: Date.now() };
     });
   };
 
@@ -565,9 +734,8 @@ export default function CloseReading() {
       ? "（1語）"
       : "";
 
-  // 表示ユニット（順番が絶対に入れ替わらないように tokens を左→右に走査して生成）
+  // 表示ユニット（tokensを左→右に走査して生成：順番が絶対に入れ替わらない）
   const displayUnits = useMemo(() => {
-    // token -> group（同じtokenが複数groupに入るのは想定外だが、最後に来たものを採用）
     const tokenToGroup = new Map<string, Group>();
     for (const g of store.groups) for (const tid of g.tokenIds) tokenToGroup.set(tid, g);
 
@@ -583,8 +751,6 @@ export default function CloseReading() {
       if (started.has(g.id)) continue;
 
       started.add(g.id);
-
-      // ★ここで必ず tokens順にしておく（表示の安定）
       const ordered = normalizeTokenIds(g.tokenIds, idToIndex);
       units.push({ tokenIds: ordered, roleToShow: g.role });
     }
@@ -595,7 +761,7 @@ export default function CloseReading() {
   return (
     <div className="mx-auto max-w-5xl p-4 space-y-4">
       <div className="flex items-center justify-between gap-3">
-        <h1 className="text-xl font-semibold">精読（SVOCMタグ付け）</h1>
+        <h1 className="text-xl font-semibold">精読（下：SVOCM / 上：詳細タグ）</h1>
         <div className="text-xs text-gray-500">
           localStorage即時保存 / サーバ同期はホームの📥/☁のみ
         </div>
@@ -606,7 +772,7 @@ export default function CloseReading() {
         <div className="text-sm font-medium">英文を入力</div>
         <textarea
           className="w-full min-h-[110px] rounded-xl border p-3 text-sm outline-none focus:ring-2 focus:ring-gray-200"
-          placeholder="例: Some fish live in fresh water, and others live in salt water."
+          placeholder="例: Every living thing exists (in a particular place), and that place has certain conditions."
           value={store.inputText}
           onChange={(e) =>
             setStore((prev) => ({
@@ -629,7 +795,7 @@ export default function CloseReading() {
             onClick={onClearTags}
             disabled={store.tokens.length === 0}
           >
-            タグを全解除
+            下（SVOCM）を全解除
           </button>
           <button
             className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
@@ -650,11 +816,11 @@ export default function CloseReading() {
         </div>
       </div>
 
-      {/* 表示 */}
+      {/* 表示：上=詳細タグ、中央=単語（下線）、下=SVOCM */}
       <div className="rounded-2xl border bg-white p-4 shadow-sm space-y-3">
         <div className="flex items-center justify-between gap-3">
           <div className="text-sm font-medium">
-            単語（上）／役割（下） ※roleは「まとまり」で1つだけ表示、下線で可視化
+            上：詳細タグ（例：(形)(名)…） / 下線の下：SVOCM（まとまりで1回だけ）
           </div>
           <button
             className="text-xs rounded-lg border px-2 py-1 hover:bg-gray-50"
@@ -677,7 +843,11 @@ export default function CloseReading() {
               const roleClass = classForRole(u.roleToShow === "NONE" ? "NONE" : u.roleToShow);
 
               return (
-                <div key={`${ui}-${u.tokenIds.join(",")}`} className="flex flex-col items-center">
+                <div
+                  key={`${ui}-${u.tokenIds.join(",")}`}
+                  className="flex flex-col items-center"
+                >
+                  {/* 下線：ユニット単位で1本（1語でも必ず付く） */}
                   <div className="inline-flex items-end border-b border-gray-700 pb-1">
                     {u.tokenIds.map((tid) => {
                       const idx = idToIndex.get(tid);
@@ -685,25 +855,34 @@ export default function CloseReading() {
                       if (!token || idx === undefined) return null;
 
                       const selected = selectedIds.includes(tid);
+                      const top = detailShort((token.detail ?? "NONE") as Detail);
 
                       return (
-                        <button
-                          key={tid}
-                          onClick={(ev) => onTokenClick(idx, tid, ev)}
-                          className={[
-                            "rounded-xl border px-2 py-1 mx-[2px] transition",
-                            roleClass,
-                            selected ? "ring-2 ring-black/15" : "hover:bg-gray-50",
-                            !isWordToken(token.text) ? "opacity-80" : "",
-                          ].join(" ")}
-                          title="クリックで選択（Shiftで範囲）"
-                        >
-                          <div className="text-sm leading-none">{token.text}</div>
-                        </button>
+                        <div key={tid} className="flex flex-col items-center mx-[2px]">
+                          {/* 上：詳細タグ */}
+                          <div className="text-[10px] text-gray-700 min-h-[12px] leading-none">
+                            {top}
+                          </div>
+
+                          {/* 中：単語（クリックで選択） */}
+                          <button
+                            onClick={(ev) => onTokenClick(idx, tid, ev)}
+                            className={[
+                              "rounded-xl border px-2 py-1 transition",
+                              roleClass,
+                              selected ? "ring-2 ring-black/15" : "hover:bg-gray-50",
+                              !isWordToken(token.text) ? "opacity-80" : "",
+                            ].join(" ")}
+                            title="クリックで選択（Shiftで範囲）"
+                          >
+                            <div className="text-sm leading-none">{token.text}</div>
+                          </button>
+                        </div>
                       );
                     })}
                   </div>
 
+                  {/* 下：SVOCM（グループなら1回だけ表示、未設定なら空） */}
                   <div className="mt-1 text-[10px] text-gray-600 min-h-[12px]">
                     {roleText}
                   </div>
@@ -714,9 +893,51 @@ export default function CloseReading() {
         )}
       </div>
 
-      {/* 役割パネル */}
+      {/* 上の詳細タグ パネル */}
       <div className="rounded-2xl border bg-white p-4 shadow-sm space-y-3">
-        <div className="text-sm font-medium">選択中の単語に役割を設定 {roleHintText}</div>
+        <div className="text-sm font-medium">上の詳細タグ（品詞など）を設定 {roleHintText}</div>
+
+        {selectedTokens.length === 0 ? (
+          <div className="text-sm text-gray-500">上の単語をクリックして選択してください。</div>
+        ) : (
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="text-sm">
+                選択: <span className="font-semibold">{selectedText}</span>
+              </div>
+              <div className="text-xs text-gray-500">
+                {selectedDetailState === "MIXED"
+                  ? "現在（詳細タグ）: 混在"
+                  : selectedDetailState === "NONE"
+                  ? "現在（詳細タグ）: 未設定"
+                  : `現在（詳細タグ）: ${selectedDetailState}`}
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              {DETAIL_LABELS.map(({ detail, label }) => (
+                <button
+                  key={detail}
+                  onClick={() => setDetailToSelected(detail)}
+                  className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            <div className="text-xs text-gray-500">
+              ※複数選択中なら、選択範囲の単語すべてに同じ詳細タグを付けます（飛び飛び選択は連続範囲に補正）。
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* 下（SVOCM）パネル */}
+      <div className="rounded-2xl border bg-white p-4 shadow-sm space-y-3">
+        <div className="text-sm font-medium">
+          下線の下（SVOCMなど）を設定 {roleHintText}
+        </div>
 
         {selectedTokens.length === 0 ? (
           <div className="text-sm text-gray-500">
