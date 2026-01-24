@@ -40,13 +40,14 @@ type Token = {
   text: string;
   role?: Role; // v1互換のため残す（v2以降は group が主役）
   detail?: Detail; // 単語の上に出す詳細タグ
+  ja?: string; // ★追加：単語（and等、グループ化しないもの）にも訳を持てる
 };
 
 type Group = {
   id: string;
   tokenIds: string[]; // tokens順に正規化して保存
   role: Role; // 下線の下に出す SVOCM 等（グループで1つだけ表示）
-  ja?: string; // ★追加：下線の固まりごとの日本語訳
+  ja?: string; // ★グループの日本語訳
 };
 
 type Span = {
@@ -91,12 +92,21 @@ type StoreV5 = {
   version: 5;
   inputText: string;
   tokens: Token[];
-  groups: Group[]; // ja を使う
+  groups: Group[];
   spans: Span[];
   updatedAt: number;
 };
 
-type Store = StoreV5;
+type StoreV6 = {
+  version: 6;
+  inputText: string;
+  tokens: Token[]; // token.ja を持つ
+  groups: Group[];
+  spans: Span[];
+  updatedAt: number;
+};
+
+type Store = StoreV6;
 
 const LOCAL_KEY = "study_close_reading_v1";
 const DOC_KEY = "study_close_reading_v1";
@@ -147,12 +157,13 @@ function tokenize(text: string): Token[] {
     text: t,
     role: "NONE",
     detail: "NONE",
+    ja: "",
   }));
 }
 
-function defaultStoreV5(): StoreV5 {
+function defaultStoreV6(): StoreV6 {
   return {
-    version: 5,
+    version: 6,
     inputText: "",
     tokens: [],
     groups: [],
@@ -172,6 +183,20 @@ function safeParseJSON<T>(s: string | null): T | null {
 
 function isWordToken(t: string) {
   return /^[A-Za-z]+(?:'[A-Za-z]+)?$/.test(t) || /^\d+(?:\.\d+)?$/.test(t);
+}
+
+/** 下線を引きたいトークンか（, . などは false） */
+function shouldUnderlineToken(t: string) {
+  if (isWordToken(t)) return true;
+  // よくある句読点は下線なし
+  if (/^[,\.!?;:]+$/.test(t)) return false;
+  // その他記号も基本は下線なし（必要ならここで true に）
+  return false;
+}
+
+/** 訳入力の対象か（, . は対象外） */
+function isJaTargetToken(t: string) {
+  return shouldUnderlineToken(t); // 今は同じ方針（単語/数字のみ）
 }
 
 function classForRole(role: Role) {
@@ -238,9 +263,7 @@ function coerceToContiguousSelection(
 }
 
 function spanMarkers(kind: SpanKind) {
-  return kind === "CLAUSE"
-    ? { open: "[", close: "]" }
-    : { open: "(", close: ")" };
+  return kind === "CLAUSE" ? { open: "[", close: "]" } : { open: "(", close: ")" };
 }
 
 function spanRange(span: Span, idToIndex: Map<string, number>) {
@@ -265,249 +288,158 @@ function crosses(a: { start: number; end: number }, b: { start: number; end: num
   return true;
 }
 
-/** v1/v2/v3/v4/v5 を v5 に吸収 */
-function migrate(raw: any): StoreV5 {
-  const base = defaultStoreV5();
+/** v1-v6 を v6 に吸収 */
+function migrate(raw: any): StoreV6 {
+  const base = defaultStoreV6();
   if (!raw || typeof raw !== "object") return base;
 
-  // v5
-  if (raw.version === 5) {
+  const normalizeTokens = (tokensIn: any[]): Token[] =>
+    (Array.isArray(tokensIn) ? tokensIn : [])
+      .map((x: any) => {
+        if (!x || typeof x !== "object") return null;
+        const text = typeof x.text === "string" ? x.text : null;
+        if (!text) return null;
+        const role = typeof x.role === "string" ? (x.role as Role) : "NONE";
+        const detail = typeof x.detail === "string" ? (x.detail as Detail) : "NONE";
+        const ja = typeof x.ja === "string" ? x.ja : "";
+        return {
+          id: typeof x.id === "string" ? x.id : newId(),
+          text,
+          role,
+          detail,
+          ja,
+        } satisfies Token;
+      })
+      .filter(Boolean) as Token[];
+
+  const normalizeGroups = (groupsIn: any[], tokenSet: Set<string>, idToIndex: Map<string, number>): Group[] =>
+    (Array.isArray(groupsIn) ? groupsIn : [])
+      .map((g: any) => {
+        if (!g || typeof g !== "object") return null;
+        const role = typeof g.role === "string" ? (g.role as Role) : "NONE";
+        const tokenIdsRaw = Array.isArray(g.tokenIds)
+          ? g.tokenIds.filter((id: any) => typeof id === "string" && tokenSet.has(id))
+          : [];
+        if (tokenIdsRaw.length === 0) return null;
+        const ja = typeof g.ja === "string" ? g.ja : "";
+        return {
+          id: typeof g.id === "string" ? g.id : newId(),
+          role,
+          tokenIds: normalizeTokenIds(tokenIdsRaw, idToIndex),
+          ja,
+        } satisfies Group;
+      })
+      .filter(Boolean) as Group[];
+
+  const normalizeSpans = (spansIn: any[], tokenSet: Set<string>, idToIndex: Map<string, number>): Span[] =>
+    (Array.isArray(spansIn) ? spansIn : [])
+      .map((s: any) => {
+        if (!s || typeof s !== "object") return null;
+        const kind = s.kind === "CLAUSE" || s.kind === "PHRASE" ? (s.kind as SpanKind) : null;
+        if (!kind) return null;
+        const tokenIdsRaw = Array.isArray(s.tokenIds)
+          ? s.tokenIds.filter((id: any) => typeof id === "string" && tokenSet.has(id))
+          : [];
+        if (tokenIdsRaw.length === 0) return null;
+        return {
+          id: typeof s.id === "string" ? s.id : newId(),
+          kind,
+          tokenIds: normalizeTokenIds(tokenIdsRaw, idToIndex),
+        } satisfies Span;
+      })
+      .filter(Boolean) as Span[];
+
+  // v6
+  if (raw.version === 6) {
     const inputText = typeof raw.inputText === "string" ? raw.inputText : "";
+    const tokens = normalizeTokens(raw.tokens);
+    const idToIndex = new Map(tokens.map((t, i) => [t.id, i]));
+    const tokenSet = new Set(tokens.map((t) => t.id));
+    const groups = normalizeGroups(raw.groups, tokenSet, idToIndex);
+    const spans = normalizeSpans(raw.spans, tokenSet, idToIndex);
+    const updatedAt = typeof raw.updatedAt === "number" ? raw.updatedAt : Date.now();
+    return { version: 6, inputText, tokens, groups, spans, updatedAt };
+  }
 
-    const tokens: Token[] = Array.isArray(raw.tokens)
-      ? (raw.tokens
+  // v5/v4/v3/v2
+  if (raw.version === 5 || raw.version === 4 || raw.version === 3 || raw.version === 2) {
+    const inputText = typeof raw.inputText === "string" ? raw.inputText : "";
+    const tokens = normalizeTokens(raw.tokens);
+    const idToIndex = new Map(tokens.map((t, i) => [t.id, i]));
+    const tokenSet = new Set(tokens.map((t) => t.id));
+    const groups = normalizeGroups(raw.groups, tokenSet, idToIndex);
+    const spans = normalizeSpans(raw.spans, tokenSet, idToIndex);
+    const updatedAt = typeof raw.updatedAt === "number" ? raw.updatedAt : Date.now();
+    return { version: 6, inputText, tokens, groups, spans, updatedAt };
+  }
+
+  // v1
+  if (raw.version === 1) {
+    const v1 = raw as StoreV1;
+    const inputText = typeof v1.inputText === "string" ? v1.inputText : "";
+    const tokens0: Token[] = Array.isArray(v1.tokens)
+      ? (v1.tokens
           .map((x: any) => {
             if (!x || typeof x !== "object") return null;
             const text = typeof x.text === "string" ? x.text : null;
             if (!text) return null;
             const role = typeof x.role === "string" ? (x.role as Role) : "NONE";
-            const detail =
-              typeof x.detail === "string" ? (x.detail as Detail) : "NONE";
-            return {
-              id: typeof x.id === "string" ? x.id : newId(),
-              text,
-              role,
-              detail,
-            };
+            return { id: typeof x.id === "string" ? x.id : newId(), text, role, detail: "NONE", ja: "" } as Token;
           })
           .filter(Boolean) as Token[])
       : [];
+    const idToIndex0 = new Map(tokens0.map((t, i) => [t.id, i]));
 
-    const idToIndex = new Map(tokens.map((t, i) => [t.id, i]));
-    const tokenSet = new Set(tokens.map((t) => t.id));
+    // role を group 化
+    const groups0: Group[] = [];
+    for (const t of tokens0) {
+      const r = (t.role ?? "NONE") as Role;
+      if (r !== "NONE") groups0.push({ id: newId(), tokenIds: [t.id], role: r, ja: "" });
+      t.role = "NONE";
+    }
+    const groups = groups0.map((g) => ({ ...g, tokenIds: normalizeTokenIds(g.tokenIds, idToIndex0) }));
 
-    const groups: Group[] = Array.isArray(raw.groups)
-      ? (raw.groups
-          .map((g: any) => {
-            if (!g || typeof g !== "object") return null;
-            const role = typeof g.role === "string" ? (g.role as Role) : "NONE";
-            const tokenIdsRaw = Array.isArray(g.tokenIds)
-              ? g.tokenIds.filter(
-                  (id: any) => typeof id === "string" && tokenSet.has(id)
-                )
-              : [];
-            if (tokenIdsRaw.length === 0) return null;
-            const ja = typeof g.ja === "string" ? g.ja : "";
-            return {
-              id: typeof g.id === "string" ? g.id : newId(),
-              role,
-              tokenIds: normalizeTokenIds(tokenIdsRaw, idToIndex),
-              ja,
-            };
-          })
-          .filter(Boolean) as Group[])
-      : [];
-
-    const spans: Span[] = Array.isArray(raw.spans)
-      ? (raw.spans
-          .map((s: any) => {
-            if (!s || typeof s !== "object") return null;
-            const kind =
-              s.kind === "CLAUSE" || s.kind === "PHRASE"
-                ? (s.kind as SpanKind)
-                : null;
-            if (!kind) return null;
-            const tokenIdsRaw = Array.isArray(s.tokenIds)
-              ? s.tokenIds.filter(
-                  (id: any) => typeof id === "string" && tokenSet.has(id)
-                )
-              : [];
-            if (tokenIdsRaw.length === 0) return null;
-            return {
-              id: typeof s.id === "string" ? s.id : newId(),
-              kind,
-              tokenIds: normalizeTokenIds(tokenIdsRaw, idToIndex),
-            };
-          })
-          .filter(Boolean) as Span[])
-      : [];
-
-    const updatedAt =
-      typeof raw.updatedAt === "number" ? raw.updatedAt : Date.now();
-    return { version: 5, inputText, tokens, groups, spans, updatedAt };
-  }
-
-  // v4
-  if (raw.version === 4) {
-    const v4 = raw as StoreV4;
-    const inputText = typeof v4.inputText === "string" ? v4.inputText : "";
-
-    const tokens: Token[] = Array.isArray(v4.tokens)
-      ? (v4.tokens
-          .map((x: any) => {
-            if (!x || typeof x !== "object") return null;
-            const text = typeof x.text === "string" ? x.text : null;
-            if (!text) return null;
-            const role = typeof x.role === "string" ? (x.role as Role) : "NONE";
-            const detail =
-              typeof x.detail === "string" ? (x.detail as Detail) : "NONE";
-            return {
-              id: typeof x.id === "string" ? x.id : newId(),
-              text,
-              role,
-              detail,
-            };
-          })
-          .filter(Boolean) as Token[])
-      : [];
-
-    const idToIndex = new Map(tokens.map((t, i) => [t.id, i]));
-    const tokenSet = new Set(tokens.map((t) => t.id));
-
-    const groups: Group[] = Array.isArray(v4.groups)
-      ? (v4.groups
-          .map((g: any) => {
-            if (!g || typeof g !== "object") return null;
-            const role = typeof g.role === "string" ? (g.role as Role) : "NONE";
-            const tokenIdsRaw = Array.isArray(g.tokenIds)
-              ? g.tokenIds.filter(
-                  (id: any) => typeof id === "string" && tokenSet.has(id)
-                )
-              : [];
-            if (tokenIdsRaw.length === 0) return null;
-            return {
-              id: typeof g.id === "string" ? g.id : newId(),
-              role,
-              tokenIds: normalizeTokenIds(tokenIdsRaw, idToIndex),
-              ja: "",
-            };
-          })
-          .filter(Boolean) as Group[])
-      : [];
-
-    const spans: Span[] = Array.isArray(v4.spans)
-      ? (v4.spans
-          .map((s: any) => {
-            if (!s || typeof s !== "object") return null;
-            const kind =
-              s.kind === "CLAUSE" || s.kind === "PHRASE"
-                ? (s.kind as SpanKind)
-                : null;
-            if (!kind) return null;
-            const tokenIdsRaw = Array.isArray(s.tokenIds)
-              ? s.tokenIds.filter(
-                  (id: any) => typeof id === "string" && tokenSet.has(id)
-                )
-              : [];
-            if (tokenIdsRaw.length === 0) return null;
-            return {
-              id: typeof s.id === "string" ? s.id : newId(),
-              kind,
-              tokenIds: normalizeTokenIds(tokenIdsRaw, idToIndex),
-            };
-          })
-          .filter(Boolean) as Span[])
-      : [];
-
-    const updatedAt =
-      typeof v4.updatedAt === "number" ? v4.updatedAt : Date.now();
-    return { version: 5, inputText, tokens, groups, spans, updatedAt };
-  }
-
-  // v3 / v2 / v1 は、いったん v4 相当へ寄せてから v5 へ
-  // （今回、簡潔に v4 へのロジックを流用）
-  if (raw.version === 3 || raw.version === 2 || raw.version === 1) {
-    // 既存 migrate（v4まで）相当を再現：最小限に必要な部分だけ
-    // → v1は roleを group化し、detail/spansなし
-    // → v2/v3は groupsあり、spansなし
-    const tmp = (() => {
-      if (raw.version === 3) {
-        const v3 = raw as StoreV3;
-        return {
-          version: 4,
-          inputText: typeof v3.inputText === "string" ? v3.inputText : "",
-          tokens: Array.isArray(v3.tokens) ? v3.tokens : [],
-          groups: Array.isArray((v3 as any).groups) ? (v3 as any).groups : [],
-          spans: [],
-          updatedAt:
-            typeof (v3 as any).updatedAt === "number" ? (v3 as any).updatedAt : Date.now(),
-        } satisfies StoreV4;
-      }
-      if (raw.version === 2) {
-        const v2 = raw as StoreV2;
-        return {
-          version: 4,
-          inputText: typeof v2.inputText === "string" ? v2.inputText : "",
-          tokens: Array.isArray(v2.tokens) ? v2.tokens : [],
-          groups: Array.isArray(v2.groups) ? v2.groups : [],
-          spans: [],
-          updatedAt: typeof v2.updatedAt === "number" ? v2.updatedAt : Date.now(),
-        } satisfies StoreV4;
-      }
-      // v1
-      const v1 = raw as StoreV1;
-      const tokens0: Token[] = Array.isArray(v1.tokens)
-        ? (v1.tokens
-            .map((x: any) => {
-              if (!x || typeof x !== "object") return null;
-              const text = typeof x.text === "string" ? x.text : null;
-              if (!text) return null;
-              const role = typeof x.role === "string" ? (x.role as Role) : "NONE";
-              return { id: typeof x.id === "string" ? x.id : newId(), text, role, detail: "NONE" };
-            })
-            .filter(Boolean) as Token[])
-        : [];
-      const idToIndex0 = new Map(tokens0.map((t, i) => [t.id, i]));
-      const groups0: Group[] = [];
-      for (const t of tokens0) {
-        const r = (t.role ?? "NONE") as Role;
-        if (r !== "NONE") groups0.push({ id: newId(), tokenIds: [t.id], role: r, ja: "" });
-        t.role = "NONE";
-      }
-      const normalized0 = groups0.map((g) => ({
-        ...g,
-        tokenIds: normalizeTokenIds(g.tokenIds, idToIndex0),
-      }));
-      return {
-        version: 4,
-        inputText: typeof v1.inputText === "string" ? v1.inputText : "",
-        tokens: tokens0,
-        groups: normalized0,
-        spans: [],
-        updatedAt: typeof v1.updatedAt === "number" ? v1.updatedAt : Date.now(),
-      } satisfies StoreV4;
-    })();
-
-    // tmp(v4) -> v5
-    return migrate({ ...tmp, version: 4 });
+    const updatedAt = typeof v1.updatedAt === "number" ? v1.updatedAt : Date.now();
+    return { version: 6, inputText, tokens: tokens0, groups, spans: [], updatedAt };
   }
 
   return base;
 }
 
-function loadLocal(): StoreV5 {
-  if (typeof window === "undefined") return defaultStoreV5();
+function loadLocal(): StoreV6 {
+  if (typeof window === "undefined") return defaultStoreV6();
   const raw = safeParseJSON<any>(localStorage.getItem(LOCAL_KEY));
   return migrate(raw);
 }
 
-function saveLocal(s: StoreV5) {
+function saveLocal(s: StoreV6) {
   if (typeof window === "undefined") return;
   try {
     localStorage.setItem(LOCAL_KEY, JSON.stringify(s));
   } catch (e) {
     console.warn("[close-reading] saveLocal failed:", e);
   }
+}
+
+/** 表示用：トークン配列から文字列（スペース調整） */
+function joinTokensForDisplay(tokens: string[]) {
+  // ざっくり：句読点の前にはスペースを入れない
+  const noSpaceBefore = new Set([",", ".", "!", "?", ";", ":", ")", "]"]);
+  const noSpaceAfter = new Set(["(", "["]);
+
+  let out = "";
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    const prev = i > 0 ? tokens[i - 1] : "";
+    const needSpace =
+      i > 0 &&
+      !noSpaceBefore.has(t) &&
+      !noSpaceAfter.has(prev) &&
+      prev !== "";
+
+    out += (needSpace ? " " : "") + t;
+  }
+  return out.trim();
 }
 
 export default function CloseReading() {
@@ -519,11 +451,12 @@ export default function CloseReading() {
   // Shift用アンカー
   const anchorIndexRef = useRef<number | null>(null);
 
+  // 訳入力：矢印で「次/前」の対象を切り替える
+  const [jaCursor, setJaCursor] = useState(0);
+  const jaInputRef = useRef<HTMLTextAreaElement | null>(null);
+
   // tokens順の index map（順番固定の要）
-  const idToIndex = useMemo(
-    () => new Map(store.tokens.map((t, i) => [t.id, i])),
-    [store.tokens]
-  );
+  const idToIndex = useMemo(() => new Map(store.tokens.map((t, i) => [t.id, i])), [store.tokens]);
 
   // tokenId -> group
   const groupByTokenId = useMemo(() => {
@@ -537,10 +470,7 @@ export default function CloseReading() {
     return store.tokens.filter((t) => set.has(t.id));
   }, [store.tokens, selectedIds]);
 
-  const selectedText = useMemo(
-    () => selectedTokens.map((t) => t.text).join(" "),
-    [selectedTokens]
-  );
+  const selectedText = useMemo(() => joinTokensForDisplay(selectedTokens.map((t) => t.text)), [selectedTokens]);
 
   const selectedGroup = useMemo(() => {
     if (selectedIds.length === 0) return null;
@@ -555,9 +485,7 @@ export default function CloseReading() {
 
   const selectedDetailState = useMemo(() => {
     if (selectedTokens.length === 0) return "";
-    const details = uniq(
-      selectedTokens.map((t) => (t.detail ?? "NONE") as string)
-    );
+    const details = uniq(selectedTokens.map((t) => (t.detail ?? "NONE") as string));
     if (details.length === 1) return details[0] === "NONE" ? "NONE" : details[0];
     return "MIXED";
   }, [selectedTokens]);
@@ -576,7 +504,7 @@ export default function CloseReading() {
       try {
         const remote = await loadUserDoc<any>(DOC_KEY);
         const migrated = migrate(remote);
-        if (migrated && migrated.version === 5) {
+        if (migrated && migrated.version === 6) {
           setStore(migrated);
           saveLocal(migrated);
         }
@@ -648,7 +576,7 @@ export default function CloseReading() {
     const tokens = tokenize(store.inputText);
     setStore((prev) => ({
       ...prev,
-      version: 5,
+      version: 6,
       tokens,
       groups: [],
       spans: [],
@@ -656,9 +584,11 @@ export default function CloseReading() {
     }));
     setSelectedIds([]);
     anchorIndexRef.current = null;
+    setJaCursor(0);
   };
 
   const onClearSVOCM = () => {
+    // グループを消す（訳も消える）。単語訳（token.ja）は残す
     setStore((prev) => ({
       ...prev,
       groups: [],
@@ -707,25 +637,36 @@ export default function CloseReading() {
     anchorIndexRef.current = index;
   };
 
+  /** グループ化/下線対象から , . などを除外する */
+  const filterUnderlineEligibleIds = (ids: string[], tokens: Token[]) => {
+    const map = new Map(tokens.map((t) => [t.id, t] as const));
+    return ids.filter((id) => {
+      const t = map.get(id);
+      if (!t) return false;
+      return shouldUnderlineToken(t.text);
+    });
+  };
+
   // role付与（飛び飛びは連続範囲に補正）
   const setRoleToSelected = (role: Role) => {
     if (selectedIds.length === 0) return;
 
-    const coerced = coerceToContiguousSelection(selectedIds, idToIndex, store.tokens);
+    // 連続範囲へ補正 → 下線対象だけ残す（, . は消える）
+    const coerced0 = coerceToContiguousSelection(selectedIds, idToIndex, store.tokens);
+    const coerced = filterUnderlineEligibleIds(coerced0, store.tokens);
+    if (coerced.length === 0) return;
+
     const selectedSet = new Set(coerced);
 
     // 既存グループと完全一致なら role だけ更新
     if (selectedGroup) {
       const gSet = new Set(selectedGroup.tokenIds);
       const same =
-        selectedGroup.tokenIds.length === coerced.length &&
-        coerced.every((x) => gSet.has(x));
+        selectedGroup.tokenIds.length === coerced.length && coerced.every((x) => gSet.has(x));
       if (same) {
         setStore((prev) => ({
           ...prev,
-          groups: prev.groups.map((g) =>
-            g.id === selectedGroup.id ? { ...g, role } : g
-          ),
+          groups: prev.groups.map((g) => (g.id === selectedGroup.id ? { ...g, role } : g)),
           updatedAt: Date.now(),
         }));
         setSelectedIds(coerced);
@@ -789,7 +730,6 @@ export default function CloseReading() {
   // 括弧（句/従属節）付与：交差する括弧は自動で解消
   const setSpanToSelected = (kind: SpanKind) => {
     if (selectedIds.length === 0) return;
-
     const coerced = coerceToContiguousSelection(selectedIds, idToIndex, store.tokens);
 
     setStore((prev) => {
@@ -806,12 +746,9 @@ export default function CloseReading() {
       for (const s of prev.spans ?? []) {
         const s2: Span = {
           id: typeof s.id === "string" ? s.id : newId(),
-          kind:
-            s.kind === "CLAUSE" || s.kind === "PHRASE" ? s.kind : "PHRASE",
+          kind: s.kind === "CLAUSE" || s.kind === "PHRASE" ? s.kind : "PHRASE",
           tokenIds: normalizeTokenIds(
-            (Array.isArray(s.tokenIds) ? s.tokenIds : []).filter((id) =>
-              tokenSet.has(id)
-            ),
+            (Array.isArray(s.tokenIds) ? s.tokenIds : []).filter((id) => tokenSet.has(id)),
             idToIndex2
           ),
         };
@@ -877,9 +814,16 @@ export default function CloseReading() {
   const setJaToGroup = (groupId: string, ja: string) => {
     setStore((prev) => ({
       ...prev,
-      groups: prev.groups.map((g) =>
-        g.id === groupId ? { ...g, ja } : g
-      ),
+      groups: prev.groups.map((g) => (g.id === groupId ? { ...g, ja } : g)),
+      updatedAt: Date.now(),
+    }));
+  };
+
+  // ★日本語訳（単語）更新
+  const setJaToToken = (tokenId: string, ja: string) => {
+    setStore((prev) => ({
+      ...prev,
+      tokens: prev.tokens.map((t) => (t.id === tokenId ? { ...t, ja } : t)),
       updatedAt: Date.now(),
     }));
   };
@@ -940,11 +884,11 @@ export default function CloseReading() {
         const key = t.text.toLowerCase();
         if (!vSet.has(key)) continue;
         if (tokenSetInGroups.has(t.id)) continue;
+        // Vグループは「下線対象」のみ（句読点は入らないのでOK）
         nextGroups.push({ id: newId(), tokenIds: [t.id], role: "V", ja: "" });
       }
 
-      for (const g of nextGroups)
-        g.tokenIds = normalizeTokenIds(g.tokenIds, idToIndex2);
+      for (const g of nextGroups) g.tokenIds = normalizeTokenIds(g.tokenIds, idToIndex2);
       nextGroups.sort((a, b) => {
         const amin = Math.min(...a.tokenIds.map((id) => idToIndex2.get(id) ?? 1e9));
         const bmin = Math.min(...b.tokenIds.map((id) => idToIndex2.get(id) ?? 1e9));
@@ -968,12 +912,19 @@ export default function CloseReading() {
     for (const g of store.groups) for (const tid of g.tokenIds) tokenToGroup.set(tid, g);
 
     const started = new Set<string>();
-    const units: { tokenIds: string[]; roleToShow: Role; groupId: string | null; ja: string }[] = [];
+    const units: { tokenIds: string[]; roleToShow: Role; groupId: string | null; groupJa: string; tokenJa: string }[] =
+      [];
 
     for (const t of store.tokens) {
       const g = tokenToGroup.get(t.id);
       if (!g) {
-        units.push({ tokenIds: [t.id], roleToShow: "NONE", groupId: null, ja: "" });
+        units.push({
+          tokenIds: [t.id],
+          roleToShow: "NONE",
+          groupId: null,
+          groupJa: "",
+          tokenJa: typeof t.ja === "string" ? t.ja : "",
+        });
         continue;
       }
       if (started.has(g.id)) continue;
@@ -984,7 +935,8 @@ export default function CloseReading() {
         tokenIds: ordered,
         roleToShow: g.role,
         groupId: g.id,
-        ja: typeof g.ja === "string" ? g.ja : "",
+        groupJa: typeof g.ja === "string" ? g.ja : "",
+        tokenJa: "",
       });
     }
 
@@ -1033,15 +985,136 @@ export default function CloseReading() {
     return { starts, ends };
   }, [store.spans, idToIndex]);
 
-  const selectedGroupJa = selectedGroup ? (selectedGroup.ja ?? "") : "";
+  /** 右パネルの「訳入力対象」：グループ or 単語（and等） */
+  type JaTarget =
+    | { kind: "group"; id: string; role: Role; tokenIds: string[]; text: string; ja: string }
+    | { kind: "token"; id: string; tokenId: string; text: string; ja: string };
+
+  const jaTargets = useMemo<JaTarget[]>(() => {
+    const targets: JaTarget[] = [];
+    for (const u of displayUnits) {
+      if (u.groupId) {
+        // グループは訳対象（ただし中身が全部句読点だけ、は基本ない想定）
+        const words = u.tokenIds
+          .map((id) => store.tokens[idToIndex.get(id) ?? -1]?.text)
+          .filter((x): x is string => typeof x === "string");
+        const visible = words.filter((t) => isJaTargetToken(t));
+        if (visible.length === 0) continue;
+
+        targets.push({
+          kind: "group",
+          id: `g:${u.groupId}`,
+          role: u.roleToShow,
+          tokenIds: u.tokenIds,
+          text: joinTokensForDisplay(words),
+          ja: (u.groupJa ?? "").trim(),
+        });
+      } else {
+        // 単語は訳対象（, . は除外）
+        const tid = u.tokenIds[0];
+        const tok = tid ? store.tokens[idToIndex.get(tid) ?? -1] : null;
+        if (!tok) continue;
+        if (!isJaTargetToken(tok.text)) continue;
+
+        targets.push({
+          kind: "token",
+          id: `t:${tok.id}`,
+          tokenId: tok.id,
+          text: tok.text,
+          ja: (tok.ja ?? "").trim(),
+        });
+      }
+    }
+    return targets;
+  }, [displayUnits, store.tokens, idToIndex]);
+
+  // ターゲット数が変わったらカーソルを丸める
+  useEffect(() => {
+    if (jaTargets.length === 0) {
+      setJaCursor(0);
+      return;
+    }
+    setJaCursor((p) => {
+      if (p < 0) return 0;
+      if (p >= jaTargets.length) return jaTargets.length - 1;
+      return p;
+    });
+  }, [jaTargets.length]);
+
+  const currentJaTarget = jaTargets.length > 0 ? jaTargets[jaCursor] : null;
+
+  const focusJaInputSoon = () => {
+    // 次フレームでfocus（カーソル移動後でも入力継続しやすく）
+    requestAnimationFrame(() => {
+      try {
+        jaInputRef.current?.focus();
+      } catch {}
+    });
+  };
+
+  const moveJaCursor = (delta: number) => {
+    if (jaTargets.length === 0) return;
+    setJaCursor((p) => {
+      const next = (p + delta + jaTargets.length) % jaTargets.length;
+      return next;
+    });
+    focusJaInputSoon();
+  };
+
+  const onJaKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "ArrowRight" || e.key === "ArrowDown") {
+      e.preventDefault();
+      moveJaCursor(+1);
+      return;
+    }
+    if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
+      e.preventDefault();
+      moveJaCursor(-1);
+      return;
+    }
+  };
+
+  const onUpdateJaTarget = (value: string) => {
+    if (!currentJaTarget) return;
+    if (currentJaTarget.kind === "group") setJaToGroup(currentJaTarget.id.slice(2), value); // "g:" を外す
+    else setJaToToken(currentJaTarget.tokenId, value);
+  };
+
+  // 現在の選択が「訳カーソルの対象」に一致するなら、その対象へジャンプ（任意の利便）
+  const jumpCursorToSelected = () => {
+    if (jaTargets.length === 0) return;
+
+    // 1) 選択が単語1つで、それが token target なら一致
+    if (selectedIds.length === 1) {
+      const tid = selectedIds[0];
+      const idx = jaTargets.findIndex((t) => t.kind === "token" && t.tokenId === tid);
+      if (idx >= 0) {
+        setJaCursor(idx);
+        focusJaInputSoon();
+        return;
+      }
+    }
+
+    // 2) 選択が同一グループなら group target に一致
+    if (selectedGroup) {
+      const idx = jaTargets.findIndex((t) => t.kind === "group" && t.id === `g:${selectedGroup.id}`);
+      if (idx >= 0) {
+        setJaCursor(idx);
+        focusJaInputSoon();
+      }
+    }
+  };
+
+  useEffect(() => {
+    // 選択変化で自動ジャンプは「やりすぎ」になりがちなので、ここではしない。
+    // 必要ならボタンでジャンプ。
+  }, [selectedIds.join(","), selectedGroup?.id]);
 
   return (
     <div className="mx-auto max-w-5xl p-4 space-y-4">
       <div className="flex items-center justify-between gap-3">
         <h1 className="text-xl font-semibold">精読（上：詳細 / 下：SVOCM / 括弧：[ ] ( ) / まとまり訳）</h1>
-        <div className="text-xs text-gray-500">
-          localStorage即時保存 / サーバ同期はホームの📥/☁のみ
-        </div>
+        <div className="text-xs text-gray-500">localStorage即時保存 / サーバ同期はホームの📥/☁のみ</div>
       </div>
 
       {/* 入力 */}
@@ -1061,10 +1134,7 @@ export default function CloseReading() {
         />
 
         <div className="flex flex-wrap items-center gap-2">
-          <button
-            className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
-            onClick={onBuild}
-          >
+          <button className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50" onClick={onBuild}>
             単語に分解（タグ付け開始）
           </button>
 
@@ -1073,7 +1143,7 @@ export default function CloseReading() {
             onClick={onClearSVOCM}
             disabled={store.tokens.length === 0}
           >
-            下（SVOCM）を全解除（訳も消えます）
+            下（SVOCM）を全解除（グループ訳も消えます）
           </button>
 
           <button
@@ -1093,49 +1163,58 @@ export default function CloseReading() {
             自動ヒント（V候補）
           </button>
 
-          <div className="ml-auto text-xs text-gray-500">
-            更新: {new Date(store.updatedAt).toLocaleString()}
-          </div>
+          <div className="ml-auto text-xs text-gray-500">更新: {new Date(store.updatedAt).toLocaleString()}</div>
         </div>
 
         <div className="text-xs text-gray-500">
           選択：クリック=1語 / Shift+クリック=範囲（置き換えで安定） / Ctrl(or Cmd)+クリック=追加/解除
         </div>
+        <div className="text-xs text-gray-500">※ , や . などの句読点には「下線」を引きません（グループ化もされません）。</div>
       </div>
 
       {/* 表示 */}
       <div className="rounded-2xl border bg-white p-4 shadow-sm space-y-3">
         <div className="flex items-center justify-between gap-3">
-          <div className="text-sm font-medium">
-            上：詳細 / 中：単語（下線） / 下：SVOCM（グループ）/ さらに下：まとまり訳（任意）
+          <div className="text-sm font-medium">上：詳細 / 中：単語（下線） / 下：SVOCM（グループ）/ さらに下：訳</div>
+          <div className="flex items-center gap-2">
+            <button
+              className="text-xs rounded-lg border px-2 py-1 hover:bg-gray-50"
+              onClick={jumpCursorToSelected}
+              disabled={jaTargets.length === 0}
+              title="選択中の単語/まとまりが訳入力対象なら、訳カーソルをそこへ移動"
+            >
+              訳カーソルを選択へ
+            </button>
+            <button
+              className="text-xs rounded-lg border px-2 py-1 hover:bg-gray-50"
+              onClick={clearSelection}
+              disabled={selectedIds.length === 0}
+              title="選択解除"
+            >
+              選択解除
+            </button>
           </div>
-          <button
-            className="text-xs rounded-lg border px-2 py-1 hover:bg-gray-50"
-            onClick={clearSelection}
-            disabled={selectedIds.length === 0}
-            title="選択解除"
-          >
-            選択解除
-          </button>
         </div>
 
         {store.tokens.length === 0 ? (
-          <div className="text-sm text-gray-500">
-            まだ分解されていません。「単語に分解（タグ付け開始）」を押してください。
-          </div>
+          <div className="text-sm text-gray-500">まだ分解されていません。「単語に分解（タグ付け開始）」を押してください。</div>
         ) : (
           <div className="flex flex-wrap gap-3 items-end">
             {displayUnits.map((u, ui) => {
               const roleText = roleShort(u.roleToShow);
               const roleClass = classForRole(u.roleToShow === "NONE" ? "NONE" : u.roleToShow);
-              const jaText = (u.ja ?? "").trim();
+
+              const jaText =
+                u.groupId && (u.groupJa ?? "").trim()
+                  ? (u.groupJa ?? "").trim()
+                  : !u.groupId && (u.tokenJa ?? "").trim()
+                  ? (u.tokenJa ?? "").trim()
+                  : "";
 
               return (
-                <div
-                  key={`${ui}-${u.tokenIds.join(",")}`}
-                  className="flex flex-col items-center"
-                >
-                  <div className="inline-flex items-end border-b border-gray-700 pb-1">
+                <div key={`${ui}-${u.tokenIds.join(",")}`} className="flex flex-col items-center">
+                  {/* ★下線は「トークン単位」で引く（, . は引かない） */}
+                  <div className="inline-flex items-end pb-1">
                     {u.tokenIds.map((tid) => {
                       const idx = idToIndex.get(tid);
                       const token = idx !== undefined ? store.tokens[idx] : null;
@@ -1147,12 +1226,12 @@ export default function CloseReading() {
                       const opens = spanMarksByTokenId.starts.get(tid) ?? [];
                       const closes = spanMarksByTokenId.ends.get(tid) ?? [];
 
+                      const underline = shouldUnderlineToken(token.text);
+
                       return (
                         <div key={tid} className="flex flex-col items-center mx-[2px]">
                           {/* 上：詳細タグ */}
-                          <div className="text-[10px] text-gray-700 min-h-[12px] leading-none">
-                            {top}
-                          </div>
+                          <div className="text-[10px] text-gray-700 min-h-[12px] leading-none">{top}</div>
 
                           {/* 中：括弧 + 単語 + 括弧 */}
                           <div className="flex items-center gap-[2px]">
@@ -1162,18 +1241,25 @@ export default function CloseReading() {
                               </div>
                             ))}
 
-                            <button
-                              onClick={(ev) => onTokenClick(idx, tid, ev)}
+                            <div
                               className={[
-                                "rounded-xl border px-2 py-1 transition",
-                                roleClass,
-                                selected ? "ring-2 ring-black/15" : "hover:bg-gray-50",
-                                !isWordToken(token.text) ? "opacity-80" : "",
+                                "rounded-xl",
+                                underline ? "border-b border-gray-700 pb-[2px]" : "",
                               ].join(" ")}
-                              title="クリックで選択（Shiftで範囲）"
                             >
-                              <div className="text-sm leading-none">{token.text}</div>
-                            </button>
+                              <button
+                                onClick={(ev) => onTokenClick(idx, tid, ev)}
+                                className={[
+                                  "rounded-xl border px-2 py-1 transition",
+                                  roleClass,
+                                  selected ? "ring-2 ring-black/15" : "hover:bg-gray-50",
+                                  !isWordToken(token.text) ? "opacity-80" : "",
+                                ].join(" ")}
+                                title="クリックで選択（Shiftで範囲）"
+                              >
+                                <div className="text-sm leading-none">{token.text}</div>
+                              </button>
+                            </div>
 
                             {closes.map((m, i) => (
                               <div key={`c-${tid}-${i}`} className="text-xs text-gray-700 select-none">
@@ -1187,13 +1273,11 @@ export default function CloseReading() {
                   </div>
 
                   {/* 下：SVOCM */}
-                  <div className="mt-1 text-[10px] text-gray-600 min-h-[12px]">
-                    {roleText}
-                  </div>
+                  <div className="mt-1 text-[10px] text-gray-600 min-h-[12px]">{roleText}</div>
 
-                  {/* さらに下：まとまり訳（グループにだけ出す） */}
-                  <div className="mt-0.5 text-[10px] text-gray-500 min-h-[12px] max-w-[220px] text-center break-words">
-                    {u.groupId && jaText ? jaText : ""}
+                  {/* さらに下：訳（グループ or 単語） */}
+                  <div className="mt-0.5 text-[10px] text-gray-500 min-h-[12px] max-w-[240px] text-center break-words">
+                    {jaText ? jaText : ""}
                   </div>
                 </div>
               );
@@ -1202,110 +1286,81 @@ export default function CloseReading() {
         )}
       </div>
 
-      {/* ★日本語訳パネル（下線の固まり＝グループ） */}
+      {/* ★訳入力（矢印で切り替え：1つだけ表示） */}
       <div className="rounded-2xl border bg-white p-4 shadow-sm space-y-3">
-        <div className="text-sm font-medium">まとまりごとの日本語訳</div>
+        <div className="flex items-center justify-between gap-3">
+          <div className="text-sm font-medium">日本語訳（矢印キーで次/前へ）</div>
+          <div className="flex items-center gap-2">
+            <button
+              className="text-xs rounded-lg border px-2 py-1 hover:bg-gray-50"
+              onClick={() => moveJaCursor(-1)}
+              disabled={jaTargets.length === 0}
+              title="前（↑/← でも可）"
+            >
+              ← 前
+            </button>
+            <button
+              className="text-xs rounded-lg border px-2 py-1 hover:bg-gray-50"
+              onClick={() => moveJaCursor(+1)}
+              disabled={jaTargets.length === 0}
+              title="次（↓/→ でも可）"
+            >
+              次 →
+            </button>
+          </div>
+        </div>
 
-        {store.groups.length === 0 ? (
+        {jaTargets.length === 0 ? (
           <div className="text-sm text-gray-500">
-            まだ「まとまり（SVOCMグループ）」がありません。下（SVOCM）でグループを作ると、ここで訳を入力できます。
+            訳入力の対象がありません。単語が分解されているか確認してください。（, . は対象外）
           </div>
         ) : (
-          <div className="space-y-4">
-            {/* 選択中グループがあれば、その場で編集 */}
-            <div className="rounded-xl border p-3 space-y-2">
-              <div className="text-xs text-gray-600">
-                {selectedGroup
-                  ? "選択中のまとまりに訳を入力"
-                  : "（ヒント）上の単語をクリックして、同じまとまりを選択すると、ここで素早く編集できます。"}
-              </div>
-
-              <textarea
-                className="w-full min-h-[64px] rounded-xl border p-3 text-sm outline-none focus:ring-2 focus:ring-gray-200 disabled:bg-gray-50"
-                placeholder="ここに、その下線の固まりの日本語訳を入力"
-                disabled={!selectedGroup}
-                value={selectedGroup ? selectedGroupJa : ""}
-                onChange={(e) => {
-                  if (!selectedGroup) return;
-                  setJaToGroup(selectedGroup.id, e.target.value);
-                }}
-              />
-
-              {selectedGroup && (
-                <div className="text-xs text-gray-500">
-                  対象:{" "}
-                  <span className="font-semibold">
-                    {selectedGroup.tokenIds
-                      .map((id) => store.tokens[idToIndex.get(id) ?? -1]?.text)
-                      .filter(Boolean)
-                      .join(" ")}
-                  </span>
-                  {" / "}
-                  role: <span className="font-semibold">{selectedGroup.role}</span>
-                </div>
+          <div className="space-y-2">
+            <div className="text-xs text-gray-600">
+              {jaCursor + 1} / {jaTargets.length}{" "}
+              {currentJaTarget?.kind === "group" ? (
+                <span className="ml-2">
+                  role: <span className="font-semibold">{currentJaTarget.role}</span>
+                </span>
+              ) : (
+                <span className="ml-2 text-gray-500">（単語）</span>
               )}
             </div>
 
-            {/* 一覧でまとめて編集 */}
-            <div className="space-y-2">
-              <div className="text-xs text-gray-600">全まとまり一覧（上から順）</div>
-
-              <div className="space-y-2">
-                {store.groups.map((g) => {
-                  const text = g.tokenIds
-                    .map((id) => store.tokens[idToIndex.get(id) ?? -1]?.text)
-                    .filter(Boolean)
-                    .join(" ");
-                  const ja = typeof g.ja === "string" ? g.ja : "";
-                  return (
-                    <div key={g.id} className="rounded-xl border p-3 space-y-2">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <div className="text-xs text-gray-600">
-                          role: <span className="font-semibold">{g.role}</span>
-                        </div>
-                        <div className="text-sm">
-                          <span className="font-semibold">{text}</span>
-                        </div>
-                      </div>
-
-                      <input
-                        className="w-full rounded-xl border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-gray-200"
-                        placeholder="日本語訳（短くてもOK）"
-                        value={ja}
-                        onChange={(e) => setJaToGroup(g.id, e.target.value)}
-                      />
-                    </div>
-                  );
-                })}
+            <div className="rounded-xl border p-3 bg-gray-50">
+              <div className="text-sm">
+                対象: <span className="font-semibold">{currentJaTarget?.text ?? ""}</span>
               </div>
-
-              <div className="text-xs text-gray-500">
-                ※訳は「グループ（下線の固まり）」に保存されます。グループを作り直すと、新しいグループには訳が引き継がれません（必要ならコピペしてください）。
+              <div className="text-[11px] text-gray-500 mt-1">
+                入力欄で ↑/↓/←/→ を押すと、次の入力欄へ切り替わります（場所を取りません）。
               </div>
             </div>
+
+            <textarea
+              ref={jaInputRef}
+              className="w-full min-h-[72px] rounded-xl border p-3 text-sm outline-none focus:ring-2 focus:ring-gray-200"
+              placeholder="ここに日本語訳を入力（短くてOK）"
+              value={currentJaTarget?.ja ?? ""}
+              onChange={(e) => onUpdateJaTarget(e.target.value)}
+              onKeyDown={onJaKeyDown}
+            />
           </div>
         )}
       </div>
 
       {/* 括弧パネル */}
       <div className="rounded-2xl border bg-white p-4 shadow-sm space-y-3">
-        <div className="text-sm font-medium">
-          括弧を付ける（従属節は[ ]、句は( )） {roleHintText}
-        </div>
+        <div className="text-sm font-medium">括弧を付ける（従属節は[ ]、句は( )） {roleHintText}</div>
 
         {selectedTokens.length === 0 ? (
-          <div className="text-sm text-gray-500">
-            上の単語をクリックして範囲選択してください。
-          </div>
+          <div className="text-sm text-gray-500">上の単語をクリックして範囲選択してください。</div>
         ) : (
           <div className="space-y-2">
             <div className="flex flex-wrap items-center gap-2">
               <div className="text-sm">
                 選択: <span className="font-semibold">{selectedText}</span>
               </div>
-              <div className="text-xs text-gray-500">
-                ※括弧は「交差（クロス）」する形だけ自動で解消します（ネストはOK）。
-              </div>
+              <div className="text-xs text-gray-500">※括弧は「交差（クロス）」する形だけ自動で解消します（ネストはOK）。</div>
             </div>
 
             <div className="flex flex-wrap gap-2">
@@ -1332,23 +1387,17 @@ export default function CloseReading() {
               </button>
             </div>
 
-            <div className="text-xs text-gray-500">
-              ※飛び飛び選択は、最小〜最大の連続範囲に自動補正して括弧を付けます。
-            </div>
+            <div className="text-xs text-gray-500">※飛び飛び選択は、最小〜最大の連続範囲に自動補正して括弧を付けます。</div>
           </div>
         )}
       </div>
 
       {/* 上の詳細タグ パネル */}
       <div className="rounded-2xl border bg-white p-4 shadow-sm space-y-3">
-        <div className="text-sm font-medium">
-          上の詳細タグ（品詞など）を設定 {roleHintText}
-        </div>
+        <div className="text-sm font-medium">上の詳細タグ（品詞など）を設定 {roleHintText}</div>
 
         {selectedTokens.length === 0 ? (
-          <div className="text-sm text-gray-500">
-            上の単語をクリックして選択してください。
-          </div>
+          <div className="text-sm text-gray-500">上の単語をクリックして選択してください。</div>
         ) : (
           <div className="space-y-2">
             <div className="flex flex-wrap items-center gap-2">
@@ -1385,14 +1434,10 @@ export default function CloseReading() {
 
       {/* 下（SVOCM）パネル */}
       <div className="rounded-2xl border bg-white p-4 shadow-sm space-y-3">
-        <div className="text-sm font-medium">
-          下線の下（SVOCMなど）を設定 {roleHintText}
-        </div>
+        <div className="text-sm font-medium">下線の下（SVOCMなど）を設定 {roleHintText}</div>
 
         {selectedTokens.length === 0 ? (
-          <div className="text-sm text-gray-500">
-            上の単語をクリックしてください（2語なら Shift+クリック）。
-          </div>
+          <div className="text-sm text-gray-500">上の単語をクリックしてください（2語なら Shift+クリック）。</div>
         ) : (
           <div className="space-y-3">
             <div className="flex flex-wrap items-center gap-2">
@@ -1419,7 +1464,7 @@ export default function CloseReading() {
             </div>
 
             <div className="text-xs text-gray-500">
-              ※飛び飛びに選ばれている場合は、最小〜最大の連続範囲に自動補正して「まとまり」を作成します。
+              ※グループ化するとき、句読点（, . など）は自動で除外されます（下線も引きません）。
             </div>
           </div>
         )}
