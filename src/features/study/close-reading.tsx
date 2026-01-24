@@ -32,7 +32,7 @@ type Detail =
   | "他"
   | "NONE";
 
-// ★追加：句/従属節の括弧（表示だけで、tokens順は絶対に動かさない）
+// 句/従属節の括弧（表示だけで、tokens順は絶対に動かさない）
 type SpanKind = "PHRASE" | "CLAUSE"; // PHRASE=( ) / CLAUSE=[ ]
 
 type Token = {
@@ -46,6 +46,7 @@ type Group = {
   id: string;
   tokenIds: string[]; // tokens順に正規化して保存
   role: Role; // 下線の下に出す SVOCM 等（グループで1つだけ表示）
+  ja?: string; // ★追加：下線の固まりごとの日本語訳
 };
 
 type Span = {
@@ -82,11 +83,20 @@ type StoreV4 = {
   inputText: string;
   tokens: Token[];
   groups: Group[];
-  spans: Span[]; // ★追加
+  spans: Span[];
   updatedAt: number;
 };
 
-type Store = StoreV4;
+type StoreV5 = {
+  version: 5;
+  inputText: string;
+  tokens: Token[];
+  groups: Group[]; // ja を使う
+  spans: Span[];
+  updatedAt: number;
+};
+
+type Store = StoreV5;
 
 const LOCAL_KEY = "study_close_reading_v1";
 const DOC_KEY = "study_close_reading_v1";
@@ -140,9 +150,9 @@ function tokenize(text: string): Token[] {
   }));
 }
 
-function defaultStoreV4(): StoreV4 {
+function defaultStoreV5(): StoreV5 {
   return {
-    version: 4,
+    version: 5,
     inputText: "",
     tokens: [],
     groups: [],
@@ -228,7 +238,9 @@ function coerceToContiguousSelection(
 }
 
 function spanMarkers(kind: SpanKind) {
-  return kind === "CLAUSE" ? { open: "[", close: "]" } : { open: "(", close: ")" };
+  return kind === "CLAUSE"
+    ? { open: "[", close: "]" }
+    : { open: "(", close: ")" };
 }
 
 function spanRange(span: Span, idToIndex: Map<string, number>) {
@@ -240,7 +252,6 @@ function spanRange(span: Span, idToIndex: Map<string, number>) {
 }
 
 function isContained(a: { start: number; end: number }, b: { start: number; end: number }) {
-  // a が b に含まれる
   return b.start <= a.start && a.end <= b.end;
 }
 
@@ -249,29 +260,29 @@ function overlaps(a: { start: number; end: number }, b: { start: number; end: nu
 }
 
 function crosses(a: { start: number; end: number }, b: { start: number; end: number }) {
-  // 交差（部分的に被るが、包含関係ではない）
   if (!overlaps(a, b)) return false;
   if (isContained(a, b) || isContained(b, a)) return false;
   return true;
 }
 
-/** v1/v2/v3/v4 を v4 に吸収 */
-function migrate(raw: any): StoreV4 {
-  const base = defaultStoreV4();
+/** v1/v2/v3/v4/v5 を v5 に吸収 */
+function migrate(raw: any): StoreV5 {
+  const base = defaultStoreV5();
   if (!raw || typeof raw !== "object") return base;
 
-  // v4
-  if (raw.version === 4) {
+  // v5
+  if (raw.version === 5) {
     const inputText = typeof raw.inputText === "string" ? raw.inputText : "";
 
     const tokens: Token[] = Array.isArray(raw.tokens)
-      ? raw.tokens
+      ? (raw.tokens
           .map((x: any) => {
             if (!x || typeof x !== "object") return null;
             const text = typeof x.text === "string" ? x.text : null;
             if (!text) return null;
             const role = typeof x.role === "string" ? (x.role as Role) : "NONE";
-            const detail = typeof x.detail === "string" ? (x.detail as Detail) : "NONE";
+            const detail =
+              typeof x.detail === "string" ? (x.detail as Detail) : "NONE";
             return {
               id: typeof x.id === "string" ? x.id : newId(),
               text,
@@ -279,38 +290,47 @@ function migrate(raw: any): StoreV4 {
               detail,
             };
           })
-          .filter(Boolean) as Token[]
+          .filter(Boolean) as Token[])
       : [];
 
     const idToIndex = new Map(tokens.map((t, i) => [t.id, i]));
     const tokenSet = new Set(tokens.map((t) => t.id));
 
     const groups: Group[] = Array.isArray(raw.groups)
-      ? raw.groups
+      ? (raw.groups
           .map((g: any) => {
             if (!g || typeof g !== "object") return null;
             const role = typeof g.role === "string" ? (g.role as Role) : "NONE";
             const tokenIdsRaw = Array.isArray(g.tokenIds)
-              ? g.tokenIds.filter((id: any) => typeof id === "string" && tokenSet.has(id))
+              ? g.tokenIds.filter(
+                  (id: any) => typeof id === "string" && tokenSet.has(id)
+                )
               : [];
             if (tokenIdsRaw.length === 0) return null;
+            const ja = typeof g.ja === "string" ? g.ja : "";
             return {
               id: typeof g.id === "string" ? g.id : newId(),
               role,
               tokenIds: normalizeTokenIds(tokenIdsRaw, idToIndex),
+              ja,
             };
           })
-          .filter(Boolean) as Group[]
+          .filter(Boolean) as Group[])
       : [];
 
     const spans: Span[] = Array.isArray(raw.spans)
-      ? raw.spans
+      ? (raw.spans
           .map((s: any) => {
             if (!s || typeof s !== "object") return null;
-            const kind = s.kind === "CLAUSE" || s.kind === "PHRASE" ? (s.kind as SpanKind) : null;
+            const kind =
+              s.kind === "CLAUSE" || s.kind === "PHRASE"
+                ? (s.kind as SpanKind)
+                : null;
             if (!kind) return null;
             const tokenIdsRaw = Array.isArray(s.tokenIds)
-              ? s.tokenIds.filter((id: any) => typeof id === "string" && tokenSet.has(id))
+              ? s.tokenIds.filter(
+                  (id: any) => typeof id === "string" && tokenSet.has(id)
+                )
               : [];
             if (tokenIdsRaw.length === 0) return null;
             return {
@@ -319,142 +339,169 @@ function migrate(raw: any): StoreV4 {
               tokenIds: normalizeTokenIds(tokenIdsRaw, idToIndex),
             };
           })
-          .filter(Boolean) as Span[]
+          .filter(Boolean) as Span[])
       : [];
 
-    const updatedAt = typeof raw.updatedAt === "number" ? raw.updatedAt : Date.now();
-    return { version: 4, inputText, tokens, groups, spans, updatedAt };
+    const updatedAt =
+      typeof raw.updatedAt === "number" ? raw.updatedAt : Date.now();
+    return { version: 5, inputText, tokens, groups, spans, updatedAt };
   }
 
-  // v3
-  if (raw.version === 3) {
-    const v3 = raw as StoreV3;
-    const inputText = typeof v3.inputText === "string" ? v3.inputText : "";
-    const tokens: Token[] = Array.isArray(v3.tokens)
-      ? v3.tokens
+  // v4
+  if (raw.version === 4) {
+    const v4 = raw as StoreV4;
+    const inputText = typeof v4.inputText === "string" ? v4.inputText : "";
+
+    const tokens: Token[] = Array.isArray(v4.tokens)
+      ? (v4.tokens
           .map((x: any) => {
             if (!x || typeof x !== "object") return null;
             const text = typeof x.text === "string" ? x.text : null;
             if (!text) return null;
             const role = typeof x.role === "string" ? (x.role as Role) : "NONE";
-            const detail = typeof x.detail === "string" ? (x.detail as Detail) : "NONE";
-            return { id: typeof x.id === "string" ? x.id : newId(), text, role, detail };
-          })
-          .filter(Boolean) as Token[]
-      : [];
-    const idToIndex = new Map(tokens.map((t, i) => [t.id, i]));
-    const tokenSet = new Set(tokens.map((t) => t.id));
-
-    const groups: Group[] = Array.isArray((v3 as any).groups)
-      ? (v3 as any).groups
-          .map((g: any) => {
-            if (!g || typeof g !== "object") return null;
-            const role = typeof g.role === "string" ? (g.role as Role) : "NONE";
-            const tokenIdsRaw = Array.isArray(g.tokenIds)
-              ? g.tokenIds.filter((id: any) => typeof id === "string" && tokenSet.has(id))
-              : [];
-            if (tokenIdsRaw.length === 0) return null;
-            return {
-              id: typeof g.id === "string" ? g.id : newId(),
-              role,
-              tokenIds: normalizeTokenIds(tokenIdsRaw, idToIndex),
-            };
-          })
-          .filter(Boolean) as Group[]
-      : [];
-
-    const updatedAt = typeof (v3 as any).updatedAt === "number" ? (v3 as any).updatedAt : Date.now();
-    return { version: 4, inputText, tokens, groups, spans: [], updatedAt };
-  }
-
-  // v2
-  if (raw.version === 2) {
-    const v2 = raw as StoreV2;
-    const inputText = typeof v2.inputText === "string" ? v2.inputText : "";
-
-    const tokens: Token[] = Array.isArray(v2.tokens)
-      ? v2.tokens
-          .map((x: any) => {
-            if (!x || typeof x !== "object") return null;
-            const text = typeof x.text === "string" ? x.text : null;
-            if (!text) return null;
+            const detail =
+              typeof x.detail === "string" ? (x.detail as Detail) : "NONE";
             return {
               id: typeof x.id === "string" ? x.id : newId(),
               text,
-              role: typeof x.role === "string" ? (x.role as Role) : "NONE",
-              detail: "NONE",
+              role,
+              detail,
             };
           })
-          .filter(Boolean) as Token[]
+          .filter(Boolean) as Token[])
       : [];
 
     const idToIndex = new Map(tokens.map((t, i) => [t.id, i]));
     const tokenSet = new Set(tokens.map((t) => t.id));
 
-    const groups: Group[] = Array.isArray(v2.groups)
-      ? v2.groups
+    const groups: Group[] = Array.isArray(v4.groups)
+      ? (v4.groups
           .map((g: any) => {
             if (!g || typeof g !== "object") return null;
             const role = typeof g.role === "string" ? (g.role as Role) : "NONE";
             const tokenIdsRaw = Array.isArray(g.tokenIds)
-              ? g.tokenIds.filter((id: any) => typeof id === "string" && tokenSet.has(id))
+              ? g.tokenIds.filter(
+                  (id: any) => typeof id === "string" && tokenSet.has(id)
+                )
               : [];
             if (tokenIdsRaw.length === 0) return null;
             return {
               id: typeof g.id === "string" ? g.id : newId(),
               role,
               tokenIds: normalizeTokenIds(tokenIdsRaw, idToIndex),
+              ja: "",
             };
           })
-          .filter(Boolean) as Group[]
+          .filter(Boolean) as Group[])
       : [];
 
-    const updatedAt = typeof v2.updatedAt === "number" ? v2.updatedAt : Date.now();
-    return { version: 4, inputText, tokens, groups, spans: [], updatedAt };
+    const spans: Span[] = Array.isArray(v4.spans)
+      ? (v4.spans
+          .map((s: any) => {
+            if (!s || typeof s !== "object") return null;
+            const kind =
+              s.kind === "CLAUSE" || s.kind === "PHRASE"
+                ? (s.kind as SpanKind)
+                : null;
+            if (!kind) return null;
+            const tokenIdsRaw = Array.isArray(s.tokenIds)
+              ? s.tokenIds.filter(
+                  (id: any) => typeof id === "string" && tokenSet.has(id)
+                )
+              : [];
+            if (tokenIdsRaw.length === 0) return null;
+            return {
+              id: typeof s.id === "string" ? s.id : newId(),
+              kind,
+              tokenIds: normalizeTokenIds(tokenIdsRaw, idToIndex),
+            };
+          })
+          .filter(Boolean) as Span[])
+      : [];
+
+    const updatedAt =
+      typeof v4.updatedAt === "number" ? v4.updatedAt : Date.now();
+    return { version: 5, inputText, tokens, groups, spans, updatedAt };
   }
 
-  // v1
-  if (raw.version === 1) {
-    const v1 = raw as StoreV1;
-    const inputText = typeof v1.inputText === "string" ? v1.inputText : "";
+  // v3 / v2 / v1 は、いったん v4 相当へ寄せてから v5 へ
+  // （今回、簡潔に v4 へのロジックを流用）
+  if (raw.version === 3 || raw.version === 2 || raw.version === 1) {
+    // 既存 migrate（v4まで）相当を再現：最小限に必要な部分だけ
+    // → v1は roleを group化し、detail/spansなし
+    // → v2/v3は groupsあり、spansなし
+    const tmp = (() => {
+      if (raw.version === 3) {
+        const v3 = raw as StoreV3;
+        return {
+          version: 4,
+          inputText: typeof v3.inputText === "string" ? v3.inputText : "",
+          tokens: Array.isArray(v3.tokens) ? v3.tokens : [],
+          groups: Array.isArray((v3 as any).groups) ? (v3 as any).groups : [],
+          spans: [],
+          updatedAt:
+            typeof (v3 as any).updatedAt === "number" ? (v3 as any).updatedAt : Date.now(),
+        } satisfies StoreV4;
+      }
+      if (raw.version === 2) {
+        const v2 = raw as StoreV2;
+        return {
+          version: 4,
+          inputText: typeof v2.inputText === "string" ? v2.inputText : "",
+          tokens: Array.isArray(v2.tokens) ? v2.tokens : [],
+          groups: Array.isArray(v2.groups) ? v2.groups : [],
+          spans: [],
+          updatedAt: typeof v2.updatedAt === "number" ? v2.updatedAt : Date.now(),
+        } satisfies StoreV4;
+      }
+      // v1
+      const v1 = raw as StoreV1;
+      const tokens0: Token[] = Array.isArray(v1.tokens)
+        ? (v1.tokens
+            .map((x: any) => {
+              if (!x || typeof x !== "object") return null;
+              const text = typeof x.text === "string" ? x.text : null;
+              if (!text) return null;
+              const role = typeof x.role === "string" ? (x.role as Role) : "NONE";
+              return { id: typeof x.id === "string" ? x.id : newId(), text, role, detail: "NONE" };
+            })
+            .filter(Boolean) as Token[])
+        : [];
+      const idToIndex0 = new Map(tokens0.map((t, i) => [t.id, i]));
+      const groups0: Group[] = [];
+      for (const t of tokens0) {
+        const r = (t.role ?? "NONE") as Role;
+        if (r !== "NONE") groups0.push({ id: newId(), tokenIds: [t.id], role: r, ja: "" });
+        t.role = "NONE";
+      }
+      const normalized0 = groups0.map((g) => ({
+        ...g,
+        tokenIds: normalizeTokenIds(g.tokenIds, idToIndex0),
+      }));
+      return {
+        version: 4,
+        inputText: typeof v1.inputText === "string" ? v1.inputText : "",
+        tokens: tokens0,
+        groups: normalized0,
+        spans: [],
+        updatedAt: typeof v1.updatedAt === "number" ? v1.updatedAt : Date.now(),
+      } satisfies StoreV4;
+    })();
 
-    const tokens: Token[] = Array.isArray(v1.tokens)
-      ? v1.tokens
-          .map((x: any) => {
-            if (!x || typeof x !== "object") return null;
-            const text = typeof x.text === "string" ? x.text : null;
-            if (!text) return null;
-            const role = typeof x.role === "string" ? (x.role as Role) : "NONE";
-            return { id: typeof x.id === "string" ? x.id : newId(), text, role, detail: "NONE" };
-          })
-          .filter(Boolean) as Token[]
-      : [];
-
-    const idToIndex = new Map(tokens.map((t, i) => [t.id, i]));
-    const groups: Group[] = [];
-
-    for (const t of tokens) {
-      const r = t.role ?? "NONE";
-      if (r !== "NONE") groups.push({ id: newId(), tokenIds: [t.id], role: r });
-      t.role = "NONE";
-    }
-
-    const normalized = groups.map((g) => ({ ...g, tokenIds: normalizeTokenIds(g.tokenIds, idToIndex) }));
-    const updatedAt = typeof v1.updatedAt === "number" ? v1.updatedAt : Date.now();
-
-    return { version: 4, inputText, tokens, groups: normalized, spans: [], updatedAt };
+    // tmp(v4) -> v5
+    return migrate({ ...tmp, version: 4 });
   }
 
   return base;
 }
 
-function loadLocal(): StoreV4 {
-  if (typeof window === "undefined") return defaultStoreV4();
+function loadLocal(): StoreV5 {
+  if (typeof window === "undefined") return defaultStoreV5();
   const raw = safeParseJSON<any>(localStorage.getItem(LOCAL_KEY));
   return migrate(raw);
 }
 
-function saveLocal(s: StoreV4) {
+function saveLocal(s: StoreV5) {
   if (typeof window === "undefined") return;
   try {
     localStorage.setItem(LOCAL_KEY, JSON.stringify(s));
@@ -473,7 +520,10 @@ export default function CloseReading() {
   const anchorIndexRef = useRef<number | null>(null);
 
   // tokens順の index map（順番固定の要）
-  const idToIndex = useMemo(() => new Map(store.tokens.map((t, i) => [t.id, i])), [store.tokens]);
+  const idToIndex = useMemo(
+    () => new Map(store.tokens.map((t, i) => [t.id, i])),
+    [store.tokens]
+  );
 
   // tokenId -> group
   const groupByTokenId = useMemo(() => {
@@ -487,12 +537,17 @@ export default function CloseReading() {
     return store.tokens.filter((t) => set.has(t.id));
   }, [store.tokens, selectedIds]);
 
-  const selectedText = useMemo(() => selectedTokens.map((t) => t.text).join(" "), [selectedTokens]);
+  const selectedText = useMemo(
+    () => selectedTokens.map((t) => t.text).join(" "),
+    [selectedTokens]
+  );
 
   const selectedGroup = useMemo(() => {
     if (selectedIds.length === 0) return null;
     const groupIds = uniq(
-      selectedIds.map((id) => groupByTokenId.get(id)?.id ?? "").filter((x) => x)
+      selectedIds
+        .map((id) => groupByTokenId.get(id)?.id ?? "")
+        .filter((x) => x)
     );
     if (groupIds.length !== 1) return null;
     return store.groups.find((g) => g.id === groupIds[0]) ?? null;
@@ -500,7 +555,9 @@ export default function CloseReading() {
 
   const selectedDetailState = useMemo(() => {
     if (selectedTokens.length === 0) return "";
-    const details = uniq(selectedTokens.map((t) => (t.detail ?? "NONE") as string));
+    const details = uniq(
+      selectedTokens.map((t) => (t.detail ?? "NONE") as string)
+    );
     if (details.length === 1) return details[0] === "NONE" ? "NONE" : details[0];
     return "MIXED";
   }, [selectedTokens]);
@@ -519,7 +576,7 @@ export default function CloseReading() {
       try {
         const remote = await loadUserDoc<any>(DOC_KEY);
         const migrated = migrate(remote);
-        if (migrated && migrated.version === 4) {
+        if (migrated && migrated.version === 5) {
           setStore(migrated);
           saveLocal(migrated);
         }
@@ -591,7 +648,7 @@ export default function CloseReading() {
     const tokens = tokenize(store.inputText);
     setStore((prev) => ({
       ...prev,
-      version: 4,
+      version: 5,
       tokens,
       groups: [],
       spans: [],
@@ -617,7 +674,12 @@ export default function CloseReading() {
     }));
   };
 
-  // クリック選択（順番は絶対に動かさない。Shiftは範囲で置き換え）
+  const clearSelection = () => {
+    setSelectedIds([]);
+    anchorIndexRef.current = null;
+  };
+
+  // クリック選択（Shiftは範囲で置き換え）
   const onTokenClick = (index: number, id: string, ev: React.MouseEvent) => {
     const isShift = ev.shiftKey;
     const isMeta = ev.metaKey || ev.ctrlKey;
@@ -645,11 +707,6 @@ export default function CloseReading() {
     anchorIndexRef.current = index;
   };
 
-  const clearSelection = () => {
-    setSelectedIds([]);
-    anchorIndexRef.current = null;
-  };
-
   // role付与（飛び飛びは連続範囲に補正）
   const setRoleToSelected = (role: Role) => {
     if (selectedIds.length === 0) return;
@@ -660,11 +717,15 @@ export default function CloseReading() {
     // 既存グループと完全一致なら role だけ更新
     if (selectedGroup) {
       const gSet = new Set(selectedGroup.tokenIds);
-      const same = selectedGroup.tokenIds.length === coerced.length && coerced.every((x) => gSet.has(x));
+      const same =
+        selectedGroup.tokenIds.length === coerced.length &&
+        coerced.every((x) => gSet.has(x));
       if (same) {
         setStore((prev) => ({
           ...prev,
-          groups: prev.groups.map((g) => (g.id === selectedGroup.id ? { ...g, role } : g)),
+          groups: prev.groups.map((g) =>
+            g.id === selectedGroup.id ? { ...g, role } : g
+          ),
           updatedAt: Date.now(),
         }));
         setSelectedIds(coerced);
@@ -679,14 +740,21 @@ export default function CloseReading() {
       const nextGroups: Group[] = [];
       for (const g of prev.groups) {
         const rest = g.tokenIds.filter((tid) => !selectedSet.has(tid));
-        if (rest.length > 0) nextGroups.push({ ...g, tokenIds: normalizeTokenIds(rest, idToIndex2) });
+        if (rest.length > 0) {
+          nextGroups.push({
+            ...g,
+            tokenIds: normalizeTokenIds(rest, idToIndex2),
+            ja: typeof g.ja === "string" ? g.ja : "",
+          });
+        }
       }
 
-      // 2) 新グループ作成
+      // 2) 新グループ作成（日本語訳は空で開始）
       nextGroups.push({
         id: newId(),
         tokenIds: normalizeTokenIds(coerced, idToIndex2),
         role,
+        ja: "",
       });
 
       // 3) 表示順安定化（tokens順）
@@ -718,7 +786,7 @@ export default function CloseReading() {
     setSelectedIds(coerced);
   };
 
-  // ★括弧（句/従属節）付与：交差する括弧は自動で解消（順番は変えない）
+  // 括弧（句/従属節）付与：交差する括弧は自動で解消
   const setSpanToSelected = (kind: SpanKind) => {
     if (selectedIds.length === 0) return;
 
@@ -738,9 +806,12 @@ export default function CloseReading() {
       for (const s of prev.spans ?? []) {
         const s2: Span = {
           id: typeof s.id === "string" ? s.id : newId(),
-          kind: s.kind === "CLAUSE" || s.kind === "PHRASE" ? s.kind : "PHRASE",
+          kind:
+            s.kind === "CLAUSE" || s.kind === "PHRASE" ? s.kind : "PHRASE",
           tokenIds: normalizeTokenIds(
-            (Array.isArray(s.tokenIds) ? s.tokenIds : []).filter((id) => tokenSet.has(id)),
+            (Array.isArray(s.tokenIds) ? s.tokenIds : []).filter((id) =>
+              tokenSet.has(id)
+            ),
             idToIndex2
           ),
         };
@@ -748,29 +819,24 @@ export default function CloseReading() {
 
         const r = spanRange(s2, idToIndex2);
 
-        // 1) 完全一致（同じ範囲＆同じkind）なら “更新” とみなして置き換え
-        if (s2.kind === kind && r.start === newR.start && r.end === newR.end) {
-          // drop（後で newSpan を入れる）
-          continue;
-        }
+        // 完全一致なら置き換え
+        if (s2.kind === kind && r.start === newR.start && r.end === newR.end) continue;
 
-        // 2) 交差（クロス）するものは削除（ネストは許可）
+        // 交差（クロス）するものは削除（ネストはOK）
         if (crosses(r, newR)) continue;
 
         kept.push(s2);
       }
 
-      // 追加
       kept.push(newSpan);
 
-      // 表示の安定化：開始位置→長い順（外側を先に）、同位置なら CLAUSE優先
       kept.sort((a, b) => {
         const ra = spanRange(a, idToIndex2);
         const rb = spanRange(b, idToIndex2);
         if (ra.start !== rb.start) return ra.start - rb.start;
         const la = ra.end - ra.start;
         const lb = rb.end - rb.start;
-        if (la !== lb) return lb - la; // 長い順（外側）
+        if (la !== lb) return lb - la; // 外側を先
         if (a.kind !== b.kind) return a.kind === "CLAUSE" ? -1 : 1;
         return a.id.localeCompare(b.id);
       });
@@ -781,7 +847,7 @@ export default function CloseReading() {
     setSelectedIds(coerced);
   };
 
-  // ★括弧を外す：選択範囲に少しでも被る span を削除
+  // 括弧を外す：選択範囲に被る span を削除
   const removeSpansOverlappingSelection = () => {
     if (selectedIds.length === 0) return;
     const coerced = coerceToContiguousSelection(selectedIds, idToIndex, store.tokens);
@@ -805,6 +871,17 @@ export default function CloseReading() {
     });
 
     setSelectedIds(coerced);
+  };
+
+  // ★日本語訳（グループ）更新
+  const setJaToGroup = (groupId: string, ja: string) => {
+    setStore((prev) => ({
+      ...prev,
+      groups: prev.groups.map((g) =>
+        g.id === groupId ? { ...g, ja } : g
+      ),
+      updatedAt: Date.now(),
+    }));
   };
 
   const autoHint = () => {
@@ -863,10 +940,11 @@ export default function CloseReading() {
         const key = t.text.toLowerCase();
         if (!vSet.has(key)) continue;
         if (tokenSetInGroups.has(t.id)) continue;
-        nextGroups.push({ id: newId(), tokenIds: [t.id], role: "V" });
+        nextGroups.push({ id: newId(), tokenIds: [t.id], role: "V", ja: "" });
       }
 
-      for (const g of nextGroups) g.tokenIds = normalizeTokenIds(g.tokenIds, idToIndex2);
+      for (const g of nextGroups)
+        g.tokenIds = normalizeTokenIds(g.tokenIds, idToIndex2);
       nextGroups.sort((a, b) => {
         const amin = Math.min(...a.tokenIds.map((id) => idToIndex2.get(id) ?? 1e9));
         const bmin = Math.min(...b.tokenIds.map((id) => idToIndex2.get(id) ?? 1e9));
@@ -878,7 +956,11 @@ export default function CloseReading() {
   };
 
   const roleHintText =
-    selectedTokens.length >= 2 ? `（${selectedTokens.length}語）` : selectedTokens.length === 1 ? "（1語）" : "";
+    selectedTokens.length >= 2
+      ? `（${selectedTokens.length}語）`
+      : selectedTokens.length === 1
+      ? "（1語）"
+      : "";
 
   // 表示ユニット（tokensを左→右に走査して生成：順番が絶対に入れ替わらない）
   const displayUnits = useMemo(() => {
@@ -886,25 +968,30 @@ export default function CloseReading() {
     for (const g of store.groups) for (const tid of g.tokenIds) tokenToGroup.set(tid, g);
 
     const started = new Set<string>();
-    const units: { tokenIds: string[]; roleToShow: Role }[] = [];
+    const units: { tokenIds: string[]; roleToShow: Role; groupId: string | null; ja: string }[] = [];
 
     for (const t of store.tokens) {
       const g = tokenToGroup.get(t.id);
       if (!g) {
-        units.push({ tokenIds: [t.id], roleToShow: "NONE" });
+        units.push({ tokenIds: [t.id], roleToShow: "NONE", groupId: null, ja: "" });
         continue;
       }
       if (started.has(g.id)) continue;
       started.add(g.id);
 
       const ordered = normalizeTokenIds(g.tokenIds, idToIndex);
-      units.push({ tokenIds: ordered, roleToShow: g.role });
+      units.push({
+        tokenIds: ordered,
+        roleToShow: g.role,
+        groupId: g.id,
+        ja: typeof g.ja === "string" ? g.ja : "",
+      });
     }
 
     return units;
   }, [store.tokens, store.groups, idToIndex]);
 
-  // ★括弧の開始/終了マーカー（ネスト対応：外側→内側の順）
+  // 括弧の開始/終了マーカー（ネスト対応：外側→内側の順）
   const spanMarksByTokenId = useMemo(() => {
     const starts = new Map<string, string[]>();
     const ends = new Map<string, string[]>();
@@ -946,11 +1033,15 @@ export default function CloseReading() {
     return { starts, ends };
   }, [store.spans, idToIndex]);
 
+  const selectedGroupJa = selectedGroup ? (selectedGroup.ja ?? "") : "";
+
   return (
     <div className="mx-auto max-w-5xl p-4 space-y-4">
       <div className="flex items-center justify-between gap-3">
-        <h1 className="text-xl font-semibold">精読（上：詳細 / 下：SVOCM / 括弧：[ ] ( )）</h1>
-        <div className="text-xs text-gray-500">localStorage即時保存 / サーバ同期はホームの📥/☁のみ</div>
+        <h1 className="text-xl font-semibold">精読（上：詳細 / 下：SVOCM / 括弧：[ ] ( ) / まとまり訳）</h1>
+        <div className="text-xs text-gray-500">
+          localStorage即時保存 / サーバ同期はホームの📥/☁のみ
+        </div>
       </div>
 
       {/* 入力 */}
@@ -970,7 +1061,10 @@ export default function CloseReading() {
         />
 
         <div className="flex flex-wrap items-center gap-2">
-          <button className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50" onClick={onBuild}>
+          <button
+            className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
+            onClick={onBuild}
+          >
             単語に分解（タグ付け開始）
           </button>
 
@@ -979,7 +1073,7 @@ export default function CloseReading() {
             onClick={onClearSVOCM}
             disabled={store.tokens.length === 0}
           >
-            下（SVOCM）を全解除
+            下（SVOCM）を全解除（訳も消えます）
           </button>
 
           <button
@@ -999,7 +1093,9 @@ export default function CloseReading() {
             自動ヒント（V候補）
           </button>
 
-          <div className="ml-auto text-xs text-gray-500">更新: {new Date(store.updatedAt).toLocaleString()}</div>
+          <div className="ml-auto text-xs text-gray-500">
+            更新: {new Date(store.updatedAt).toLocaleString()}
+          </div>
         </div>
 
         <div className="text-xs text-gray-500">
@@ -1010,7 +1106,9 @@ export default function CloseReading() {
       {/* 表示 */}
       <div className="rounded-2xl border bg-white p-4 shadow-sm space-y-3">
         <div className="flex items-center justify-between gap-3">
-          <div className="text-sm font-medium">上：詳細 / 中：単語（下線） / 下：SVOCM / 括弧：[ ] と ( )</div>
+          <div className="text-sm font-medium">
+            上：詳細 / 中：単語（下線） / 下：SVOCM（グループ）/ さらに下：まとまり訳（任意）
+          </div>
           <button
             className="text-xs rounded-lg border px-2 py-1 hover:bg-gray-50"
             onClick={clearSelection}
@@ -1030,9 +1128,13 @@ export default function CloseReading() {
             {displayUnits.map((u, ui) => {
               const roleText = roleShort(u.roleToShow);
               const roleClass = classForRole(u.roleToShow === "NONE" ? "NONE" : u.roleToShow);
+              const jaText = (u.ja ?? "").trim();
 
               return (
-                <div key={`${ui}-${u.tokenIds.join(",")}`} className="flex flex-col items-center">
+                <div
+                  key={`${ui}-${u.tokenIds.join(",")}`}
+                  className="flex flex-col items-center"
+                >
                   <div className="inline-flex items-end border-b border-gray-700 pb-1">
                     {u.tokenIds.map((tid) => {
                       const idx = idToIndex.get(tid);
@@ -1048,9 +1150,11 @@ export default function CloseReading() {
                       return (
                         <div key={tid} className="flex flex-col items-center mx-[2px]">
                           {/* 上：詳細タグ */}
-                          <div className="text-[10px] text-gray-700 min-h-[12px] leading-none">{top}</div>
+                          <div className="text-[10px] text-gray-700 min-h-[12px] leading-none">
+                            {top}
+                          </div>
 
-                          {/* 中：括弧 + 単語 + 括弧（同じ行で表示） */}
+                          {/* 中：括弧 + 単語 + 括弧 */}
                           <div className="flex items-center gap-[2px]">
                             {opens.map((m, i) => (
                               <div key={`o-${tid}-${i}`} className="text-xs text-gray-700 select-none">
@@ -1083,7 +1187,14 @@ export default function CloseReading() {
                   </div>
 
                   {/* 下：SVOCM */}
-                  <div className="mt-1 text-[10px] text-gray-600 min-h-[12px]">{roleText}</div>
+                  <div className="mt-1 text-[10px] text-gray-600 min-h-[12px]">
+                    {roleText}
+                  </div>
+
+                  {/* さらに下：まとまり訳（グループにだけ出す） */}
+                  <div className="mt-0.5 text-[10px] text-gray-500 min-h-[12px] max-w-[220px] text-center break-words">
+                    {u.groupId && jaText ? jaText : ""}
+                  </div>
                 </div>
               );
             })}
@@ -1091,12 +1202,101 @@ export default function CloseReading() {
         )}
       </div>
 
+      {/* ★日本語訳パネル（下線の固まり＝グループ） */}
+      <div className="rounded-2xl border bg-white p-4 shadow-sm space-y-3">
+        <div className="text-sm font-medium">まとまりごとの日本語訳</div>
+
+        {store.groups.length === 0 ? (
+          <div className="text-sm text-gray-500">
+            まだ「まとまり（SVOCMグループ）」がありません。下（SVOCM）でグループを作ると、ここで訳を入力できます。
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {/* 選択中グループがあれば、その場で編集 */}
+            <div className="rounded-xl border p-3 space-y-2">
+              <div className="text-xs text-gray-600">
+                {selectedGroup
+                  ? "選択中のまとまりに訳を入力"
+                  : "（ヒント）上の単語をクリックして、同じまとまりを選択すると、ここで素早く編集できます。"}
+              </div>
+
+              <textarea
+                className="w-full min-h-[64px] rounded-xl border p-3 text-sm outline-none focus:ring-2 focus:ring-gray-200 disabled:bg-gray-50"
+                placeholder="ここに、その下線の固まりの日本語訳を入力"
+                disabled={!selectedGroup}
+                value={selectedGroup ? selectedGroupJa : ""}
+                onChange={(e) => {
+                  if (!selectedGroup) return;
+                  setJaToGroup(selectedGroup.id, e.target.value);
+                }}
+              />
+
+              {selectedGroup && (
+                <div className="text-xs text-gray-500">
+                  対象:{" "}
+                  <span className="font-semibold">
+                    {selectedGroup.tokenIds
+                      .map((id) => store.tokens[idToIndex.get(id) ?? -1]?.text)
+                      .filter(Boolean)
+                      .join(" ")}
+                  </span>
+                  {" / "}
+                  role: <span className="font-semibold">{selectedGroup.role}</span>
+                </div>
+              )}
+            </div>
+
+            {/* 一覧でまとめて編集 */}
+            <div className="space-y-2">
+              <div className="text-xs text-gray-600">全まとまり一覧（上から順）</div>
+
+              <div className="space-y-2">
+                {store.groups.map((g) => {
+                  const text = g.tokenIds
+                    .map((id) => store.tokens[idToIndex.get(id) ?? -1]?.text)
+                    .filter(Boolean)
+                    .join(" ");
+                  const ja = typeof g.ja === "string" ? g.ja : "";
+                  return (
+                    <div key={g.id} className="rounded-xl border p-3 space-y-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="text-xs text-gray-600">
+                          role: <span className="font-semibold">{g.role}</span>
+                        </div>
+                        <div className="text-sm">
+                          <span className="font-semibold">{text}</span>
+                        </div>
+                      </div>
+
+                      <input
+                        className="w-full rounded-xl border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-gray-200"
+                        placeholder="日本語訳（短くてもOK）"
+                        value={ja}
+                        onChange={(e) => setJaToGroup(g.id, e.target.value)}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="text-xs text-gray-500">
+                ※訳は「グループ（下線の固まり）」に保存されます。グループを作り直すと、新しいグループには訳が引き継がれません（必要ならコピペしてください）。
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* 括弧パネル */}
       <div className="rounded-2xl border bg-white p-4 shadow-sm space-y-3">
-        <div className="text-sm font-medium">括弧を付ける（従属節は[ ]、句は( )） {roleHintText}</div>
+        <div className="text-sm font-medium">
+          括弧を付ける（従属節は[ ]、句は( )） {roleHintText}
+        </div>
 
         {selectedTokens.length === 0 ? (
-          <div className="text-sm text-gray-500">上の単語をクリックして範囲選択してください。</div>
+          <div className="text-sm text-gray-500">
+            上の単語をクリックして範囲選択してください。
+          </div>
         ) : (
           <div className="space-y-2">
             <div className="flex flex-wrap items-center gap-2">
@@ -1141,10 +1341,14 @@ export default function CloseReading() {
 
       {/* 上の詳細タグ パネル */}
       <div className="rounded-2xl border bg-white p-4 shadow-sm space-y-3">
-        <div className="text-sm font-medium">上の詳細タグ（品詞など）を設定 {roleHintText}</div>
+        <div className="text-sm font-medium">
+          上の詳細タグ（品詞など）を設定 {roleHintText}
+        </div>
 
         {selectedTokens.length === 0 ? (
-          <div className="text-sm text-gray-500">上の単語をクリックして選択してください。</div>
+          <div className="text-sm text-gray-500">
+            上の単語をクリックして選択してください。
+          </div>
         ) : (
           <div className="space-y-2">
             <div className="flex flex-wrap items-center gap-2">
@@ -1181,10 +1385,14 @@ export default function CloseReading() {
 
       {/* 下（SVOCM）パネル */}
       <div className="rounded-2xl border bg-white p-4 shadow-sm space-y-3">
-        <div className="text-sm font-medium">下線の下（SVOCMなど）を設定 {roleHintText}</div>
+        <div className="text-sm font-medium">
+          下線の下（SVOCMなど）を設定 {roleHintText}
+        </div>
 
         {selectedTokens.length === 0 ? (
-          <div className="text-sm text-gray-500">上の単語をクリックしてください（2語なら Shift+クリック）。</div>
+          <div className="text-sm text-gray-500">
+            上の単語をクリックしてください（2語なら Shift+クリック）。
+          </div>
         ) : (
           <div className="space-y-3">
             <div className="flex flex-wrap items-center gap-2">
