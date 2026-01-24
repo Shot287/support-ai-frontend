@@ -190,13 +190,13 @@ function shouldUnderlineToken(t: string) {
   if (isWordToken(t)) return true;
   // よくある句読点は下線なし
   if (/^[,\.!?;:]+$/.test(t)) return false;
-  // その他記号も基本は下線なし（必要ならここで true に）
+  // その他記号も基本は下線なし
   return false;
 }
 
 /** 訳入力の対象か（, . は対象外） */
 function isJaTargetToken(t: string) {
-  return shouldUnderlineToken(t); // 今は同じ方針（単語/数字のみ）
+  return shouldUnderlineToken(t);
 }
 
 function classForRole(role: Role) {
@@ -312,7 +312,11 @@ function migrate(raw: any): StoreV6 {
       })
       .filter(Boolean) as Token[];
 
-  const normalizeGroups = (groupsIn: any[], tokenSet: Set<string>, idToIndex: Map<string, number>): Group[] =>
+  const normalizeGroups = (
+    groupsIn: any[],
+    tokenSet: Set<string>,
+    idToIndex: Map<string, number>
+  ): Group[] =>
     (Array.isArray(groupsIn) ? groupsIn : [])
       .map((g: any) => {
         if (!g || typeof g !== "object") return null;
@@ -331,7 +335,11 @@ function migrate(raw: any): StoreV6 {
       })
       .filter(Boolean) as Group[];
 
-  const normalizeSpans = (spansIn: any[], tokenSet: Set<string>, idToIndex: Map<string, number>): Span[] =>
+  const normalizeSpans = (
+    spansIn: any[],
+    tokenSet: Set<string>,
+    idToIndex: Map<string, number>
+  ): Span[] =>
     (Array.isArray(spansIn) ? spansIn : [])
       .map((s: any) => {
         if (!s || typeof s !== "object") return null;
@@ -384,7 +392,13 @@ function migrate(raw: any): StoreV6 {
             const text = typeof x.text === "string" ? x.text : null;
             if (!text) return null;
             const role = typeof x.role === "string" ? (x.role as Role) : "NONE";
-            return { id: typeof x.id === "string" ? x.id : newId(), text, role, detail: "NONE", ja: "" } as Token;
+            return {
+              id: typeof x.id === "string" ? x.id : newId(),
+              text,
+              role,
+              detail: "NONE",
+              ja: "",
+            } as Token;
           })
           .filter(Boolean) as Token[])
       : [];
@@ -432,11 +446,7 @@ function joinTokensForDisplay(tokens: string[]) {
     const t = tokens[i];
     const prev = i > 0 ? tokens[i - 1] : "";
     const needSpace =
-      i > 0 &&
-      !noSpaceBefore.has(t) &&
-      !noSpaceAfter.has(prev) &&
-      prev !== "";
-
+      i > 0 && !noSpaceBefore.has(t) && !noSpaceAfter.has(prev) && prev !== "";
     out += (needSpace ? " " : "") + t;
   }
   return out.trim();
@@ -456,7 +466,10 @@ export default function CloseReading() {
   const jaInputRef = useRef<HTMLTextAreaElement | null>(null);
 
   // tokens順の index map（順番固定の要）
-  const idToIndex = useMemo(() => new Map(store.tokens.map((t, i) => [t.id, i])), [store.tokens]);
+  const idToIndex = useMemo(
+    () => new Map(store.tokens.map((t, i) => [t.id, i])),
+    [store.tokens]
+  );
 
   // tokenId -> group
   const groupByTokenId = useMemo(() => {
@@ -470,14 +483,15 @@ export default function CloseReading() {
     return store.tokens.filter((t) => set.has(t.id));
   }, [store.tokens, selectedIds]);
 
-  const selectedText = useMemo(() => joinTokensForDisplay(selectedTokens.map((t) => t.text)), [selectedTokens]);
+  const selectedText = useMemo(
+    () => joinTokensForDisplay(selectedTokens.map((t) => t.text)),
+    [selectedTokens]
+  );
 
   const selectedGroup = useMemo(() => {
     if (selectedIds.length === 0) return null;
     const groupIds = uniq(
-      selectedIds
-        .map((id) => groupByTokenId.get(id)?.id ?? "")
-        .filter((x) => x)
+      selectedIds.map((id) => groupByTokenId.get(id)?.id ?? "").filter((x) => x)
     );
     if (groupIds.length !== 1) return null;
     return store.groups.find((g) => g.id === groupIds[0]) ?? null;
@@ -662,7 +676,8 @@ export default function CloseReading() {
     if (selectedGroup) {
       const gSet = new Set(selectedGroup.tokenIds);
       const same =
-        selectedGroup.tokenIds.length === coerced.length && coerced.every((x) => gSet.has(x));
+        selectedGroup.tokenIds.length === coerced.length &&
+        coerced.every((x) => gSet.has(x));
       if (same) {
         setStore((prev) => ({
           ...prev,
@@ -884,7 +899,6 @@ export default function CloseReading() {
         const key = t.text.toLowerCase();
         if (!vSet.has(key)) continue;
         if (tokenSetInGroups.has(t.id)) continue;
-        // Vグループは「下線対象」のみ（句読点は入らないのでOK）
         nextGroups.push({ id: newId(), tokenIds: [t.id], role: "V", ja: "" });
       }
 
@@ -912,8 +926,13 @@ export default function CloseReading() {
     for (const g of store.groups) for (const tid of g.tokenIds) tokenToGroup.set(tid, g);
 
     const started = new Set<string>();
-    const units: { tokenIds: string[]; roleToShow: Role; groupId: string | null; groupJa: string; tokenJa: string }[] =
-      [];
+    const units: {
+      tokenIds: string[];
+      roleToShow: Role;
+      groupId: string | null;
+      groupJa: string;
+      tokenJa: string;
+    }[] = [];
 
     for (const t of store.tokens) {
       const g = tokenToGroup.get(t.id);
@@ -994,7 +1013,6 @@ export default function CloseReading() {
     const targets: JaTarget[] = [];
     for (const u of displayUnits) {
       if (u.groupId) {
-        // グループは訳対象（ただし中身が全部句読点だけ、は基本ない想定）
         const words = u.tokenIds
           .map((id) => store.tokens[idToIndex.get(id) ?? -1]?.text)
           .filter((x): x is string => typeof x === "string");
@@ -1010,7 +1028,6 @@ export default function CloseReading() {
           ja: (u.groupJa ?? "").trim(),
         });
       } else {
-        // 単語は訳対象（, . は除外）
         const tid = u.tokenIds[0];
         const tok = tid ? store.tokens[idToIndex.get(tid) ?? -1] : null;
         if (!tok) continue;
@@ -1044,7 +1061,6 @@ export default function CloseReading() {
   const currentJaTarget = jaTargets.length > 0 ? jaTargets[jaCursor] : null;
 
   const focusJaInputSoon = () => {
-    // 次フレームでfocus（カーソル移動後でも入力継続しやすく）
     requestAnimationFrame(() => {
       try {
         jaInputRef.current?.focus();
@@ -1054,10 +1070,7 @@ export default function CloseReading() {
 
   const moveJaCursor = (delta: number) => {
     if (jaTargets.length === 0) return;
-    setJaCursor((p) => {
-      const next = (p + delta + jaTargets.length) % jaTargets.length;
-      return next;
-    });
+    setJaCursor((p) => (p + delta + jaTargets.length) % jaTargets.length);
     focusJaInputSoon();
   };
 
@@ -1080,11 +1093,10 @@ export default function CloseReading() {
     else setJaToToken(currentJaTarget.tokenId, value);
   };
 
-  // 現在の選択が「訳カーソルの対象」に一致するなら、その対象へジャンプ（任意の利便）
+  // 現在の選択が「訳カーソルの対象」に一致するなら、その対象へジャンプ
   const jumpCursorToSelected = () => {
     if (jaTargets.length === 0) return;
 
-    // 1) 選択が単語1つで、それが token target なら一致
     if (selectedIds.length === 1) {
       const tid = selectedIds[0];
       const idx = jaTargets.findIndex((t) => t.kind === "token" && t.tokenId === tid);
@@ -1095,7 +1107,6 @@ export default function CloseReading() {
       }
     }
 
-    // 2) 選択が同一グループなら group target に一致
     if (selectedGroup) {
       const idx = jaTargets.findIndex((t) => t.kind === "group" && t.id === `g:${selectedGroup.id}`);
       if (idx >= 0) {
@@ -1104,11 +1115,6 @@ export default function CloseReading() {
       }
     }
   };
-
-  useEffect(() => {
-    // 選択変化で自動ジャンプは「やりすぎ」になりがちなので、ここではしない。
-    // 必要ならボタンでジャンプ。
-  }, [selectedIds.join(","), selectedGroup?.id]);
 
   return (
     <div className="mx-auto max-w-5xl p-4 space-y-4">
@@ -1211,10 +1217,21 @@ export default function CloseReading() {
                   ? (u.tokenJa ?? "").trim()
                   : "";
 
+              // ★「下線復活」：このユニット内に下線対象が1つでもある場合だけ、ユニット全体に下線を引く
+              const unitHasUnderline = u.tokenIds.some((tid) => {
+                const tok = store.tokens[idToIndex.get(tid) ?? -1];
+                return tok ? shouldUnderlineToken(tok.text) : false;
+              });
+
               return (
                 <div key={`${ui}-${u.tokenIds.join(",")}`} className="flex flex-col items-center">
-                  {/* ★下線は「トークン単位」で引く（, . は引かない） */}
-                  <div className="inline-flex items-end pb-1">
+                  {/* ★まとまり下線（句読点ユニットには出ない） */}
+                  <div
+                    className={[
+                      "inline-flex items-end pb-1",
+                      unitHasUnderline ? "border-b border-gray-700" : "",
+                    ].join(" ")}
+                  >
                     {u.tokenIds.map((tid) => {
                       const idx = idToIndex.get(tid);
                       const token = idx !== undefined ? store.tokens[idx] : null;
@@ -1225,8 +1242,6 @@ export default function CloseReading() {
 
                       const opens = spanMarksByTokenId.starts.get(tid) ?? [];
                       const closes = spanMarksByTokenId.ends.get(tid) ?? [];
-
-                      const underline = shouldUnderlineToken(token.text);
 
                       return (
                         <div key={tid} className="flex flex-col items-center mx-[2px]">
@@ -1241,25 +1256,18 @@ export default function CloseReading() {
                               </div>
                             ))}
 
-                            <div
+                            <button
+                              onClick={(ev) => onTokenClick(idx, tid, ev)}
                               className={[
-                                "rounded-xl",
-                                underline ? "border-b border-gray-700 pb-[2px]" : "",
+                                "rounded-xl border px-2 py-1 transition",
+                                roleClass,
+                                selected ? "ring-2 ring-black/15" : "hover:bg-gray-50",
+                                !isWordToken(token.text) ? "opacity-80" : "",
                               ].join(" ")}
+                              title="クリックで選択（Shiftで範囲）"
                             >
-                              <button
-                                onClick={(ev) => onTokenClick(idx, tid, ev)}
-                                className={[
-                                  "rounded-xl border px-2 py-1 transition",
-                                  roleClass,
-                                  selected ? "ring-2 ring-black/15" : "hover:bg-gray-50",
-                                  !isWordToken(token.text) ? "opacity-80" : "",
-                                ].join(" ")}
-                                title="クリックで選択（Shiftで範囲）"
-                              >
-                                <div className="text-sm leading-none">{token.text}</div>
-                              </button>
-                            </div>
+                              <div className="text-sm leading-none">{token.text}</div>
+                            </button>
 
                             {closes.map((m, i) => (
                               <div key={`c-${tid}-${i}`} className="text-xs text-gray-700 select-none">
