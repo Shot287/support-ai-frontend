@@ -9,27 +9,27 @@ import { loadUserDoc, saveUserDoc } from "@/lib/userDocStore";
 
 // 手動同期の対象ドキュメント一覧（必要に応じて追加）
 const DOCS = [
-  { docKey: "study_dictionary_v1", localKey: "dictionary_v2" },
-  { docKey: "study_python_dictionary_v1", localKey: "python_dictionary_v2" },
+  //{ docKey: "study_dictionary_v1", localKey: "dictionary_v2" },
+  //{ docKey: "study_python_dictionary_v1", localKey: "python_dictionary_v2" },
   { docKey: "devplan_v1",          localKey: "devplan_v1" }, // ← 追加！
   { docKey: "output_productivity_v1", localKey: "output_productivity_v1" },
-  { docKey: "code_reading_v1",        localKey: "code_reading_v1" },
+  //{ docKey: "code_reading_v1",        localKey: "code_reading_v1" },
   { docKey: "mental_expressive_writing_v1", localKey: "expressive_writing_v1" },
   { docKey: "mental_vas_v1", localKey: "mental_vas_v1" },
   { docKey: "mental_defusion_v1", localKey: "mental_defusion_v1" },
   { docKey: "mental_loving_kindness_v1",  localKey: "loving_kindness_v1" },
-  { docKey: "math_logic_expansion_v1", localKey: "math_logic_expansion_v1" },
-  { docKey: "study_sapuri_words_v1", localKey: "study_sapuri_words_v1" },
+  //{ docKey: "math_logic_expansion_v1", localKey: "math_logic_expansion_v1" },
+  //{ docKey: "study_sapuri_words_v1", localKey: "study_sapuri_words_v1" },
   { docKey: "process_goals_v1", localKey: "process_goals_v1" },
   { docKey: "reflection_note_v1", localKey: "reflection_note_v1" },
-  { docKey: "math_formulas_v1", localKey: "math_formulas_v1" },
+  //{ docKey: "math_formulas_v1", localKey: "math_formulas_v1" },
   { docKey: "checklist_v1", localKey: "checklist_v1" },
   { docKey: "mental_emotion_labeling_v1", localKey: "emotion_labeling_v1" },
-  { docKey: "math_dictionary_v1", localKey: "math_dictionary_v1" },
-  { docKey: "study_lisp_dictionary_v1", localKey: "lisp_dictionary_v1" },
-  { docKey: "study_sapuri_part2_v1", localKey: "study_sapuri_part2_v1" },
-  { docKey: "study_if_then_rules_v1", localKey: "study_if_then_rules_v1" },
-  { docKey: "study_close_reading_v1", localKey: "study_close_reading_v1" },
+  //{ docKey: "math_dictionary_v1", localKey: "math_dictionary_v1" },
+  //{ docKey: "study_lisp_dictionary_v1", localKey: "lisp_dictionary_v1" },
+  //{ docKey: "study_sapuri_part2_v1", localKey: "study_sapuri_part2_v1" },
+  //{ docKey: "study_if_then_rules_v1", localKey: "study_if_then_rules_v1" },
+  //{ docKey: "study_close_reading_v1", localKey: "study_close_reading_v1" },
 ] as const;
 
 // エラー表示用：できるだけ詳細に
