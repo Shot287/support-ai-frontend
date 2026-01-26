@@ -1,5 +1,6 @@
 // src/features/nudge/registry.ts
 import type { Technique } from "./types";
+import { fiveMinutePing } from "./techniques/fiveMinutePing"; // ← 追加
 
 export const techniques: Technique[] = [
   {
@@ -74,4 +75,7 @@ export const techniques: Technique[] = [
     description: "カレンダーで日付を選んで、その日の反省を1枚のノートに書き出す",
     href: "/nudge/reflection-note",
   },
+
+  // ⭐ ここに追加
+  fiveMinutePing,
 ];
