@@ -29,6 +29,7 @@ type Role =
   | "NONE";
 
 // 単語の上に出す「詳細タグ（品詞など）」
+// ★追加：自（自動詞）, 他（他動詞）
 type Detail =
   | "名"
   | "動"
@@ -40,6 +41,7 @@ type Detail =
   | "助"
   | "接"
   | "等"
+  | "自"
   | "他"
   | "NONE";
 
@@ -155,12 +157,13 @@ const DETAIL_LABELS: { detail: Detail; label: string }[] = [
   { detail: "名", label: "名（名詞）" },
   { detail: "代", label: "代（代名詞）" },
   { detail: "動", label: "動（動詞）" },
+  { detail: "自", label: "自（自動詞）" }, // ★追加
+  { detail: "他", label: "他（他動詞）" }, // ★追加（既存の「他」は他動詞として扱う）
   { detail: "前", label: "前（前置詞）" },
   { detail: "冠", label: "冠（冠詞）" },
   { detail: "助", label: "助（助動詞）" },
   { detail: "接", label: "接（接続詞）" },
   { detail: "等", label: "等（等位・並列）" },
-  { detail: "他", label: "他（その他）" },
   { detail: "NONE", label: "未設定" },
 ];
 
