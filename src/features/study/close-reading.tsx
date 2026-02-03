@@ -498,12 +498,16 @@ function normalizeStore(raw: any): Store {
     }
 
     const currentFolderId =
-      raw.currentFolderId === null || typeof raw.currentFolderId === "string" ? raw.currentFolderId : def.currentFolderId;
+      raw.currentFolderId === null || typeof raw.currentFolderId === "string"
+        ? raw.currentFolderId
+        : def.currentFolderId;
     const currentFileId = raw.currentFileId === null || typeof raw.currentFileId === "string" ? raw.currentFileId : null;
 
     // current が壊れてたら補正
-    const safeFolderId = currentFolderId && nodes2[currentFolderId]?.kind === "folder" ? currentFolderId : def.currentFolderId;
-    const safeFileId = currentFileId && nodes2[currentFileId]?.kind === "file" && files[currentFileId] ? currentFileId : null;
+    const safeFolderId =
+      currentFolderId && nodes2[currentFolderId]?.kind === "folder" ? currentFolderId : def.currentFolderId;
+    const safeFileId =
+      currentFileId && nodes2[currentFileId]?.kind === "file" && files[currentFileId] ? currentFileId : null;
 
     return {
       version: 1,
@@ -820,7 +824,10 @@ export default function CloseReading() {
   };
 
   // tokens順の index map（順番固定の要）
-  const idToIndex = useMemo(() => new Map((currentDoc?.tokens ?? []).map((t, i) => [t.id, i])), [currentDoc?.tokens]);
+  const idToIndex = useMemo(
+    () => new Map((currentDoc?.tokens ?? []).map((t, i) => [t.id, i])),
+    [currentDoc?.tokens]
+  );
 
   // tokenId -> group
   const groupByTokenId = useMemo(() => {
@@ -1532,9 +1539,7 @@ export default function CloseReading() {
           <div className="mx-auto max-w-5xl space-y-4">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <h1 className="text-xl font-semibold">
-                  精読（上：詳細 / 下：SVOCM / 括弧：[ ] ( ) / まとまり訳）
-                </h1>
+                <h1 className="text-xl font-semibold">精読（上：詳細 / 下：SVOCM / 括弧：[ ] ( ) / まとまり訳）</h1>
                 <div className="text-xs text-gray-500 mt-1">ノート：{currentFileName || "（名称未設定）"}</div>
               </div>
               <div className="text-xs text-gray-500">更新: {new Date(currentDoc.updatedAt).toLocaleString()}</div>
@@ -1598,9 +1603,7 @@ export default function CloseReading() {
             {/* 表示 */}
             <div className="rounded-2xl border bg-white p-4 shadow-sm space-y-3">
               <div className="flex items-center justify-between gap-3">
-                <div className="text-sm font-medium">
-                  上：詳細 / 中：単語（下線） / 下：SVOCM（グループ）/ さらに下：訳
-                </div>
+                <div className="text-sm font-medium">上：詳細 / 中：単語（下線） / 下：SVOCM（グループ）/ さらに下：訳</div>
                 <div className="flex items-center gap-2">
                   <button
                     className="text-xs rounded-lg border px-2 py-1 hover:bg-gray-50"
@@ -1622,9 +1625,7 @@ export default function CloseReading() {
               </div>
 
               {currentDoc.tokens.length === 0 ? (
-                <div className="text-sm text-gray-500">
-                  まだ分解されていません。「単語に分解（タグ付け開始）」を押してください。
-                </div>
+                <div className="text-sm text-gray-500">まだ分解されていません。「単語に分解（タグ付け開始）」を押してください。</div>
               ) : (
                 <div className="flex flex-wrap gap-3 items-end">
                   {displayUnits.map((u, ui) => {
@@ -1715,7 +1716,150 @@ export default function CloseReading() {
               )}
             </div>
 
-            {/* ★訳入力（矢印で切り替え：1つだけ表示） */}
+            {/* ============================
+               ここから：依頼どおりの順番に並び替え
+               1) 上の詳細タグ
+               2) 下線の下（SVOCM）
+               3) 括弧
+               4) 日本語訳
+               ============================ */}
+
+            {/* 1) 上の詳細タグ パネル */}
+            <div className="rounded-2xl border bg-white p-4 shadow-sm space-y-3">
+              <div className="text-sm font-medium">上の詳細タグ（品詞など）を設定 {roleHintText}</div>
+
+              {selectedTokens.length === 0 ? (
+                <div className="text-sm text-gray-500">上の単語をクリックして選択してください。</div>
+              ) : (
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="text-sm">
+                      選択: <span className="font-semibold">{selectedText}</span>
+                    </div>
+                    <div className="text-xs text-gray-500">
+                      {selectedDetailState === "MIXED"
+                        ? "現在（詳細タグ）: 混在"
+                        : selectedDetailState === "NONE"
+                        ? "現在（詳細タグ）: 未設定"
+                        : `現在（詳細タグ）: ${selectedDetailState}`}
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    {DETAIL_LABELS.map(({ detail, label }) => (
+                      <button
+                        key={detail}
+                        onClick={() => setDetailToSelected(detail)}
+                        className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="text-xs text-gray-500">
+                    ※複数選択中なら、選択範囲の単語すべてに同じ詳細タグを付けます（飛び飛び選択は連続範囲に補正）。
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* 2) 下（SVOCM）パネル */}
+            <div className="rounded-2xl border bg-white p-4 shadow-sm space-y-3">
+              <div className="text-sm font-medium">下線の下（SVOCMなど）を設定 {roleHintText}</div>
+
+              {selectedTokens.length === 0 ? (
+                <div className="text-sm text-gray-500">上の単語をクリックしてください（2語なら Shift+クリック）。</div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="text-sm">
+                      選択: <span className="font-semibold">{selectedText}</span>
+                    </div>
+                    <div className="text-xs text-gray-500">
+                      {selectedGroup
+                        ? `現在（同一まとまり）: ${selectedGroup.role}`
+                        : "現在:（複数まとまり/未まとまり混在。役割を押すと選択範囲で新しいまとまりを作成）"}
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    {ROLE_LABELS.map(({ role, label }) => (
+                      <button
+                        key={role}
+                        onClick={() => setRoleToSelected(role)}
+                        className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="text-xs text-gray-500">
+                    ※グループ化するとき、句読点（, . など）は自動で除外されます（下線も引きません）。
+                  </div>
+                </div>
+              )}
+
+              <div className="pt-2 border-t text-xs text-gray-600 space-y-1">
+                <div>コツ：</div>
+                <ul className="list-disc pl-5 space-y-1">
+                  <li>まず動詞（V）を見つける → その前の名詞（代名詞）が主語（S）になりやすい</li>
+                  <li>他動詞なら O（目的語）が来ることが多い / 自動詞なら M（修飾）で終わりやすい</li>
+                  <li>and / but で並ぶときは、後半も同じ構造が繰り返されることが多い</li>
+                </ul>
+              </div>
+            </div>
+
+            {/* 3) 括弧パネル */}
+            <div className="rounded-2xl border bg-white p-4 shadow-sm space-y-3">
+              <div className="text-sm font-medium">括弧を付ける（従属節は[ ]、句は( )） {roleHintText}</div>
+
+              {selectedTokens.length === 0 ? (
+                <div className="text-sm text-gray-500">上の単語をクリックして範囲選択してください。</div>
+              ) : (
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="text-sm">
+                      選択: <span className="font-semibold">{selectedText}</span>
+                    </div>
+                    <div className="text-xs text-gray-500">
+                      ※括弧は「交差（クロス）」する形だけ自動で解消します（ネストはOK）。
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      onClick={() => setSpanToSelected("CLAUSE")}
+                      className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
+                      title="従属節：[ ]"
+                    >
+                      従属節を [ ] で囲む
+                    </button>
+                    <button
+                      onClick={() => setSpanToSelected("PHRASE")}
+                      className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
+                      title="句：( )"
+                    >
+                      句を ( ) で囲む
+                    </button>
+                    <button
+                      onClick={removeSpansOverlappingSelection}
+                      className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
+                      title="選択範囲に被る括弧を外す"
+                    >
+                      選択範囲の括弧を外す
+                    </button>
+                  </div>
+
+                  <div className="text-xs text-gray-500">
+                    ※飛び飛び選択は、最小〜最大の連続範囲に自動補正して括弧を付けます。
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* 4) 日本語訳（矢印で切り替え：1つだけ表示） */}
             <div className="rounded-2xl border bg-white p-4 shadow-sm space-y-3">
               <div className="flex items-center justify-between gap-3">
                 <div className="text-sm font-medium">日本語訳（矢印キーで次/前へ）</div>
@@ -1775,141 +1919,6 @@ export default function CloseReading() {
                   />
                 </div>
               )}
-            </div>
-
-            {/* 括弧パネル */}
-            <div className="rounded-2xl border bg-white p-4 shadow-sm space-y-3">
-              <div className="text-sm font-medium">括弧を付ける（従属節は[ ]、句は( )） {roleHintText}</div>
-
-              {selectedTokens.length === 0 ? (
-                <div className="text-sm text-gray-500">上の単語をクリックして範囲選択してください。</div>
-              ) : (
-                <div className="space-y-2">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <div className="text-sm">
-                      選択: <span className="font-semibold">{selectedText}</span>
-                    </div>
-                    <div className="text-xs text-gray-500">
-                      ※括弧は「交差（クロス）」する形だけ自動で解消します（ネストはOK）。
-                    </div>
-                  </div>
-
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      onClick={() => setSpanToSelected("CLAUSE")}
-                      className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
-                      title="従属節：[ ]"
-                    >
-                      従属節を [ ] で囲む
-                    </button>
-                    <button
-                      onClick={() => setSpanToSelected("PHRASE")}
-                      className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
-                      title="句：( )"
-                    >
-                      句を ( ) で囲む
-                    </button>
-                    <button
-                      onClick={removeSpansOverlappingSelection}
-                      className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
-                      title="選択範囲に被る括弧を外す"
-                    >
-                      選択範囲の括弧を外す
-                    </button>
-                  </div>
-
-                  <div className="text-xs text-gray-500">
-                    ※飛び飛び選択は、最小〜最大の連続範囲に自動補正して括弧を付けます。
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* 上の詳細タグ パネル */}
-            <div className="rounded-2xl border bg-white p-4 shadow-sm space-y-3">
-              <div className="text-sm font-medium">上の詳細タグ（品詞など）を設定 {roleHintText}</div>
-
-              {selectedTokens.length === 0 ? (
-                <div className="text-sm text-gray-500">上の単語をクリックして選択してください。</div>
-              ) : (
-                <div className="space-y-2">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <div className="text-sm">
-                      選択: <span className="font-semibold">{selectedText}</span>
-                    </div>
-                    <div className="text-xs text-gray-500">
-                      {selectedDetailState === "MIXED"
-                        ? "現在（詳細タグ）: 混在"
-                        : selectedDetailState === "NONE"
-                        ? "現在（詳細タグ）: 未設定"
-                        : `現在（詳細タグ）: ${selectedDetailState}`}
-                    </div>
-                  </div>
-
-                  <div className="flex flex-wrap gap-2">
-                    {DETAIL_LABELS.map(({ detail, label }) => (
-                      <button
-                        key={detail}
-                        onClick={() => setDetailToSelected(detail)}
-                        className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-
-                  <div className="text-xs text-gray-500">
-                    ※複数選択中なら、選択範囲の単語すべてに同じ詳細タグを付けます（飛び飛び選択は連続範囲に補正）。
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* 下（SVOCM）パネル */}
-            <div className="rounded-2xl border bg-white p-4 shadow-sm space-y-3">
-              <div className="text-sm font-medium">下線の下（SVOCMなど）を設定 {roleHintText}</div>
-
-              {selectedTokens.length === 0 ? (
-                <div className="text-sm text-gray-500">上の単語をクリックしてください（2語なら Shift+クリック）。</div>
-              ) : (
-                <div className="space-y-3">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <div className="text-sm">
-                      選択: <span className="font-semibold">{selectedText}</span>
-                    </div>
-                    <div className="text-xs text-gray-500">
-                      {selectedGroup
-                        ? `現在（同一まとまり）: ${selectedGroup.role}`
-                        : "現在:（複数まとまり/未まとまり混在。役割を押すと選択範囲で新しいまとまりを作成）"}
-                    </div>
-                  </div>
-
-                  <div className="flex flex-wrap gap-2">
-                    {ROLE_LABELS.map(({ role, label }) => (
-                      <button
-                        key={role}
-                        onClick={() => setRoleToSelected(role)}
-                        className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-
-                  <div className="text-xs text-gray-500">
-                    ※グループ化するとき、句読点（, . など）は自動で除外されます（下線も引きません）。
-                  </div>
-                </div>
-              )}
-
-              <div className="pt-2 border-t text-xs text-gray-600 space-y-1">
-                <div>コツ：</div>
-                <ul className="list-disc pl-5 space-y-1">
-                  <li>まず動詞（V）を見つける → その前の名詞（代名詞）が主語（S）になりやすい</li>
-                  <li>他動詞なら O（目的語）が来ることが多い / 自動詞なら M（修飾）で終わりやすい</li>
-                  <li>and / but で並ぶときは、後半も同じ構造が繰り返されることが多い</li>
-                </ul>
-              </div>
             </div>
           </div>
         )}
