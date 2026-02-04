@@ -30,6 +30,7 @@ type Role =
 
 // 単語の上に出す「詳細タグ（品詞など）」
 // ★追加：自（自動詞）, 他（他動詞）
+// ★追加：数（数詞）
 type Detail =
   | "名"
   | "動"
@@ -43,6 +44,7 @@ type Detail =
   | "等"
   | "自"
   | "他"
+  | "数"
   | "NONE";
 
 // 句/従属節の括弧（表示だけで、tokens順は絶対に動かさない）
@@ -159,6 +161,7 @@ const DETAIL_LABELS: { detail: Detail; label: string }[] = [
   { detail: "動", label: "動（動詞）" },
   { detail: "自", label: "自（自動詞）" }, // ★追加
   { detail: "他", label: "他（他動詞）" }, // ★追加（既存の「他」は他動詞として扱う）
+  { detail: "数", label: "数（数詞）" }, // ★追加
   { detail: "前", label: "前（前置詞）" },
   { detail: "冠", label: "冠（冠詞）" },
   { detail: "助", label: "助（助動詞）" },
@@ -1526,18 +1529,14 @@ export default function CloseReading() {
             </div>
           </div>
 
-          <div className="text-[11px] text-gray-500 leading-relaxed">
-            localStorage即時保存 / サーバ同期はホームの📥/☁のみ
-          </div>
+          <div className="text-[11px] text-gray-500 leading-relaxed">localStorage即時保存 / サーバ同期はホームの📥/☁のみ</div>
         </div>
       </section>
 
       {/* Right */}
       <section className="rounded-2xl border p-4 shadow-sm min-h-[200px]">
         {!currentDoc ? (
-          <p className="text-sm text-gray-500">
-            左のフォルダからノート（ファイル）を選択するか、新しいノートを作成してください。
-          </p>
+          <p className="text-sm text-gray-500">左のフォルダからノート（ファイル）を選択するか、新しいノートを作成してください。</p>
         ) : (
           <div className="mx-auto max-w-5xl space-y-4">
             <div className="flex items-center justify-between gap-3">
@@ -1598,9 +1597,7 @@ export default function CloseReading() {
               <div className="text-xs text-gray-500">
                 選択：クリック=1語 / Shift+クリック=範囲（置き換えで安定） / Ctrl(or Cmd)+クリック=追加/解除
               </div>
-              <div className="text-xs text-gray-500">
-                ※ , や . などの句読点には「下線」を引きません（グループ化もされません）。
-              </div>
+              <div className="text-xs text-gray-500">※ , や . などの句読点には「下線」を引きません（グループ化もされません）。</div>
             </div>
 
             {/* 表示 */}
@@ -1826,9 +1823,7 @@ export default function CloseReading() {
                     <div className="text-sm">
                       選択: <span className="font-semibold">{selectedText}</span>
                     </div>
-                    <div className="text-xs text-gray-500">
-                      ※括弧は「交差（クロス）」する形だけ自動で解消します（ネストはOK）。
-                    </div>
+                    <div className="text-xs text-gray-500">※括弧は「交差（クロス）」する形だけ自動で解消します（ネストはOK）。</div>
                   </div>
 
                   <div className="flex flex-wrap gap-2">
@@ -1855,9 +1850,7 @@ export default function CloseReading() {
                     </button>
                   </div>
 
-                  <div className="text-xs text-gray-500">
-                    ※飛び飛び選択は、最小〜最大の連続範囲に自動補正して括弧を付けます。
-                  </div>
+                  <div className="text-xs text-gray-500">※飛び飛び選択は、最小〜最大の連続範囲に自動補正して括弧を付けます。</div>
                 </div>
               )}
             </div>
