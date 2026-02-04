@@ -31,6 +31,7 @@ type Role =
 // 単語の上に出す「詳細タグ（品詞など）」
 // ★追加：自（自動詞）, 他（他動詞）
 // ★追加：数（数詞）
+// ★追加：従（従属接続詞）
 type Detail =
   | "名"
   | "動"
@@ -41,6 +42,7 @@ type Detail =
   | "代"
   | "助"
   | "接"
+  | "従"
   | "等"
   | "自"
   | "他"
@@ -166,6 +168,7 @@ const DETAIL_LABELS: { detail: Detail; label: string }[] = [
   { detail: "冠", label: "冠（冠詞）" },
   { detail: "助", label: "助（助動詞）" },
   { detail: "接", label: "接（接続詞）" },
+  { detail: "従", label: "従（従属接続詞）" }, // ★追加
   { detail: "等", label: "等（等位・並列）" },
   { detail: "NONE", label: "未設定" },
 ];
@@ -275,11 +278,7 @@ function normalizeTokenIds(tokenIds: string[], idToIndex: Map<string, number>) {
 }
 
 /** 選択が飛び飛びなら、最小～最大の“連続範囲”に寄せる */
-function coerceToContiguousSelection(
-  selectedIds: string[],
-  idToIndex: Map<string, number>,
-  tokens: Token[]
-) {
+function coerceToContiguousSelection(selectedIds: string[], idToIndex: Map<string, number>, tokens: Token[]) {
   if (selectedIds.length <= 1) return selectedIds;
 
   const idxs = selectedIds
@@ -360,9 +359,7 @@ function migrateDoc(raw: any): StoreV6 {
 
         // ★ここで必ず string[] にする（unknown[] にならない）
         const tokenIdsRaw: string[] = Array.isArray(g.tokenIds)
-          ? (g.tokenIds as unknown[])
-              .filter(isString)
-              .filter((id) => tokenSet.has(id))
+          ? (g.tokenIds as unknown[]).filter(isString).filter((id) => tokenSet.has(id))
           : [];
 
         if (tokenIdsRaw.length === 0) return null;
@@ -512,8 +509,7 @@ function normalizeStore(raw: any): Store {
     // current が壊れてたら補正
     const safeFolderId =
       currentFolderId && nodes2[currentFolderId]?.kind === "folder" ? currentFolderId : def.currentFolderId;
-    const safeFileId =
-      currentFileId && nodes2[currentFileId]?.kind === "file" && files[currentFileId] ? currentFileId : null;
+    const safeFileId = currentFileId && nodes2[currentFileId]?.kind === "file" && files[currentFileId] ? currentFileId : null;
 
     return {
       version: 1,
@@ -830,10 +826,7 @@ export default function CloseReading() {
   };
 
   // tokens順の index map（順番固定の要）
-  const idToIndex = useMemo(
-    () => new Map((currentDoc?.tokens ?? []).map((t, i) => [t.id, i])),
-    [currentDoc?.tokens]
-  );
+  const idToIndex = useMemo(() => new Map((currentDoc?.tokens ?? []).map((t, i) => [t.id, i])), [currentDoc?.tokens]);
 
   // tokenId -> group
   const groupByTokenId = useMemo(() => {
@@ -1048,7 +1041,9 @@ export default function CloseReading() {
           id: typeof s.id === "string" ? s.id : newId(),
           kind: s.kind === "CLAUSE" || s.kind === "PHRASE" ? s.kind : "PHRASE",
           tokenIds: normalizeTokenIds(
-            (Array.isArray(s.tokenIds) ? (s.tokenIds as unknown[]).filter(isString) : []).filter((id) => tokenSet.has(id)),
+            (Array.isArray(s.tokenIds) ? (s.tokenIds as unknown[]).filter(isString) : []).filter((id) =>
+              tokenSet.has(id)
+            ),
             idToIndex2
           ),
         };
@@ -1649,10 +1644,9 @@ export default function CloseReading() {
                       <div key={`${ui}-${u.tokenIds.join(",")}`} className="flex flex-col items-center">
                         {/* ★まとまり下線（句読点ユニットには出ない） */}
                         <div
-                          className={[
-                            "inline-flex items-end pb-1",
-                            unitHasUnderline ? "border-b border-gray-700" : "",
-                          ].join(" ")}
+                          className={["inline-flex items-end pb-1", unitHasUnderline ? "border-b border-gray-700" : ""].join(
+                            " "
+                          )}
                         >
                           {u.tokenIds.map((tid) => {
                             const idx = idToIndex.get(tid);
@@ -1777,9 +1771,7 @@ export default function CloseReading() {
                       選択: <span className="font-semibold">{selectedText}</span>
                     </div>
                     <div className="text-xs text-gray-500">
-                      {selectedGroup
-                        ? `現在（同一まとまり）: ${selectedGroup.role}`
-                        : "現在:（複数まとまり/未まとまり混在。役割を押すと選択範囲で新しいまとまりを作成）"}
+                      {selectedGroup ? `現在（同一まとまり）: ${selectedGroup.role}` : "現在:（複数まとまり/未まとまり混在。役割を押すと選択範囲で新しいまとまりを作成）"}
                     </div>
                   </div>
 
@@ -1795,9 +1787,7 @@ export default function CloseReading() {
                     ))}
                   </div>
 
-                  <div className="text-xs text-gray-500">
-                    ※グループ化するとき、句読点（, . など）は自動で除外されます（下線も引きません）。
-                  </div>
+                  <div className="text-xs text-gray-500">※グループ化するとき、句読点（, . など）は自動で除外されます（下線も引きません）。</div>
                 </div>
               )}
 
