@@ -17,11 +17,21 @@ type StoreV1 = {
   version: 1;
 };
 
-type Store = {
+type StoreV2 = {
   // key: "YYYY-MM-DD" -> itemId -> text
   notes: Record<string, Record<ID, string>>;
   items: Item[];
   version: 2;
+};
+
+type Store = {
+  // key: "YYYY-MM-DD" -> itemId -> text
+  notes: Record<string, Record<ID, string>>;
+  // その日に「書く（表示する）」項目（複数選択）
+  // ※未選択でも notes に内容が残ることはある（＝過去のメモを残しておける）
+  dayItems: Record<string, ID[]>;
+  items: Item[];
+  version: 3;
 };
 
 const LOCAL_KEY = "reflection_note_v1";
@@ -52,7 +62,6 @@ function fromKey(dateStr: string): Date | null {
   const [y, m, d] = dateStr.split("-").map((x) => Number(x));
   if (!y || !m || !d) return null;
   const dt = new Date(y, m - 1, d);
-  // JS の Date は溢れを許すのでガード
   if (dt.getFullYear() !== y || dt.getMonth() !== m - 1 || dt.getDate() !== d)
     return null;
   return dt;
@@ -89,9 +98,37 @@ function daysInMonth(year: number, monthIndex0: number) {
   return new Date(year, monthIndex0 + 1, 0).getDate();
 }
 
+function uniqKeepOrder(arr: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const x of arr) {
+    if (!x) continue;
+    if (seen.has(x)) continue;
+    seen.add(x);
+    out.push(x);
+  }
+  return out;
+}
+
+function normalizeDayItems(store: Pick<Store, "dayItems" | "notes">, dateKey: string): ID[] {
+  const fromStore = store.dayItems?.[dateKey];
+  if (Array.isArray(fromStore) && fromStore.length > 0) return uniqKeepOrder(fromStore);
+
+  // dayItems が無い場合：その日の notes に存在する itemId を採用
+  const byItem = store.notes?.[dateKey] ?? {};
+  const keys = Object.keys(byItem).filter((k) => (byItem[k] ?? "").trim().length > 0);
+  if (keys.length > 0) return uniqKeepOrder(keys);
+
+  // それも無ければ「全体」
+  return ["overall"];
+}
+
 function createDefaultStore(): Store {
+  // 例：よく使う「ルーティン」「睡眠」も最初から入れる（ユーザーが追加しなくて済む）
   const defaultItems: Item[] = [
     { id: "overall", name: "全体" },
+    { id: "routine", name: "ルーティン" },
+    { id: "sleep", name: "睡眠" },
     { id: "plan", name: "計画" },
     { id: "execution", name: "実行" },
     { id: "environment", name: "環境" },
@@ -99,19 +136,53 @@ function createDefaultStore(): Store {
   ];
   return {
     notes: {},
+    dayItems: {},
     items: defaultItems,
-    version: 2,
+    version: 3,
   };
 }
 
-function migrateToV2(v1: StoreV1): Store {
-  const s = createDefaultStore();
-  const nextNotes: Store["notes"] = {};
+function migrateToV2(v1: StoreV1): StoreV2 {
+  // v1 の 1テキスト/日 を overall に入れる
+  const items: Item[] = [
+    { id: "overall", name: "全体" },
+    { id: "routine", name: "ルーティン" },
+    { id: "sleep", name: "睡眠" },
+    { id: "plan", name: "計画" },
+    { id: "execution", name: "実行" },
+    { id: "environment", name: "環境" },
+    { id: "mindset", name: "メンタル" },
+  ];
+  const nextNotes: StoreV2["notes"] = {};
   for (const [dateKey, text] of Object.entries(v1.notes ?? {})) {
     if (!text) continue;
     nextNotes[dateKey] = { overall: text };
   }
-  return { ...s, notes: nextNotes, version: 2 };
+  return { notes: nextNotes, items, version: 2 };
+}
+
+function migrateToV3(from: StoreV1 | StoreV2): Store {
+  const base = createDefaultStore();
+
+  // v1 -> v2 -> v3
+  if ((from as any).version === 1) {
+    const v2 = migrateToV2(from as StoreV1);
+    const dayItems: Record<string, ID[]> = {};
+    for (const [dateKey, byItem] of Object.entries(v2.notes ?? {})) {
+      const ids = Object.keys(byItem ?? {});
+      dayItems[dateKey] = ids.length > 0 ? uniqKeepOrder(ids) : ["overall"];
+    }
+    return { ...base, notes: v2.notes ?? {}, items: v2.items ?? base.items, dayItems, version: 3 };
+  }
+
+  // v2 -> v3
+  const v2 = from as StoreV2;
+  const dayItems: Record<string, ID[]> = {};
+  for (const [dateKey, byItem] of Object.entries(v2.notes ?? {})) {
+    const ids = Object.keys(byItem ?? {}).filter((id) => ((byItem as any)[id] ?? "").trim().length > 0);
+    dayItems[dateKey] = ids.length > 0 ? uniqKeepOrder(ids) : ["overall"];
+  }
+  return { ...base, notes: v2.notes ?? {}, items: v2.items ?? base.items, dayItems, version: 3 };
 }
 
 function loadLocal(): Store {
@@ -120,11 +191,12 @@ function loadLocal(): Store {
     const raw = localStorage.getItem(LOCAL_KEY);
     if (!raw) return createDefaultStore();
 
-    const parsed = JSON.parse(raw) as Partial<Store> | Partial<StoreV1>;
+    const parsed = JSON.parse(raw) as Partial<Store> | Partial<StoreV2> | Partial<StoreV1>;
 
-    // v2
-    if ((parsed as any)?.version === 2) {
+    // v3
+    if ((parsed as any)?.version === 3) {
       const p = parsed as Partial<Store>;
+
       const items =
         Array.isArray(p.items) && p.items.length > 0
           ? p.items
@@ -132,18 +204,32 @@ function loadLocal(): Store {
               .map((x) => ({ id: x.id, name: x.name }))
           : createDefaultStore().items;
 
-      const notes = (p.notes ?? {}) as Store["notes"];
-      return {
-        notes: notes ?? {},
-        items,
-        version: 2,
-      };
+      const notes = ((p.notes ?? {}) as Store["notes"]) ?? {};
+      const dayItems = ((p.dayItems ?? {}) as Store["dayItems"]) ?? {};
+
+      // 最低限 overall が存在するように補正
+      const hasOverall = items.some((x) => x.id === "overall");
+      const fixedItems = hasOverall ? items : [{ id: "overall", name: "全体" }, ...items];
+
+      return { notes, dayItems, items: fixedItems, version: 3 };
     }
 
-    // v1 -> v2
+    // v2 / v1 -> v3
+    if ((parsed as any)?.version === 2) {
+      return migrateToV3(parsed as StoreV2);
+    }
     if ((parsed as any)?.version === 1 || (parsed as any)?.notes) {
+      // v1 っぽい or 古い
       const v1 = parsed as StoreV1;
-      return migrateToV2(v1);
+      // v1 かもしれないが、v2 の形で入ってる可能性もあるので安全に判定
+      if (typeof (v1 as any).notes === "object" && !Array.isArray((v1 as any).items)) {
+        // v1
+        if (typeof (v1 as any).notes?.[Object.keys((v1 as any).notes ?? {})[0]] === "string") {
+          return migrateToV3(v1);
+        }
+      }
+      // それでも不明ならデフォルト
+      return createDefaultStore();
     }
 
     return createDefaultStore();
@@ -185,12 +271,21 @@ function cleanupEmptyDate(notes: Store["notes"], dateKey: string): Store["notes"
   return next;
 }
 
+function ensureSelectedIdsAreValid(selectedIds: ID[], items: Item[]): ID[] {
+  const set = new Set(items.map((x) => x.id));
+  const filtered = selectedIds.filter((id) => set.has(id));
+  if (filtered.length > 0) return uniqKeepOrder(filtered);
+  return ["overall"].filter((id) => set.has(id)) || [items[0]?.id ?? "overall"];
+}
+
 export default function ReflectionNote() {
   const [store, setStore] = useState<Store>(() => loadLocal());
   const storeRef = useRef(store);
 
   const [selectedDate, setSelectedDate] = useState<string>(() => getToday());
-  const [selectedItemId, setSelectedItemId] = useState<ID>(() => "overall");
+
+  // 複数選択（その日に書く項目）
+  const [selectedItemIds, setSelectedItemIds] = useState<ID[]>(() => ["overall"]);
 
   // カレンダー表示用（年月）
   const [calYear, setCalYear] = useState<number>(() => {
@@ -216,11 +311,17 @@ export default function ReflectionNote() {
     setCalMonth0(dt.getMonth());
   }, [selectedDate]);
 
-  // items の中に selectedItemId がなければ補正
+  // 日付が変わったら、その日の複数選択を store.dayItems から復元
   useEffect(() => {
-    if (store.items.some((x) => x.id === selectedItemId)) return;
-    setSelectedItemId(store.items[0]?.id ?? "overall");
-  }, [store.items, selectedItemId]);
+    const ids = normalizeDayItems(store, selectedDate);
+    const fixed = ensureSelectedIdsAreValid(ids, store.items);
+    setSelectedItemIds(fixed);
+  }, [selectedDate, store.items]); // store.dayItems 変更は setStore 内で更新される前提
+
+  // items が変わったら、選択中IDsを補正（消えた項目を外す）
+  useEffect(() => {
+    setSelectedItemIds((prev) => ensureSelectedIdsAreValid(prev, store.items));
+  }, [store.items]);
 
   // 手動同期の合図を購読（PULL / PUSH / LOCAL_DOC_APPLIED / storage）
   useEffect(() => {
@@ -231,16 +332,21 @@ export default function ReflectionNote() {
         const remote = await loadUserDoc<any>(DOC_KEY);
         if (!remote) return;
 
-        // v2
-        if (remote.version === 2) {
+        if (remote.version === 3) {
           setStore(remote as Store);
           saveLocal(remote as Store);
           return;
         }
 
-        // v1 -> v2
+        if (remote.version === 2) {
+          const migrated = migrateToV3(remote as StoreV2);
+          setStore(migrated);
+          saveLocal(migrated);
+          return;
+        }
+
         if (remote.version === 1) {
-          const migrated = migrateToV2(remote as StoreV1);
+          const migrated = migrateToV3(remote as StoreV1);
           setStore(migrated);
           saveLocal(migrated);
           return;
@@ -297,12 +403,8 @@ export default function ReflectionNote() {
     // 他タブ storage
     const onStorage = (ev: StorageEvent) => {
       if (!ev.key) return;
-      // ホームが localStorage(localKey) を書き換えたとき
       if (ev.key === LOCAL_KEY && ev.newValue) {
         try {
-          const parsed = JSON.parse(ev.newValue);
-          // 互換のため loadLocal で整形
-          saveLocal(loadLocal());
           setStore(loadLocal());
         } catch {
           // noop
@@ -337,30 +439,65 @@ export default function ReflectionNote() {
 
   const datesWithNotesSet = useMemo(() => new Set(datesWithNotes), [datesWithNotes]);
 
-  const currentText =
-    (store.notes[selectedDate]?.[selectedItemId] ?? "").toString();
-
   const handleChangeDate = (value: string) => {
     if (!value) return;
     setSelectedDate(value);
   };
 
-  const handleChangeNote = (value: string) => {
+  // その日で「選択された項目」を保存（表示対象の切り替え）
+  const setDayItems = (dateKey: string, ids: ID[]) => {
+    const fixed = ensureSelectedIdsAreValid(uniqKeepOrder(ids), store.items);
+    setSelectedItemIds(fixed);
+    setStore((s) => ({
+      ...s,
+      dayItems: {
+        ...s.dayItems,
+        [dateKey]: fixed,
+      },
+    }));
+  };
+
+  const toggleItemForDay = (id: ID) => {
     const dateKey = selectedDate || getToday();
-    const itemId = selectedItemId;
+    setDayItems(
+      dateKey,
+      selectedItemIds.includes(id)
+        ? selectedItemIds.filter((x) => x !== id)
+        : [...selectedItemIds, id]
+    );
+  };
+
+  const handleChangeNote = (itemId: ID, value: string) => {
+    const dateKey = selectedDate || getToday();
 
     setStore((s) => {
       const prevByItem = s.notes[dateKey] ?? {};
       const nextByItem = { ...prevByItem, [itemId]: value };
       const nextNotes = { ...s.notes, [dateKey]: nextByItem };
-      const cleaned = cleanupEmptyDate(nextNotes, dateKey);
-      return { ...s, notes: cleaned };
+      const cleanedNotes = cleanupEmptyDate(nextNotes, dateKey);
+
+      // 書いたらその項目は「その日の選択」に入れておく（自然な挙動）
+      const currentDay = s.dayItems[dateKey] ?? normalizeDayItems(s, dateKey);
+      const nextDay = uniqKeepOrder([...currentDay, itemId]);
+
+      return {
+        ...s,
+        notes: cleanedNotes,
+        dayItems: {
+          ...s.dayItems,
+          [dateKey]: nextDay,
+        },
+      };
     });
+
+    // UI側も即追従
+    if (!selectedItemIds.includes(itemId)) {
+      setSelectedItemIds((prev) => uniqKeepOrder([...prev, itemId]));
+    }
   };
 
-  const clearCurrentItemNote = () => {
+  const clearItemNote = (itemId: ID) => {
     const dateKey = selectedDate;
-    const itemId = selectedItemId;
     const existing = store.notes[dateKey]?.[itemId] ?? "";
     if (!existing) return;
     if (!confirm("この項目の反省文を空にします。よろしいですか？")) return;
@@ -374,8 +511,10 @@ export default function ReflectionNote() {
       if (Object.keys(nextByItem).length === 0) delete nextNotes[dateKey];
       else nextNotes[dateKey] = nextByItem;
 
-      const cleaned = cleanupEmptyDate(nextNotes, dateKey);
-      return { ...s, notes: cleaned };
+      const cleanedNotes = cleanupEmptyDate(nextNotes, dateKey);
+
+      // dayItems は残す（＝「今日はこの項目を見る」は維持）
+      return { ...s, notes: cleanedNotes };
     });
   };
 
@@ -392,25 +531,22 @@ export default function ReflectionNote() {
     });
   };
 
-  // 項目管理（追加/削除）
+  // 項目管理（追加/名前変更/削除）
   const addItem = () => {
-    const name = prompt("新しい項目名を入力してください");
+    const name = prompt("新しい項目名を入力してください（例：学習 / バイト / 体調 など）");
     if (!name) return;
     const trimmed = name.trim();
     if (!trimmed) return;
 
-    setStore((s) => {
-      const id = uid();
-      const nextItems = [...s.items, { id, name: trimmed }];
-      return { ...s, items: nextItems };
-    });
-    // 追加直後に選択
-    // setStore の後に state 変更しても問題ない
-    setSelectedItemId((_) => {
-      // 直後は id が必要なのでもう一度生成しない（上の uid を使ったいがため）
-      // ここは安全側：次レンダーで補正される
-      return selectedItemId;
-    });
+    const newId = uid();
+    setStore((s) => ({
+      ...s,
+      items: [...s.items, { id: newId, name: trimmed }],
+    }));
+
+    // 追加したら今日の選択に入れておく（便利）
+    const dateKey = selectedDate || getToday();
+    setDayItems(dateKey, [...selectedItemIds, newId]);
   };
 
   const renameItem = (id: ID) => {
@@ -437,13 +573,12 @@ export default function ReflectionNote() {
 
     const usedSomewhere = Object.values(store.notes).some((byItem) => byItem?.[id]);
     const msg = usedSomewhere
-      ? `「${item.name}」を削除すると、過去のこの項目の反省文も見えなくなります（データも削除）。削除しますか？`
+      ? `「${item.name}」を削除すると、過去のこの項目の反省文も削除されます。削除しますか？`
       : `「${item.name}」を削除しますか？`;
 
     if (!confirm(msg)) return;
 
     setStore((s) => {
-      // items
       const nextItems = s.items.filter((x) => x.id !== id);
 
       // notes: remove itemId across all dates
@@ -452,15 +587,22 @@ export default function ReflectionNote() {
         if (!byItem) continue;
         const nb = { ...byItem };
         delete nb[id];
-        // 空なら date ごと消す
         const hasAny = Object.values(nb).some((t) => (t ?? "").trim().length > 0);
         if (hasAny) nextNotes[dateKey] = nb;
       }
 
-      return { ...s, items: nextItems, notes: nextNotes };
+      // dayItems: remove itemId across all dates
+      const nextDayItems: Store["dayItems"] = {};
+      for (const [dateKey, ids] of Object.entries(s.dayItems ?? {})) {
+        if (!Array.isArray(ids)) continue;
+        const filtered = ids.filter((x) => x !== id);
+        if (filtered.length > 0) nextDayItems[dateKey] = filtered;
+      }
+
+      return { ...s, items: nextItems, notes: nextNotes, dayItems: nextDayItems };
     });
 
-    if (selectedItemId === id) setSelectedItemId("overall");
+    setSelectedItemIds((prev) => prev.filter((x) => x !== id));
   };
 
   // カレンダー（月表示）
@@ -469,29 +611,17 @@ export default function ReflectionNote() {
     const firstWeekday = first.getDay(); // 0=Sun
     const dim = daysInMonth(calYear, calMonth0);
 
-    // 6週×7日で固定
-    const cells: Array<{
-      dateKey: string | null;
-      day: number | null;
-    }> = [];
+    const cells: Array<{ dateKey: string | null; day: number | null }> = [];
 
-    // 先頭の空白
-    for (let i = 0; i < firstWeekday; i++) {
-      cells.push({ dateKey: null, day: null });
-    }
+    for (let i = 0; i < firstWeekday; i++) cells.push({ dateKey: null, day: null });
 
-    // 日付
     for (let d = 1; d <= dim; d++) {
       const dt = new Date(calYear, calMonth0, d);
       cells.push({ dateKey: toKey(dt), day: d });
     }
 
-    // 末尾の空白を埋めて 42 にする
-    while (cells.length < 42) {
-      cells.push({ dateKey: null, day: null });
-    }
+    while (cells.length < 42) cells.push({ dateKey: null, day: null });
 
-    // 6行に分割
     const rows: typeof cells[] = [];
     for (let i = 0; i < 42; i += 7) rows.push(cells.slice(i, i + 7));
     return rows;
@@ -516,59 +646,101 @@ export default function ReflectionNote() {
   };
 
   const jumpToday = () => setSelectedDate(getToday());
-
   const jumpPrevWeekSameDay = () => setSelectedDate((d) => addDaysKey(d, -7));
   const jumpNextWeekSameDay = () => setSelectedDate((d) => addDaysKey(d, +7));
 
+  const selectedItems = useMemo(() => {
+    const map = new Map(store.items.map((x) => [x.id, x]));
+    return selectedItemIds
+      .map((id) => map.get(id))
+      .filter(Boolean) as Item[];
+  }, [selectedItemIds, store.items]);
+
   return (
-    <div className="grid gap-6 lg:grid-cols-[320px_minmax(0,1fr)]">
-      {/* 左側：項目選択 & カレンダー & 日付一覧 */}
+    <div className="grid gap-6 lg:grid-cols-[340px_minmax(0,1fr)]">
+      {/* 左側：項目（複数選択） & カレンダー & 日付一覧 */}
       <section className="rounded-2xl border p-4 shadow-sm">
         <div className="mb-4">
-          <h2 className="font-semibold mb-2">項目を選ぶ</h2>
-
-          <div className="flex items-center gap-2">
-            <select
-              value={selectedItemId}
-              onChange={(e) => setSelectedItemId(e.target.value)}
-              className="w-full rounded-xl border px-3 py-2 text-sm"
-            >
-              {store.items.map((it) => (
-                <option key={it.id} value={it.id}>
-                  {it.name}
-                </option>
-              ))}
-            </select>
-
+          <div className="flex items-center gap-2 mb-2">
+            <h2 className="font-semibold">項目を選ぶ（複数）</h2>
             <button
               type="button"
               onClick={addItem}
-              className="shrink-0 rounded-xl border px-3 py-2 text-xs hover:bg-gray-50"
+              className="ml-auto shrink-0 rounded-xl border px-3 py-1.5 text-xs hover:bg-gray-50"
               title="項目を追加"
             >
               追加
             </button>
           </div>
 
-          <div className="mt-2 flex flex-wrap gap-2">
+          <p className="text-xs text-gray-500 mb-2">
+            例：同じ日に「ルーティン」と「睡眠」を両方チェックして反省できます（内容は日ごとに変えてOK）。
+          </p>
+
+          <div className="flex flex-wrap gap-2 mb-2">
             <button
               type="button"
-              onClick={() => renameItem(selectedItemId)}
+              onClick={() => setDayItems(selectedDate, store.items.map((x) => x.id))}
               className="rounded-xl border px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-50"
             >
-              名前変更
+              全て選択
             </button>
             <button
               type="button"
-              onClick={() => deleteItem(selectedItemId)}
+              onClick={() => setDayItems(selectedDate, ["overall"])}
               className="rounded-xl border px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-50"
             >
-              削除
+              最小（全体だけ）
             </button>
           </div>
-          <p className="text-xs text-gray-500 mt-2">
-            項目を選んで、その項目の反省文を日付ごとに保存できます。
-          </p>
+
+          <div className="max-h-56 overflow-y-auto rounded-xl border bg-white">
+            <ul className="p-2 space-y-1">
+              {store.items.map((it) => {
+                const checked = selectedItemIds.includes(it.id);
+                const hasText =
+                  (store.notes[selectedDate]?.[it.id] ?? "").trim().length > 0;
+                return (
+                  <li key={it.id} className="flex items-center gap-2 rounded-lg px-2 py-1 hover:bg-gray-50">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggleItemForDay(it.id)}
+                      className="h-4 w-4"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => toggleItemForDay(it.id)}
+                      className="text-left text-sm flex-1"
+                      title={it.name}
+                    >
+                      {it.name}
+                      {hasText && (
+                        <span className="ml-2 text-[10px] text-gray-500">(内容あり)</span>
+                      )}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => renameItem(it.id)}
+                      className="rounded-lg border px-2 py-1 text-[10px] text-gray-600 hover:bg-white"
+                      title="名前変更"
+                    >
+                      変更
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => deleteItem(it.id)}
+                      className="rounded-lg border px-2 py-1 text-[10px] text-gray-600 hover:bg-white"
+                      title="削除"
+                    >
+                      削除
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
         </div>
 
         <div className="border-t pt-4">
@@ -607,9 +779,7 @@ export default function ReflectionNote() {
             {calGrid.map((row, i) => (
               <div key={i} className="grid grid-cols-7 gap-1">
                 {row.map((cell, j) => {
-                  if (!cell.dateKey || !cell.day) {
-                    return <div key={j} className="h-9 rounded-lg" />;
-                  }
+                  if (!cell.dateKey || !cell.day) return <div key={j} className="h-9 rounded-lg" />;
 
                   const isSelected = cell.dateKey === selectedDate;
                   const isToday = cell.dateKey === getToday();
@@ -632,8 +802,6 @@ export default function ReflectionNote() {
                       <span className={isToday && !isSelected ? "font-semibold" : ""}>
                         {cell.day}
                       </span>
-
-                      {/* ノートがある日を強調（小さいドット） */}
                       {hasNote && (
                         <span
                           className={
@@ -712,27 +880,14 @@ export default function ReflectionNote() {
         </div>
       </section>
 
-      {/* 右側：反省文 */}
+      {/* 右側：反省文（選択項目ぶん複数表示） */}
       <section className="rounded-2xl border p-4 shadow-sm min-h-[240px]">
         <div className="flex flex-wrap items-baseline gap-2 mb-3">
           <h2 className="font-semibold">
-            {selectedDate
-              ? `${formatJapaneseDate(selectedDate)} / ${
-                  store.items.find((x) => x.id === selectedItemId)?.name ?? "項目"
-                } の反省`
-              : "反省ノート"}
+            {selectedDate ? `${formatJapaneseDate(selectedDate)} の反省` : "反省ノート"}
           </h2>
 
           <div className="ml-auto flex flex-wrap gap-2">
-            {currentText && (
-              <button
-                type="button"
-                onClick={clearCurrentItemNote}
-                className="rounded-xl border px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-50"
-              >
-                この項目の反省文を削除
-              </button>
-            )}
             {store.notes[selectedDate] && (
               <button
                 type="button"
@@ -745,15 +900,53 @@ export default function ReflectionNote() {
           </div>
         </div>
 
-        <textarea
-          value={currentText}
-          onChange={(e) => handleChangeNote(e.target.value)}
-          rows={12}
-          className="w-full rounded-xl border px-3 py-2 text-sm leading-relaxed"
-          placeholder="ここに反省文を書いてください（自動でローカル保存されます）"
-        />
+        {selectedItems.length === 0 ? (
+          <div className="rounded-xl border bg-gray-50 p-4">
+            <p className="text-sm text-gray-700">項目が未選択です。</p>
+            <button
+              type="button"
+              onClick={() => setDayItems(selectedDate, ["overall"])}
+              className="mt-2 rounded-xl border px-3 py-2 text-xs hover:bg-white"
+            >
+              「全体」を選択する
+            </button>
+          </div>
+        ) : (
+          <div className="grid gap-4">
+            {selectedItems.map((it) => {
+              const value = (store.notes[selectedDate]?.[it.id] ?? "").toString();
+              return (
+                <div key={it.id} className="rounded-2xl border p-3">
+                  <div className="flex items-center gap-2 mb-2">
+                    <h3 className="font-semibold text-sm">{it.name}</h3>
+                    {value.trim().length > 0 && (
+                      <span className="text-[10px] text-gray-500">保存済み</span>
+                    )}
+                    {value.trim().length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => clearItemNote(it.id)}
+                        className="ml-auto rounded-xl border px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-50"
+                      >
+                        この項目を削除
+                      </button>
+                    )}
+                  </div>
 
-        <p className="text-xs text-gray-500 mt-2">
+                  <textarea
+                    value={value}
+                    onChange={(e) => handleChangeNote(it.id, e.target.value)}
+                    rows={6}
+                    className="w-full rounded-xl border px-3 py-2 text-sm leading-relaxed"
+                    placeholder={`「${it.name}」について書く`}
+                  />
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        <p className="text-xs text-gray-500 mt-3">
           端末ローカルには即時保存、サーバ反映はホームの📥/☁（手動同期）で行われます。
         </p>
       </section>
