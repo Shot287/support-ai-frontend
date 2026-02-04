@@ -234,16 +234,18 @@ function isWordToken(t: string) {
   return /^[A-Za-z]+(?:'[A-Za-z]+)?$/.test(t) || /^\d+(?:\.\d+)?$/.test(t);
 }
 
-/** 下線を引きたいトークンか（, . などは false） */
+/** 下線を引きたいトークンか（単語と同様に扱う記号も true） */
 function shouldUnderlineToken(t: string) {
   if (isWordToken(t)) return true;
-  // よくある句読点は下線なし
-  if (/^[,\.!?;:]+$/.test(t)) return false;
-  // その他記号も基本は下線なし
+
+  // ★要望： , . " も単語と同様に下線対象にする
+  if (t === "," || t === "." || t === '"') return true;
+
+  // それ以外の記号は基本は下線なし（必要ならここに追加）
   return false;
 }
 
-/** 訳入力の対象か（, . は対象外） */
+/** 訳入力の対象か（単語と同様に扱う記号も含める） */
 function isJaTargetToken(t: string) {
   return shouldUnderlineToken(t);
 }
@@ -404,7 +406,7 @@ function migrateDoc(raw: any): StoreV6 {
         const kind = s.kind === "CLAUSE" || s.kind === "PHRASE" ? (s.kind as SpanKind) : null;
         if (!kind) return null;
 
-        // ★ここが今回の原因：Set の入力を string[] にしてから uniq
+        // ★Set の入力を string[] にしてから uniq
         const tokenIdsRaw: string[] = Array.isArray(s.tokenIds)
           ? uniqueStringsPreserveOrder((s.tokenIds as unknown[]).filter(isString)).filter((id) => tokenSet.has(id))
           : [];
@@ -952,7 +954,7 @@ export default function CloseReading() {
     anchorIndexRef.current = index;
   };
 
-  /** グループ化/下線対象から , . などを除外する */
+  /** グループ化/下線対象だけ残す（今回は , . " も対象に含める） */
   const filterUnderlineEligibleIds = (ids: string[], tokens: Token[]) => {
     const map = new Map(tokens.map((t) => [t.id, t] as const));
     return ids.filter((id) => {
@@ -967,7 +969,7 @@ export default function CloseReading() {
     if (!currentDoc) return;
     if (selectedIds.length === 0) return;
 
-    // 連続範囲へ補正 → 下線対象だけ残す（, . は消える）
+    // 連続範囲へ補正 → 下線対象だけ残す（今回は , . " も残る）
     const coerced0 = coerceToContiguousSelection(selectedIds, idToIndex, currentDoc.tokens);
     const coerced = filterUnderlineEligibleIds(coerced0, currentDoc.tokens);
     if (coerced.length === 0) return;
@@ -1243,10 +1245,10 @@ export default function CloseReading() {
     }[] = [];
 
     /**
-     * ★修正ポイント：
+     * ★修正ポイント（既存維持）：
      * グループの「最初〜最後」の範囲に挟まるトークン（, など）を表示上は同じユニットに吸収する。
-     * - データ上（group.tokenIds）は句読点を含めないまま維持
-     * - 表示上のまとまり下線（border-b）がカンマで途切れない
+     * - データ上の tokens順は絶対固定
+     * - 表示上のまとまり下線（border-b）が途中で途切れにくい
      */
     for (let i = 0; i < doc.tokens.length; i++) {
       const t = doc.tokens[i];
@@ -1263,11 +1265,7 @@ export default function CloseReading() {
         continue;
       }
 
-      if (started.has(g.id)) {
-        // すでに別の場所でこのグループのユニットを作っている場合、
-        // ここは（範囲吸収により）for が飛ばしているはずだが、保険でスキップ
-        continue;
-      }
+      if (started.has(g.id)) continue;
       started.add(g.id);
 
       const orderedCore = normalizeTokenIds(g.tokenIds, idToIndex);
@@ -1279,7 +1277,7 @@ export default function CloseReading() {
       const start = Math.min(...idxs);
       const end = Math.max(...idxs);
 
-      // ★表示用：start〜end に挟まる（, など）も含める
+      // ★表示用：start〜end に挟まるトークンも含める
       const displayTokenIds = doc.tokens.slice(start, end + 1).map((x) => x.id);
 
       units.push({
@@ -1290,7 +1288,6 @@ export default function CloseReading() {
         tokenJa: "",
       });
 
-      // ★範囲ぶん i を進める（この範囲内のトークンが単独ユニット化されるのを防ぐ）
       i = end;
     }
 
@@ -1341,7 +1338,7 @@ export default function CloseReading() {
     return { starts, ends };
   }, [currentDoc, idToIndex]);
 
-  /** 右パネルの「訳入力対象」：グループ or 単語（and等） */
+  /** 右パネルの「訳入力対象」：グループ or 単語 */
   type JaTarget =
     | { kind: "group"; id: string; role: Role; tokenIds: string[]; text: string; ja: string }
     | { kind: "token"; id: string; tokenId: string; text: string; ja: string };
@@ -1598,7 +1595,7 @@ export default function CloseReading() {
               <div className="text-sm font-medium">英文を入力</div>
               <textarea
                 className="w-full min-h-[110px] rounded-xl border p-3 text-sm outline-none focus:ring-2 focus:ring-gray-200"
-                placeholder="例: Every living thing exists (in a particular place), and that place has certain conditions."
+                placeholder='例: Every living thing exists (in a particular place), and that place has certain conditions.'
                 value={currentDoc.inputText}
                 onChange={(e) =>
                   updateCurrentDoc((prev) => ({
@@ -1644,7 +1641,7 @@ export default function CloseReading() {
                 選択：クリック=1語 / Shift+クリック=範囲（置き換えで安定） / Ctrl(or Cmd)+クリック=追加/解除
               </div>
               <div className="text-xs text-gray-500">
-                ※ , や . などの句読点には「下線」を引きません（グループ化もされません）。ただし、まとまりの途中にある句読点は表示上まとめて下線が途切れないようにします。
+                ※「,」「.」「&quot;」は単語と同様に扱います（下線対象・グループ化対象・訳入力対象）。
               </div>
             </div>
 
@@ -1687,8 +1684,7 @@ export default function CloseReading() {
                         ? (u.tokenJa ?? "").trim()
                         : "";
 
-                    // ★「下線復活」：このユニット内に下線対象が1つでもある場合だけ、ユニット全体に下線を引く
-                    // （カンマ自体は下線対象ではないが、ユニットの下線は途切れない）
+                    // ユニット内に下線対象が1つでもあるならユニット全体に下線
                     const unitHasUnderline = u.tokenIds.some((tid) => {
                       const tok = currentDoc.tokens[idToIndex.get(tid) ?? -1];
                       return tok ? shouldUnderlineToken(tok.text) : false;
@@ -1696,11 +1692,11 @@ export default function CloseReading() {
 
                     return (
                       <div key={`${ui}-${u.tokenIds.join(",")}`} className="flex flex-col items-center">
-                        {/* ★まとまり下線（句読点単体ユニットには出ない／ただしグループ範囲に挟まる句読点は同ユニットに吸収される） */}
                         <div
-                          className={["inline-flex items-end pb-1", unitHasUnderline ? "border-b border-gray-700" : ""].join(
-                            " "
-                          )}
+                          className={[
+                            "inline-flex items-end pb-1",
+                            unitHasUnderline ? "border-b border-gray-700" : "",
+                          ].join(" ")}
                         >
                           {u.tokenIds.map((tid) => {
                             const idx = idToIndex.get(tid);
@@ -1715,10 +1711,8 @@ export default function CloseReading() {
 
                             return (
                               <div key={tid} className="flex flex-col items-center mx-[2px]">
-                                {/* 上：詳細タグ */}
                                 <div className="text-[10px] text-gray-700 min-h-[12px] leading-none">{top}</div>
 
-                                {/* 中：括弧 + 単語 + 括弧 */}
                                 <div className="flex items-center gap-[2px]">
                                   {opens.map((m, i) => (
                                     <div key={`o-${tid}-${i}`} className="text-xs text-gray-700 select-none">
@@ -1732,7 +1726,8 @@ export default function CloseReading() {
                                       "rounded-xl border px-2 py-1 transition",
                                       roleClass,
                                       selected ? "ring-2 ring-black/15" : "hover:bg-gray-50",
-                                      !isWordToken(token.text) ? "opacity-80" : "",
+                                      // ★単語扱いの記号（, . "）は薄くしない
+                                      !shouldUnderlineToken(token.text) ? "opacity-80" : "",
                                     ].join(" ")}
                                     title="クリックで選択（Shiftで範囲）"
                                   >
@@ -1750,10 +1745,8 @@ export default function CloseReading() {
                           })}
                         </div>
 
-                        {/* 下：SVOCM */}
                         <div className="mt-1 text-[10px] text-gray-600 min-h-[12px]">{roleText}</div>
 
-                        {/* さらに下：訳（グループ or 単語） */}
                         <div className="mt-0.5 text-[10px] text-gray-500 min-h-[12px] max-w-[240px] text-center break-words">
                           {jaText ? jaText : ""}
                         </div>
@@ -1763,14 +1756,6 @@ export default function CloseReading() {
                 </div>
               )}
             </div>
-
-            {/* ============================
-               ここから：依頼どおりの順番に並び替え
-               1) 上の詳細タグ
-               2) 下線の下（SVOCM）
-               3) 括弧
-               4) 日本語訳
-               ============================ */}
 
             {/* 1) 上の詳細タグ パネル */}
             <div className="rounded-2xl border bg-white p-4 shadow-sm space-y-3">
@@ -1806,7 +1791,7 @@ export default function CloseReading() {
                   </div>
 
                   <div className="text-xs text-gray-500">
-                    ※複数選択中なら、選択範囲の単語すべてに同じ詳細タグを付けます（飛び飛び選択は連続範囲に補正）。
+                    ※複数選択中なら、選択範囲のトークンすべてに同じ詳細タグを付けます（飛び飛び選択は連続範囲に補正）。
                   </div>
                 </div>
               )}
@@ -1844,7 +1829,7 @@ export default function CloseReading() {
                   </div>
 
                   <div className="text-xs text-gray-500">
-                    ※グループ化するとき、句読点（, . など）は自動で除外されます（下線も引きません）。
+                    ※グループ化するとき、下線対象だけがグループに入ります（現在は「単語 + , . &quot;」が対象）。
                   </div>
                 </div>
               )}
@@ -1928,9 +1913,7 @@ export default function CloseReading() {
               </div>
 
               {jaTargets.length === 0 ? (
-                <div className="text-sm text-gray-500">
-                  訳入力の対象がありません。単語が分解されているか確認してください。（, . は対象外）
-                </div>
+                <div className="text-sm text-gray-500">訳入力の対象がありません。単語が分解されているか確認してください。</div>
               ) : (
                 <div className="space-y-2">
                   <div className="text-xs text-gray-600">
