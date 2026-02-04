@@ -30,6 +30,7 @@ const DOCS = [
   //{ docKey: "study_sapuri_part2_v1", localKey: "study_sapuri_part2_v1" },
   //{ docKey: "study_if_then_rules_v1", localKey: "study_if_then_rules_v1" },
   //{ docKey: "study_close_reading_v1", localKey: "study_close_reading_v1" },
+  { docKey: "todo_v1", localKey: "todo_v1" },
 ] as const;
 
 // エラー表示用：できるだけ詳細に

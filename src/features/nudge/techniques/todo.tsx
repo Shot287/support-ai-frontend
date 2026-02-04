@@ -2,46 +2,36 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-
-// ▼ 同期ユーティリティ（汎用 pull/push を使用）
-import { pullBatch, pushBatch } from "@/lib/sync";
-import { subscribeGlobalPush } from "@/lib/sync-bus";
-import { getDeviceId } from "@/lib/device";
+import { loadUserDoc, saveUserDoc } from "@/lib/userDocStore";
 
 /* ========= 型 ========= */
 type ID = string;
+
 type Task = {
   id: ID;
   title: string;
-  deadline: string;  // YYYY-MM-DD (JST基準)
-  createdAt: number; // ローカル専用（サーバには保存しない）
-  doneAt?: number;   // 完了時刻(ms)。未完了は undefined
+  deadline: string; // YYYY-MM-DD (JST基準)
+  createdAt: number; // ローカル専用（クラウドには載せない）
+  doneAt?: number; // 完了時刻(ms)。未完了は undefined
 };
+
 type Store = { tasks: Task[]; version: 1 };
 
+/** クラウドへ保存する最小形（createdAt は送らない） */
+type RemoteTask = Omit<Task, "createdAt">;
+type RemoteStore = { tasks: RemoteTask[]; version: 1 };
+
 /* ========= 定数 / ユーティリティ ========= */
-const KEY = "todo_v1";
+const LOCAL_KEY = "todo_v1";
+const DOC_KEY = "todo_v1";
 
-// ★ 同期関連
-const USER_ID = "demo"; // 認証導入までは固定運用
-const TABLE = "todo_items";
-const SINCE_KEY = `support-ai:sync:since:${USER_ID}:${TABLE}`;
-const STICKY_KEY = "support-ai:sync:pull:sticky";
-
-// 粘着フラグ（直近 push の印）
-const touchSticky = () => {
-  try { localStorage.setItem(STICKY_KEY, String(Date.now())); } catch {}
-};
-const getSince = () => {
-  const v = typeof window !== "undefined" ? localStorage.getItem(SINCE_KEY) : null;
-  return v ? Number(v) : 0;
-};
-const setSince = (ms: number) => {
-  if (typeof window !== "undefined") localStorage.setItem(SINCE_KEY, String(ms));
-};
+// 手動同期チャンネル（標準）
+const SYNC_CHANNEL = "support-ai-sync";
+const STORAGE_KEY_RESET_REQ = "support-ai:sync:reset:req";
+const LOCAL_APPLIED_TYPE = "LOCAL_DOC_APPLIED";
 
 const uid = () =>
-  (typeof crypto !== "undefined" && "randomUUID" in crypto)
+  typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
@@ -53,9 +43,9 @@ function todayJst(): string {
     month: "2-digit",
     day: "2-digit",
   }).formatToParts(new Date());
-  const y = p.find(x => x.type === "year")?.value ?? "1970";
-  const m = p.find(x => x.type === "month")?.value ?? "01";
-  const d = p.find(x => x.type === "day")?.value ?? "01";
+  const y = p.find((x) => x.type === "year")?.value ?? "1970";
+  const m = p.find((x) => x.type === "month")?.value ?? "01";
+  const d = p.find((x) => x.type === "day")?.value ?? "01";
   return `${y}-${m}-${d}`;
 }
 
@@ -67,20 +57,6 @@ function daysLeftJST(yyyyMmDd: string): number {
   return Math.floor(diffDays);
 }
 
-function load(): Store {
-  try {
-    const raw = typeof window !== "undefined" ? localStorage.getItem(KEY) : null;
-    if (!raw) return { tasks: [], version: 1 };
-    const parsed = JSON.parse(raw) as Store;
-    return parsed?.version ? parsed : { tasks: [], version: 1 };
-  } catch {
-    return { tasks: [], version: 1 };
-  }
-}
-function save(s: Store) {
-  if (typeof window !== "undefined") localStorage.setItem(KEY, JSON.stringify(s));
-}
-
 function badgeClass(left: number): string {
   if (left < 0) return "bg-red-600 text-white";
   if (left === 0) return "bg-orange-500 text-white";
@@ -88,12 +64,79 @@ function badgeClass(left: number): string {
   return "bg-gray-200 text-gray-900";
 }
 
+/* ========= localStorage 永続化 ========= */
+function migrateLocal(raw: any): Store {
+  const base: Store = { tasks: [], version: 1 };
+
+  if (!raw || typeof raw !== "object") return base;
+  if (raw.version !== 1) return base;
+
+  const tasksRaw = Array.isArray(raw.tasks) ? raw.tasks : [];
+  const now = Date.now();
+
+  const tasks: Task[] = tasksRaw
+    .map((t: any) => {
+      if (!t || typeof t !== "object") return null;
+
+      const id = typeof t.id === "string" ? t.id : null;
+      const title = typeof t.title === "string" ? t.title : "";
+      const deadline = typeof t.deadline === "string" ? t.deadline : todayJst();
+
+      // createdAt が欠けている（クラウドから来る / 古いデータ）場合は補完
+      const createdAt =
+        typeof t.createdAt === "number" && Number.isFinite(t.createdAt) ? t.createdAt : now;
+
+      const doneAt =
+        typeof t.doneAt === "number" && Number.isFinite(t.doneAt) ? t.doneAt : undefined;
+
+      if (!id) return null;
+
+      return { id, title, deadline, createdAt, doneAt };
+    })
+    .filter(Boolean) as Task[];
+
+  return { version: 1, tasks };
+}
+
+function loadLocal(): Store {
+  try {
+    const raw = typeof window !== "undefined" ? localStorage.getItem(LOCAL_KEY) : null;
+    if (!raw) return { tasks: [], version: 1 };
+    return migrateLocal(JSON.parse(raw));
+  } catch {
+    return { tasks: [], version: 1 };
+  }
+}
+
+function saveLocal(s: Store) {
+  try {
+    if (typeof window !== "undefined") localStorage.setItem(LOCAL_KEY, JSON.stringify(s));
+  } catch {}
+}
+
+/* ========= remote 変換 ========= */
+function toRemote(s: Store): RemoteStore {
+  return {
+    version: 1,
+    tasks: s.tasks.map(({ id, title, deadline, doneAt }) => ({
+      id,
+      title,
+      deadline,
+      doneAt,
+    })),
+  };
+}
+
 /* ========= 本体 ========= */
 export default function TodoTechnique() {
-  const [store, setStore] = useState<Store>(() => load());
+  const [store, setStore] = useState<Store>(() => loadLocal());
   const storeRef = useRef(store);
-  useEffect(() => save(store), [store]);
-  useEffect(() => { storeRef.current = store; }, [store]);
+
+  // ローカルへは即時保存（サーバ保存はしない）
+  useEffect(() => {
+    storeRef.current = store;
+    saveLocal(store);
+  }, [store]);
 
   // 追加フォーム
   const [title, setTitle] = useState("");
@@ -116,241 +159,116 @@ export default function TodoTechnique() {
         if (dA !== dB) return dA - dB;
         return A.createdAt - B.createdAt;
       }
-      // 両方完了
       return (B.doneAt ?? 0) - (A.doneAt ?? 0);
     });
     return a;
   }, [store.tasks]);
 
-  /* ========= 同期：受信（PULL） ========= */
-
-  // サーバ差分 → ローカルへ反映（LWW）
-  const applyTaskDiffs = (rows: Array<{
-    id: string;
-    user_id: string;
-    title?: string | null;
-    deadline?: string | null;
-    done_at?: number | null;
-    updated_at: number;
-    updated_by?: string | null;
-    deleted_at?: number | null;
-  }>) => {
-    if (!rows || rows.length === 0) return;
-
-    setStore((prev) => {
-      // id → index
-      const idx = new Map(prev.tasks.map((e, i) => [e.id, i] as const));
-      const tasks = prev.tasks.slice();
-
-      for (const r of rows) {
-        const del = r.deleted_at ? Number(r.deleted_at) : null;
-
-        if (del) {
-          const i = idx.get(r.id);
-          if (i !== undefined) {
-            tasks.splice(i, 1);
-            // index 再構築
-            idx.clear();
-            tasks.forEach((e, k) => idx.set(e.id, k));
-          }
-          continue;
-        }
-
-        const i = idx.get(r.id);
-        if (i === undefined) {
-          // 追加（createdAt は updated_at を代替）
-          tasks.unshift({
-            id: r.id,
-            title: String(r.title ?? ""),
-            deadline: String(r.deadline ?? todayJst()),
-            createdAt: r.updated_at ?? Date.now(),
-            doneAt: r.done_at ?? undefined,
-          });
-          idx.set(r.id, 0);
-        } else {
-          const cur = tasks[i];
-          tasks[i] = {
-            ...cur,
-            title: r.title != null ? String(r.title) : cur.title,
-            deadline: r.deadline != null ? String(r.deadline) : cur.deadline,
-            doneAt: r.done_at != null ? Number(r.done_at) : cur.doneAt,
-            // createdAt は保持（サーバ未管理）
-          };
-        }
-      }
-
-      return { ...prev, tasks };
-    });
-  };
-
-  // 受信本体
-  const doPullAll = async () => {
-    try {
-      const json = await pullBatch(USER_ID, getSince(), [TABLE]);
-      const rows = (json.diffs?.[TABLE] ?? []) as any[];
-      applyTaskDiffs(rows);
-      setSince(json.server_time_ms);
-    } catch (e) {
-      console.warn("[todo] pull-batch failed:", e);
-    }
-  };
-
-  // 初回＋粘着フラグ＋フォーカス復帰
+  /* ========= 手動同期：購読（PULL / PUSH / LOCAL_DOC_APPLIED / storage） ========= */
   useEffect(() => {
-    void doPullAll();
+    if (typeof window === "undefined") return;
 
-    // 粘着フラグ：直近5分は自動再PULL
-    try {
-      const sticky = localStorage.getItem(STICKY_KEY);
-      if (sticky && Date.now() - Number(sticky) <= 5 * 60 * 1000) {
-        void doPullAll();
-      }
-    } catch {}
-
-    const onFocusLike = () => {
+    const doPull = async () => {
       try {
-        const sticky = localStorage.getItem(STICKY_KEY);
-        if (sticky && Date.now() - Number(sticky) <= 5 * 60 * 1000) {
-          void doPullAll();
+        const remote = await loadUserDoc<RemoteStore>(DOC_KEY);
+        if (remote && remote.version === 1 && Array.isArray(remote.tasks)) {
+          // クラウド→ローカル：createdAt は補完（ローカル専用）
+          const now = Date.now();
+          const next: Store = {
+            version: 1,
+            tasks: remote.tasks
+              .map((t) => {
+                const id = typeof t.id === "string" ? t.id : null;
+                if (!id) return null;
+                return {
+                  id,
+                  title: String(t.title ?? ""),
+                  deadline: String(t.deadline ?? todayJst()),
+                  createdAt: now,
+                  doneAt: typeof t.doneAt === "number" ? t.doneAt : undefined,
+                } as Task;
+              })
+              .filter(Boolean) as Task[],
+          };
+          setStore(next);
+          saveLocal(next);
         }
-      } catch {}
+      } catch (e) {
+        console.warn("[todo] manual PULL failed:", e);
+      }
     };
-    window.addEventListener("focus", onFocusLike);
-    document.addEventListener("visibilitychange", onFocusLike);
-    return () => {
-      window.removeEventListener("focus", onFocusLike);
-      document.removeEventListener("visibilitychange", onFocusLike);
-    };
-  }, []);
 
-  // ホームの「🔄 同期（受信）」/「RESET」の合図を購読
-  useEffect(() => {
-    const handler = (payload: any) => {
-      if (!payload) return;
-      if (payload.type === "GLOBAL_SYNC_PULL") {
-        void doPullAll();
-      } else if (payload.type === "GLOBAL_SYNC_RESET") {
-        try { localStorage.setItem(SINCE_KEY, "0"); } catch {}
-        setStore((s) => ({ ...s, tasks: [] }));
-        void doPullAll();
+    const doPush = async () => {
+      try {
+        // ローカル→クラウド：createdAt は送らない
+        await saveUserDoc<RemoteStore>(DOC_KEY, toRemote(storeRef.current));
+      } catch (e) {
+        console.warn("[todo] manual PUSH failed:", e);
       }
     };
 
     // BroadcastChannel
-    let bc: BroadcastChannel | undefined;
+    let bc: BroadcastChannel | null = null;
     try {
       if ("BroadcastChannel" in window) {
-        bc = new BroadcastChannel("support-ai-sync");
-        bc.onmessage = (e) => handler(e.data);
+        bc = new BroadcastChannel(SYNC_CHANNEL);
+        bc.onmessage = (ev) => {
+          const msg = ev?.data;
+          if (!msg || typeof msg.type !== "string") return;
+          const t = msg.type.toUpperCase();
+
+          if (t.includes("PULL")) doPull();
+          else if (t.includes("PUSH")) doPush();
+          else if (t.includes("RESET")) {
+            // since 未使用なので noop（直後にPULLが来る想定）
+          } else if (t === LOCAL_APPLIED_TYPE && msg.docKey === DOC_KEY) {
+            // ホームが localStorage を直接書いた合図
+            setStore(loadLocal());
+          }
+        };
       }
     } catch {}
 
-    // postMessage
-    const onPostMessage = (e: MessageEvent) => handler(e.data);
-    window.addEventListener("message", onPostMessage);
+    // 同タブ postMessage
+    const onWinMsg = (ev: MessageEvent) => {
+      const msg = ev?.data;
+      if (!msg || typeof msg.type !== "string") return;
+      const t = msg.type.toUpperCase();
 
-    // storage（他タブ由来）
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === "support-ai:sync:pull:req" && e.newValue) {
-        try { handler(JSON.parse(e.newValue)); } catch {}
+      if (t.includes("PULL")) doPull();
+      else if (t.includes("PUSH")) doPush();
+      else if (t === LOCAL_APPLIED_TYPE && msg.docKey === DOC_KEY) {
+        setStore(loadLocal());
       }
-      if (e.key === "support-ai:sync:reset:req" && e.newValue) {
-        try { handler(JSON.parse(e.newValue)); } catch {}
+    };
+    window.addEventListener("message", onWinMsg);
+
+    // 他タブ storage（localKey 変更を拾う）
+    const onStorage = (ev: StorageEvent) => {
+      if (!ev.key) return;
+
+      if (ev.key === LOCAL_KEY && ev.newValue) {
+        try {
+          setStore(migrateLocal(JSON.parse(ev.newValue)));
+        } catch {}
+      }
+
+      if (ev.key === STORAGE_KEY_RESET_REQ) {
+        // noop（直後にPULLが来る想定）
       }
     };
     window.addEventListener("storage", onStorage);
 
     return () => {
-      try { bc?.close(); } catch {}
-      window.removeEventListener("message", onPostMessage);
+      try {
+        bc?.close();
+      } catch {}
+      window.removeEventListener("message", onWinMsg);
       window.removeEventListener("storage", onStorage);
     };
   }, []);
 
-  /* ========= 同期：送信（PUSH） ========= */
-
-  // 共通 push（1件）
-  const pushOne = async (t: Task, deleted = false) => {
-    try {
-      const deviceId = getDeviceId();
-      const now = Date.now();
-
-      // ChangeRow（sync API 仕様）
-      const row = {
-        id: t.id,
-        updated_at: now,
-        updated_by: deviceId,
-        deleted_at: deleted ? now : null,
-        // todo_items は固定FKなし。ペイロード列を data に入れる。
-        data: deleted
-          ? {}
-          : {
-              title: t.title,
-              deadline: t.deadline,
-              done_at: t.doneAt ?? null,
-            },
-      };
-
-      await pushBatch({
-        user_id: USER_ID,
-        device_id: deviceId,
-        changes: { [TABLE]: [row] },
-      });
-
-      // 粘着フラグ → 直後PULL
-      touchSticky();
-      await doPullAll();
-    } catch (err) {
-      console.warn("[todo] pushOne failed:", err);
-    }
-  };
-
-  // 手動全量アップロード（ホームの「☁ 手動アップロード」に反応）
-  const manualPushAll = async () => {
-    try {
-      const snapshot = storeRef.current;
-      const deviceId = getDeviceId();
-      const now = Date.now();
-
-      const rows = snapshot.tasks.map((t) => ({
-        id: t.id,
-        updated_at: now,
-        updated_by: deviceId,
-        deleted_at: null,
-        data: {
-          title: t.title,
-          deadline: t.deadline,
-          done_at: t.doneAt ?? null,
-        },
-      }));
-
-      if (rows.length > 0) {
-        await pushBatch({
-          user_id: USER_ID,
-          device_id: deviceId,
-          changes: { [TABLE]: rows },
-        });
-      }
-      touchSticky();
-      await doPullAll();
-    } catch (e) {
-      console.warn("[todo] manualPushAll failed:", e);
-    }
-  };
-
-  // グローバルPush合図を購読
-  useEffect(() => {
-    const unSub = subscribeGlobalPush((p) => {
-      if (!p || p.userId !== USER_ID) return;
-      void manualPushAll();
-    });
-    return () => {
-      try { unSub(); } catch {}
-    };
-  }, []);
-
-  /* ========= CRUD（ローカル更新＋即時PUSH） ========= */
-
+  /* ========= CRUD（ローカル更新のみ） ========= */
   const add = () => {
     const t = title.trim();
     const d = deadline.trim();
@@ -359,44 +277,33 @@ export default function TodoTechnique() {
       return;
     }
     const item: Task = { id: uid(), title: t, deadline: d, createdAt: Date.now() };
-    setStore(s => ({ ...s, tasks: [item, ...s.tasks] }));
+    setStore((s) => ({ ...s, tasks: [item, ...s.tasks] }));
     setTitle("");
     inputRef.current?.focus();
-
-    void pushOne(item, false);
   };
 
   const toggleDone = (id: ID) => {
-    let changed: Task | null = null;
-    setStore(s => {
-      const tasks = s.tasks.map(x =>
-        x.id === id ? (changed = { ...x, doneAt: x.doneAt ? undefined : Date.now() }) : x
-      ) as Task[];
-      return { ...s, tasks };
-    });
-    if (changed) void pushOne(changed, false);
+    setStore((s) => ({
+      ...s,
+      tasks: s.tasks.map((x) =>
+        x.id === id ? { ...x, doneAt: x.doneAt ? undefined : Date.now() } : x
+      ),
+    }));
   };
 
   const remove = (id: ID) => {
-    const target = storeRef.current.tasks.find((e) => e.id === id);
-    setStore(s => ({ ...s, tasks: s.tasks.filter(x => x.id !== id) }));
-    if (target) void pushOne(target, true);
+    setStore((s) => ({ ...s, tasks: s.tasks.filter((x) => x.id !== id) }));
   };
 
   const clearCompleted = () => {
-    const completed = storeRef.current.tasks.filter((x) => !!x.doneAt);
-    if (completed.length === 0) return;
-    (async () => {
-      for (const t of completed) {
-        await pushOne(t, true);
-      }
-    })();
-    setStore(s => ({ ...s, tasks: s.tasks.filter(x => !x.doneAt) }));
+    setStore((s) => ({ ...s, tasks: s.tasks.filter((x) => !x.doneAt) }));
   };
 
-  // JSON 入出力（ローカルのみ。必要なら全量PUSHボタンで反映可能）
+  // JSON 入出力（ローカルのみ。必要ならホームの☁で反映）
   const exportJson = () => {
-    const blob = new Blob([JSON.stringify(store, null, 2)], { type: "application/json;charset=utf-8" });
+    const blob = new Blob([JSON.stringify(store, null, 2)], {
+      type: "application/json;charset=utf-8",
+    });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -410,10 +317,10 @@ export default function TodoTechnique() {
     const reader = new FileReader();
     reader.onload = () => {
       try {
-        const parsed = JSON.parse(String(reader.result)) as Store;
-        if (!parsed?.version) throw new Error();
-        setStore(parsed);
-        alert("インポートしました。必要ならホームの『☁ 手動アップロード』でクラウドへ反映してください。");
+        const parsed = JSON.parse(String(reader.result));
+        const next = migrateLocal(parsed);
+        setStore(next);
+        alert("インポートしました。必要ならホームの『☁ アップロード』でクラウドへ反映してください。");
       } catch {
         alert("JSONの読み込みに失敗しました。");
       }
@@ -456,7 +363,10 @@ export default function TodoTechnique() {
         <div className="flex items-center justify-between mb-3">
           <h2 className="font-semibold">タスク一覧</h2>
           <div className="flex items-center gap-2">
-            <button onClick={exportJson} className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50">
+            <button
+              onClick={exportJson}
+              className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
+            >
               エクスポート（JSON）
             </button>
             <label className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50 cursor-pointer">
@@ -465,7 +375,7 @@ export default function TodoTechnique() {
                 type="file"
                 accept="application/json"
                 className="hidden"
-                onChange={(e)=>importJson(e.target.files?.[0] ?? null)}
+                onChange={(e) => importJson(e.target.files?.[0] ?? null)}
               />
             </label>
             <button
@@ -485,7 +395,10 @@ export default function TodoTechnique() {
             {tasksSorted.map((t) => {
               const left = daysLeftJST(t.deadline);
               return (
-                <li key={t.id} className="rounded-xl border p-3 grid gap-2 sm:grid-cols-[1fr_auto] sm:items-center">
+                <li
+                  key={t.id}
+                  className="rounded-xl border p-3 grid gap-2 sm:grid-cols-[1fr_auto] sm:items-center"
+                >
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
                       <input
@@ -495,20 +408,38 @@ export default function TodoTechnique() {
                         className="h-4 w-4"
                         aria-label="完了"
                       />
-                      <span className={`font-medium break-words ${t.doneAt ? "line-through text-gray-500" : ""}`}>
+                      <span
+                        className={`font-medium break-words ${
+                          t.doneAt ? "line-through text-gray-500" : ""
+                        }`}
+                      >
                         {t.title}
                       </span>
-                      <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${badgeClass(left)}`}>
-                        {left < 0 ? `期限超過 ${Math.abs(left)}日` : left === 0 ? "今日" : `残り ${left}日`}
+                      <span
+                        className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${badgeClass(
+                          left
+                        )}`}
+                      >
+                        {left < 0
+                          ? `期限超過 ${Math.abs(left)}日`
+                          : left === 0
+                          ? "今日"
+                          : `残り ${left}日`}
                       </span>
                     </div>
                     <div className="text-xs text-gray-600 mt-0.5">
                       期限: <span className="tabular-nums">{t.deadline}</span>
                       {t.doneAt && (
                         <span className="ml-2">
-                          完了: {new Intl.DateTimeFormat("ja-JP", {
-                            timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit", day: "2-digit",
-                            hour: "2-digit", minute: "2-digit", hour12: false,
+                          完了:{" "}
+                          {new Intl.DateTimeFormat("ja-JP", {
+                            timeZone: "Asia/Tokyo",
+                            year: "numeric",
+                            month: "2-digit",
+                            day: "2-digit",
+                            hour: "2-digit",
+                            minute: "2-digit",
+                            hour12: false,
                           }).format(new Date(t.doneAt))}
                         </span>
                       )}
@@ -517,11 +448,17 @@ export default function TodoTechnique() {
 
                   <div className="flex flex-wrap gap-2 justify-start sm:justify-end">
                     {t.doneAt ? (
-                      <button onClick={() => remove(t.id)} className="rounded-lg border px-3 py-2 text-sm hover:bg-gray-50">
+                      <button
+                        onClick={() => remove(t.id)}
+                        className="rounded-lg border px-3 py-2 text-sm hover:bg-gray-50"
+                      >
                         削除
                       </button>
                     ) : (
-                      <button onClick={() => toggleDone(t.id)} className="rounded-lg border px-3 py-2 text-sm hover:bg-gray-50">
+                      <button
+                        onClick={() => toggleDone(t.id)}
+                        className="rounded-lg border px-3 py-2 text-sm hover:bg-gray-50"
+                      >
                         完了にする
                       </button>
                     )}
