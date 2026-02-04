@@ -1242,8 +1242,16 @@ export default function CloseReading() {
       tokenJa: string;
     }[] = [];
 
-    for (const t of doc.tokens) {
+    /**
+     * ★修正ポイント：
+     * グループの「最初〜最後」の範囲に挟まるトークン（, など）を表示上は同じユニットに吸収する。
+     * - データ上（group.tokenIds）は句読点を含めないまま維持
+     * - 表示上のまとまり下線（border-b）がカンマで途切れない
+     */
+    for (let i = 0; i < doc.tokens.length; i++) {
+      const t = doc.tokens[i];
       const g = tokenToGroup.get(t.id);
+
       if (!g) {
         units.push({
           tokenIds: [t.id],
@@ -1254,17 +1262,36 @@ export default function CloseReading() {
         });
         continue;
       }
-      if (started.has(g.id)) continue;
+
+      if (started.has(g.id)) {
+        // すでに別の場所でこのグループのユニットを作っている場合、
+        // ここは（範囲吸収により）for が飛ばしているはずだが、保険でスキップ
+        continue;
+      }
       started.add(g.id);
 
-      const ordered = normalizeTokenIds(g.tokenIds, idToIndex);
+      const orderedCore = normalizeTokenIds(g.tokenIds, idToIndex);
+      const idxs = orderedCore
+        .map((id) => idToIndex.get(id))
+        .filter((x): x is number => typeof x === "number");
+      if (idxs.length === 0) continue;
+
+      const start = Math.min(...idxs);
+      const end = Math.max(...idxs);
+
+      // ★表示用：start〜end に挟まる（, など）も含める
+      const displayTokenIds = doc.tokens.slice(start, end + 1).map((x) => x.id);
+
       units.push({
-        tokenIds: ordered,
+        tokenIds: displayTokenIds,
         roleToShow: g.role,
         groupId: g.id,
         groupJa: typeof g.ja === "string" ? g.ja : "",
         tokenJa: "",
       });
+
+      // ★範囲ぶん i を進める（この範囲内のトークンが単独ユニット化されるのを防ぐ）
+      i = end;
     }
 
     return units;
@@ -1616,7 +1643,9 @@ export default function CloseReading() {
               <div className="text-xs text-gray-500">
                 選択：クリック=1語 / Shift+クリック=範囲（置き換えで安定） / Ctrl(or Cmd)+クリック=追加/解除
               </div>
-              <div className="text-xs text-gray-500">※ , や . などの句読点には「下線」を引きません（グループ化もされません）。</div>
+              <div className="text-xs text-gray-500">
+                ※ , や . などの句読点には「下線」を引きません（グループ化もされません）。ただし、まとまりの途中にある句読点は表示上まとめて下線が途切れないようにします。
+              </div>
             </div>
 
             {/* 表示 */}
@@ -1659,6 +1688,7 @@ export default function CloseReading() {
                         : "";
 
                     // ★「下線復活」：このユニット内に下線対象が1つでもある場合だけ、ユニット全体に下線を引く
+                    // （カンマ自体は下線対象ではないが、ユニットの下線は途切れない）
                     const unitHasUnderline = u.tokenIds.some((tid) => {
                       const tok = currentDoc.tokens[idToIndex.get(tid) ?? -1];
                       return tok ? shouldUnderlineToken(tok.text) : false;
@@ -1666,7 +1696,7 @@ export default function CloseReading() {
 
                     return (
                       <div key={`${ui}-${u.tokenIds.join(",")}`} className="flex flex-col items-center">
-                        {/* ★まとまり下線（句読点ユニットには出ない） */}
+                        {/* ★まとまり下線（句読点単体ユニットには出ない／ただしグループ範囲に挟まる句読点は同ユニットに吸収される） */}
                         <div
                           className={["inline-flex items-end pb-1", unitHasUnderline ? "border-b border-gray-700" : ""].join(
                             " "
@@ -1813,7 +1843,9 @@ export default function CloseReading() {
                     ))}
                   </div>
 
-                  <div className="text-xs text-gray-500">※グループ化するとき、句読点（, . など）は自動で除外されます（下線も引きません）。</div>
+                  <div className="text-xs text-gray-500">
+                    ※グループ化するとき、句読点（, . など）は自動で除外されます（下線も引きません）。
+                  </div>
                 </div>
               )}
 
