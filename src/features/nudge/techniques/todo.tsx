@@ -10,7 +10,7 @@ type ID = string;
 type Task = {
   id: ID;
   title: string;
-  deadline: string; // YYYY-MM-DD (JST基準)
+  deadline: string; // YYYY-MM-DD (JST基準) or "NONE"（無期限）
   createdAt: number; // ローカル専用（クラウドには載せない）
   doneAt?: number; // 完了時刻(ms)。未完了は undefined
 };
@@ -29,6 +29,9 @@ const DOC_KEY = "todo_v1";
 const SYNC_CHANNEL = "support-ai-sync";
 const STORAGE_KEY_RESET_REQ = "support-ai:sync:reset:req";
 const LOCAL_APPLIED_TYPE = "LOCAL_DOC_APPLIED";
+
+// 無期限の表現（YYYY-MM-DD と衝突しない固定値）
+const NO_DEADLINE = "NONE" as const;
 
 const uid = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -49,6 +52,14 @@ function todayJst(): string {
   return `${y}-${m}-${d}`;
 }
 
+function isYmd(s: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(s);
+}
+
+function isNoDeadline(s: string): boolean {
+  return s === NO_DEADLINE;
+}
+
 // “その日の JST 23:59:59.999” までの残り日数（当日=0、期限超過は負数）
 function daysLeftJST(yyyyMmDd: string): number {
   const end = Date.parse(`${yyyyMmDd}T23:59:59.999+09:00`);
@@ -65,6 +76,17 @@ function badgeClass(left: number): string {
 }
 
 /* ========= localStorage 永続化 ========= */
+function migrateDeadline(v: any): string {
+  // 旧データは必ず YYYY-MM-DD のはずだが、壊れていたら today に補正
+  if (typeof v === "string") {
+    if (isNoDeadline(v)) return NO_DEADLINE;
+    if (isYmd(v)) return v;
+    // よくある入力（"" / null文字列）を無期限扱いにしたい場合はここで吸収
+    if (v.trim() === "" || v.toLowerCase() === "none") return NO_DEADLINE;
+  }
+  return todayJst();
+}
+
 function migrateLocal(raw: any): Store {
   const base: Store = { tasks: [], version: 1 };
 
@@ -80,7 +102,7 @@ function migrateLocal(raw: any): Store {
 
       const id = typeof t.id === "string" ? t.id : null;
       const title = typeof t.title === "string" ? t.title : "";
-      const deadline = typeof t.deadline === "string" ? t.deadline : todayJst();
+      const deadline = migrateDeadline(t.deadline);
 
       // createdAt が欠けている（クラウドから来る / 古いデータ）場合は補完
       const createdAt =
@@ -140,27 +162,51 @@ export default function TodoTechnique() {
 
   // 追加フォーム
   const [title, setTitle] = useState("");
+  const [deadlineMode, setDeadlineMode] = useState<"date" | "none">("date"); // ★ 無期限モード
   const [deadline, setDeadline] = useState<string>(() => todayJst());
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   const tasksSorted = useMemo(() => {
     const a = store.tasks.slice();
+
+    const doneRank = (t: Task) => (t.doneAt ? 1 : 0);
+
+    const deadlineRank = (t: Task) => {
+      // 未完了の並び替え用：期限あり→無期限 の順にしたい
+      // 期限あり: 0, 無期限: 1
+      return isNoDeadline(t.deadline) ? 1 : 0;
+    };
+
+    const daysOrInf = (t: Task) => {
+      // 期限ありは daysLeft、無期限は +∞ 扱い
+      return isNoDeadline(t.deadline) ? Number.POSITIVE_INFINITY : daysLeftJST(t.deadline);
+    };
+
     // 1) 未完了 → 完了の順
-    // 2) 未完了内は残日数昇順 → 期限同じなら作成古い順
+    // 2) 未完了内は「期限あり→無期限」→ 残日数昇順 → 期限同じなら作成古い順
     // 3) 完了内は完了時刻の新しい順
     a.sort((A, B) => {
-      const doneA = !!A.doneAt;
-      const doneB = !!B.doneAt;
-      if (doneA !== doneB) return doneA ? 1 : -1;
+      const rA = doneRank(A);
+      const rB = doneRank(B);
+      if (rA !== rB) return rA - rB;
 
-      if (!doneA && !doneB) {
-        const dA = daysLeftJST(A.deadline);
-        const dB = daysLeftJST(B.deadline);
+      if (!A.doneAt && !B.doneAt) {
+        const kA = deadlineRank(A);
+        const kB = deadlineRank(B);
+        if (kA !== kB) return kA - kB;
+
+        const dA = daysOrInf(A);
+        const dB = daysOrInf(B);
         if (dA !== dB) return dA - dB;
+
+        // 無期限同士 or 同期限
         return A.createdAt - B.createdAt;
       }
+
+      // 両方完了
       return (B.doneAt ?? 0) - (A.doneAt ?? 0);
     });
+
     return a;
   }, [store.tasks]);
 
@@ -183,7 +229,7 @@ export default function TodoTechnique() {
                 return {
                   id,
                   title: String(t.title ?? ""),
-                  deadline: String(t.deadline ?? todayJst()),
+                  deadline: migrateDeadline(t.deadline),
                   createdAt: now,
                   doneAt: typeof t.doneAt === "number" ? t.doneAt : undefined,
                 } as Task;
@@ -271,11 +317,13 @@ export default function TodoTechnique() {
   /* ========= CRUD（ローカル更新のみ） ========= */
   const add = () => {
     const t = title.trim();
-    const d = deadline.trim();
-    if (!t || !/^\d{4}-\d{2}-\d{2}$/.test(d)) {
-      alert("タスク名と締め切り日（YYYY-MM-DD）を入力してください。");
+    const d = deadlineMode === "none" ? NO_DEADLINE : deadline.trim();
+
+    if (!t || !(isNoDeadline(d) || isYmd(d))) {
+      alert("タスク名と締め切り日（YYYY-MM-DD）を入力してください（無期限も可）。");
       return;
     }
+
     const item: Task = { id: uid(), title: t, deadline: d, createdAt: Date.now() };
     setStore((s) => ({ ...s, tasks: [item, ...s.tasks] }));
     setTitle("");
@@ -333,7 +381,8 @@ export default function TodoTechnique() {
       {/* 追加フォーム */}
       <section className="rounded-2xl border p-4 shadow-sm">
         <h2 className="font-semibold mb-3">ToDoを追加</h2>
-        <div className="grid gap-3 sm:grid-cols-[1fr_auto_auto] sm:items-center">
+
+        <div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-center">
           <input
             ref={inputRef}
             value={title}
@@ -342,19 +391,34 @@ export default function TodoTechnique() {
             className="rounded-xl border px-3 py-3"
             aria-label="タスク名"
           />
-          <input
-            type="date"
-            value={deadline}
-            onChange={(e) => setDeadline(e.target.value)}
-            className="rounded-xl border px-3 py-3"
-            aria-label="締め切り日"
-          />
           <button onClick={add} className="rounded-xl bg-black px-5 py-3 text-white">
             追加
           </button>
         </div>
+
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          <label className="inline-flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={deadlineMode === "none"}
+              onChange={(e) => setDeadlineMode(e.target.checked ? "none" : "date")}
+              className="h-4 w-4"
+            />
+            無期限
+          </label>
+
+          <input
+            type="date"
+            value={deadline}
+            onChange={(e) => setDeadline(e.target.value)}
+            className={`rounded-xl border px-3 py-3 ${deadlineMode === "none" ? "opacity-50" : ""}`}
+            aria-label="締め切り日"
+            disabled={deadlineMode === "none"}
+          />
+        </div>
+
         <p className="text-xs text-gray-500 mt-2">
-          ※ 残り日数は「締め切り日のJST 23:59:59」までを基準に計算します（当日は残り0日）。
+          ※ 「無期限」をONにすると期限計算対象外になります。期限ありの場合は「締め切り日のJST 23:59:59」までを基準に計算します（当日は残り0日）。
         </p>
       </section>
 
@@ -393,7 +457,8 @@ export default function TodoTechnique() {
         ) : (
           <ul className="space-y-2">
             {tasksSorted.map((t) => {
-              const left = daysLeftJST(t.deadline);
+              const noDeadline = isNoDeadline(t.deadline);
+              const left = noDeadline ? null : daysLeftJST(t.deadline);
               return (
                 <li
                   key={t.id}
@@ -415,20 +480,31 @@ export default function TodoTechnique() {
                       >
                         {t.title}
                       </span>
-                      <span
-                        className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${badgeClass(
-                          left
-                        )}`}
-                      >
-                        {left < 0
-                          ? `期限超過 ${Math.abs(left)}日`
-                          : left === 0
-                          ? "今日"
-                          : `残り ${left}日`}
-                      </span>
+
+                      {noDeadline ? (
+                        <span className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold bg-gray-200 text-gray-900">
+                          無期限
+                        </span>
+                      ) : (
+                        <span
+                          className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${badgeClass(
+                            left ?? 999
+                          )}`}
+                        >
+                          {(left ?? 0) < 0
+                            ? `期限超過 ${Math.abs(left ?? 0)}日`
+                            : (left ?? 0) === 0
+                            ? "今日"
+                            : `残り ${left}日`}
+                        </span>
+                      )}
                     </div>
+
                     <div className="text-xs text-gray-600 mt-0.5">
-                      期限: <span className="tabular-nums">{t.deadline}</span>
+                      期限:{" "}
+                      <span className="tabular-nums">
+                        {noDeadline ? "無期限" : t.deadline}
+                      </span>
                       {t.doneAt && (
                         <span className="ml-2">
                           完了:{" "}
