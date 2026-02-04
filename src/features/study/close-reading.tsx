@@ -63,14 +63,14 @@ type Token = {
   text: string;
   role?: Role; // v1互換のため残す（v2以降は group が主役）
   detail?: Detail; // 単語の上に出す詳細タグ
-  ja?: string; // ★追加：単語（and等、グループ化しないもの）にも訳を持てる
+  ja?: string; // 単語訳
 };
 
 type Group = {
   id: string;
   tokenIds: string[]; // tokens順に正規化して保存
   role: Role; // 下線の下に出す SVOCM 等（グループで1つだけ表示）
-  ja?: string; // ★グループの日本語訳
+  ja?: string; // グループの日本語訳
 };
 
 type Span = {
@@ -176,14 +176,14 @@ const DETAIL_LABELS: { detail: Detail; label: string }[] = [
   { detail: "名", label: "名（名詞）" },
   { detail: "代", label: "代（代名詞）" },
   { detail: "動", label: "動（動詞）" },
-  { detail: "自", label: "自（自動詞）" }, // ★追加
-  { detail: "他", label: "他（他動詞）" }, // ★追加（既存の「他」は他動詞として扱う）
-  { detail: "数", label: "数（数詞）" }, // ★追加
+  { detail: "自", label: "自（自動詞）" },
+  { detail: "他", label: "他（他動詞）" },
+  { detail: "数", label: "数（数詞）" },
   { detail: "前", label: "前（前置詞）" },
   { detail: "冠", label: "冠（冠詞）" },
   { detail: "助", label: "助（助動詞）" },
   { detail: "接", label: "接（接続詞）" },
-  { detail: "従", label: "従（従属接続詞）" }, // ★追加
+  { detail: "従", label: "従（従属接続詞）" },
   { detail: "等", label: "等（等位・並列）" },
   { detail: "NONE", label: "未設定" },
 ];
@@ -234,20 +234,23 @@ function isWordToken(t: string) {
   return /^[A-Za-z]+(?:'[A-Za-z]+)?$/.test(t) || /^\d+(?:\.\d+)?$/.test(t);
 }
 
-/** 下線を引きたいトークンか（単語と同様に扱う記号も true） */
-function shouldUnderlineToken(t: string) {
-  if (isWordToken(t)) return true;
-
-  // ★要望： , . " も単語と同様に下線対象にする
-  if (t === "," || t === "." || t === '"') return true;
-
-  // それ以外の記号は基本は下線なし（必要ならここに追加）
-  return false;
+function isSpecialPunct(t: string) {
+  return t === "," || t === "." || t === '"';
 }
 
-/** 訳入力の対象か（単語と同様に扱う記号も含める） */
+/**
+ * 下線を引きたいトークンか
+ * - 通常は「単語/数値」のみ
+ * - , . " は「単体では下線なし」
+ * - ただし複数選択でグループ化する場合は、idsフィルタ側で許可する（表示の下線はユニット全体 border-b で担保）
+ */
+function shouldUnderlineToken(t: string) {
+  return isWordToken(t);
+}
+
+/** 訳入力の対象か（単語のみ。記号は単体で訳入力しない） */
 function isJaTargetToken(t: string) {
-  return shouldUnderlineToken(t);
+  return isWordToken(t);
 }
 
 function classForRole(role: Role) {
@@ -382,7 +385,6 @@ function migrateDoc(raw: any): StoreV6 {
 
         const role = typeof g.role === "string" ? (g.role as Role) : "NONE";
 
-        // ★ここで必ず string[] にする（unknown[] にならない）
         const tokenIdsRaw: string[] = Array.isArray(g.tokenIds)
           ? (g.tokenIds as unknown[]).filter(isString).filter((id) => tokenSet.has(id))
           : [];
@@ -406,7 +408,6 @@ function migrateDoc(raw: any): StoreV6 {
         const kind = s.kind === "CLAUSE" || s.kind === "PHRASE" ? (s.kind as SpanKind) : null;
         if (!kind) return null;
 
-        // ★Set の入力を string[] にしてから uniq
         const tokenIdsRaw: string[] = Array.isArray(s.tokenIds)
           ? uniqueStringsPreserveOrder((s.tokenIds as unknown[]).filter(isString)).filter((id) => tokenSet.has(id))
           : [];
@@ -954,14 +955,30 @@ export default function CloseReading() {
     anchorIndexRef.current = index;
   };
 
-  /** グループ化/下線対象だけ残す（今回は , . " も対象に含める） */
-  const filterUnderlineEligibleIds = (ids: string[], tokens: Token[]) => {
+  /**
+   * グループ化（role付与）時に、グループに入れてよいトークンIDを残す
+   * - 通常：単語/数値のみ
+   * - 複数選択（連続範囲）なら： , . " もグループに含めてOK（下線が途切れにくい）
+   * - ただし「記号だけ」のグループは作らない（最低1つ単語が必要）
+   */
+  const filterGroupEligibleIds = (ids: string[], tokens: Token[]) => {
     const map = new Map(tokens.map((t) => [t.id, t] as const));
-    return ids.filter((id) => {
+    const allowPunct = ids.length >= 2;
+
+    const kept = ids.filter((id) => {
       const t = map.get(id);
       if (!t) return false;
-      return shouldUnderlineToken(t.text);
+      if (shouldUnderlineToken(t.text)) return true; // 単語/数値
+      if (allowPunct && isSpecialPunct(t.text)) return true; // 複数選択ならOK
+      return false;
     });
+
+    // 記号だけはNG（単語が1つも無いなら空扱い）
+    const hasWord = kept.some((id) => {
+      const t = map.get(id);
+      return t ? isWordToken(t.text) : false;
+    });
+    return hasWord ? kept : [];
   };
 
   // role付与（飛び飛びは連続範囲に補正）
@@ -969,9 +986,9 @@ export default function CloseReading() {
     if (!currentDoc) return;
     if (selectedIds.length === 0) return;
 
-    // 連続範囲へ補正 → 下線対象だけ残す（今回は , . " も残る）
+    // 連続範囲へ補正 → グループに入れてよいものだけ残す
     const coerced0 = coerceToContiguousSelection(selectedIds, idToIndex, currentDoc.tokens);
-    const coerced = filterUnderlineEligibleIds(coerced0, currentDoc.tokens);
+    const coerced = filterGroupEligibleIds(coerced0, currentDoc.tokens);
     if (coerced.length === 0) return;
 
     const selectedSet = new Set(coerced);
@@ -1132,7 +1149,7 @@ export default function CloseReading() {
     setSelectedIds(coerced);
   };
 
-  // ★日本語訳（グループ）更新
+  // 日本語訳（グループ）更新
   const setJaToGroup = (groupId: string, ja: string) => {
     if (!currentDoc) return;
     updateCurrentDoc((prev) => ({
@@ -1142,7 +1159,7 @@ export default function CloseReading() {
     }));
   };
 
-  // ★日本語訳（単語）更新
+  // 日本語訳（単語）更新
   const setJaToToken = (tokenId: string, ja: string) => {
     if (!currentDoc) return;
     updateCurrentDoc((prev) => ({
@@ -1245,7 +1262,6 @@ export default function CloseReading() {
     }[] = [];
 
     /**
-     * ★修正ポイント（既存維持）：
      * グループの「最初〜最後」の範囲に挟まるトークン（, など）を表示上は同じユニットに吸収する。
      * - データ上の tokens順は絶対固定
      * - 表示上のまとまり下線（border-b）が途中で途切れにくい
@@ -1277,7 +1293,7 @@ export default function CloseReading() {
       const start = Math.min(...idxs);
       const end = Math.max(...idxs);
 
-      // ★表示用：start〜end に挟まるトークンも含める
+      // 表示用：start〜end に挟まるトークンも含める
       const displayTokenIds = doc.tokens.slice(start, end + 1).map((x) => x.id);
 
       units.push({
@@ -1353,8 +1369,10 @@ export default function CloseReading() {
         const words = u.tokenIds
           .map((id) => doc.tokens[idToIndex.get(id) ?? -1]?.text)
           .filter((x): x is string => typeof x === "string");
-        const visible = words.filter((t) => isJaTargetToken(t));
-        if (visible.length === 0) continue;
+
+        // グループは「単語が1つでも含まれる」ものだけ訳対象（, . " は単体で訳対象にしない）
+        const visibleWords = words.filter((t) => isJaTargetToken(t));
+        if (visibleWords.length === 0) continue;
 
         targets.push({
           kind: "group",
@@ -1641,7 +1659,7 @@ export default function CloseReading() {
                 選択：クリック=1語 / Shift+クリック=範囲（置き換えで安定） / Ctrl(or Cmd)+クリック=追加/解除
               </div>
               <div className="text-xs text-gray-500">
-                ※「,」「.」「&quot;」は単語と同様に扱います（下線対象・グループ化対象・訳入力対象）。
+                ※「,」「.」「&quot;」は単体では下線を引きません（ただし複数選択でグループ化すると、まとまりの下線に含まれます）。
               </div>
             </div>
 
@@ -1684,7 +1702,7 @@ export default function CloseReading() {
                         ? (u.tokenJa ?? "").trim()
                         : "";
 
-                    // ユニット内に下線対象が1つでもあるならユニット全体に下線
+                    // ユニット内に「単語（下線対象）」が1つでもあるならユニット全体に下線
                     const unitHasUnderline = u.tokenIds.some((tid) => {
                       const tok = currentDoc.tokens[idToIndex.get(tid) ?? -1];
                       return tok ? shouldUnderlineToken(tok.text) : false;
@@ -1709,6 +1727,9 @@ export default function CloseReading() {
                             const opens = spanMarksByTokenId.starts.get(tid) ?? [];
                             const closes = spanMarksByTokenId.ends.get(tid) ?? [];
 
+                            const fade =
+                              !shouldUnderlineToken(token.text) && !isSpecialPunct(token.text) ? "opacity-80" : "";
+
                             return (
                               <div key={tid} className="flex flex-col items-center mx-[2px]">
                                 <div className="text-[10px] text-gray-700 min-h-[12px] leading-none">{top}</div>
@@ -1726,8 +1747,7 @@ export default function CloseReading() {
                                       "rounded-xl border px-2 py-1 transition",
                                       roleClass,
                                       selected ? "ring-2 ring-black/15" : "hover:bg-gray-50",
-                                      // ★単語扱いの記号（, . "）は薄くしない
-                                      !shouldUnderlineToken(token.text) ? "opacity-80" : "",
+                                      fade,
                                     ].join(" ")}
                                     title="クリックで選択（Shiftで範囲）"
                                   >
@@ -1829,7 +1849,7 @@ export default function CloseReading() {
                   </div>
 
                   <div className="text-xs text-gray-500">
-                    ※グループ化するとき、下線対象だけがグループに入ります（現在は「単語 + , . &quot;」が対象）。
+                    ※グループ化は基本「単語」だけ。複数選択のときだけ「,」「.」「&quot;」もグループに含められます（ただし記号だけのグループは作りません）。
                   </div>
                 </div>
               )}
