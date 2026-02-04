@@ -18,6 +18,12 @@ type Node = {
 type Role =
   | "S"
   | "V"
+  | "V（現完）"
+  | "V（受）"
+  | "V（否）"
+  | "V（進）"
+  | "V（過分）"
+  | "V（現分）"
   | "O"
   | "C"
   | "M"
@@ -143,7 +149,16 @@ const LOCAL_APPLIED_TYPE = "LOCAL_DOC_APPLIED";
 
 const ROLE_LABELS: { role: Role; label: string }[] = [
   { role: "S", label: "S（主語）" },
+
   { role: "V", label: "V（動詞）" },
+  // ★追加：Vの細分類
+  { role: "V（現完）", label: "V（現完）" },
+  { role: "V（受）", label: "V（受）" },
+  { role: "V（否）", label: "V（否）" },
+  { role: "V（進）", label: "V（進）" },
+  { role: "V（過分）", label: "V（過分）" },
+  { role: "V（現分）", label: "V（現分）" },
+
   { role: "O", label: "O（目的語）" },
   { role: "C", label: "C（補語）" },
   { role: "M", label: "M（修飾）" },
@@ -237,8 +252,16 @@ function classForRole(role: Role) {
   switch (role) {
     case "S":
       return "bg-blue-100 text-blue-800 border-blue-200";
+
     case "V":
+    case "V（現完）":
+    case "V（受）":
+    case "V（否）":
+    case "V（進）":
+    case "V（過分）":
+    case "V（現分）":
       return "bg-red-100 text-red-800 border-red-200";
+
     case "O":
       return "bg-amber-100 text-amber-800 border-amber-200";
     case "C":
@@ -509,7 +532,8 @@ function normalizeStore(raw: any): Store {
     // current が壊れてたら補正
     const safeFolderId =
       currentFolderId && nodes2[currentFolderId]?.kind === "folder" ? currentFolderId : def.currentFolderId;
-    const safeFileId = currentFileId && nodes2[currentFileId]?.kind === "file" && files[currentFileId] ? currentFileId : null;
+    const safeFileId =
+      currentFileId && nodes2[currentFileId]?.kind === "file" && files[currentFileId] ? currentFileId : null;
 
     return {
       version: 1,
@@ -1771,7 +1795,9 @@ export default function CloseReading() {
                       選択: <span className="font-semibold">{selectedText}</span>
                     </div>
                     <div className="text-xs text-gray-500">
-                      {selectedGroup ? `現在（同一まとまり）: ${selectedGroup.role}` : "現在:（複数まとまり/未まとまり混在。役割を押すと選択範囲で新しいまとまりを作成）"}
+                      {selectedGroup
+                        ? `現在（同一まとまり）: ${selectedGroup.role}`
+                        : "現在:（複数まとまり/未まとまり混在。役割を押すと選択範囲で新しいまとまりを作成）"}
                     </div>
                   </div>
 
