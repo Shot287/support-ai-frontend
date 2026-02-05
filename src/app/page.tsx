@@ -23,7 +23,7 @@ const DOCS = [
   { docKey: "process_goals_v1", localKey: "process_goals_v1" },
   //{ docKey: "reflection_note_v1", localKey: "reflection_note_v1" },
   //{ docKey: "math_formulas_v1", localKey: "math_formulas_v1" },
-  { docKey: "checklist_v1", localKey: "checklist_v1" },
+  //{ docKey: "checklist_v1", localKey: "checklist_v1" },
   { docKey: "mental_emotion_labeling_v1", localKey: "emotion_labeling_v1" },
   //{ docKey: "math_dictionary_v1", localKey: "math_dictionary_v1" },
   //{ docKey: "study_lisp_dictionary_v1", localKey: "lisp_dictionary_v1" },
