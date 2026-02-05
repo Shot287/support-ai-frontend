@@ -26,6 +26,8 @@ type Node = {
   name: string;
   parentId: ID | null;
   kind: NodeKind;
+  /** ★ 追加：同一フォルダ内での並び順（小さいほど上） */
+  order?: number;
 };
 
 type CodeLanguage = "python" | "typescript" | "cpp" | "text";
@@ -116,6 +118,56 @@ function MathMarkdown({ text }: { text: string }) {
   );
 }
 
+/** ★ 追加：同一親フォルダ内の order を採番（末尾に追加） */
+function getNextOrder(nodes: Record<ID, Node>, parentId: ID | null): number {
+  let max = -1;
+  for (const n of Object.values(nodes)) {
+    if (n.parentId === parentId) {
+      const o = typeof n.order === "number" ? n.order : 0;
+      if (o > max) max = o;
+    }
+  }
+  return max + 1;
+}
+
+/** ★ 追加：古いデータ（order 無し）を現行に寄せる */
+function ensureOrders(store: Store): Store {
+  const nextNodes: Record<ID, Node> = { ...store.nodes };
+
+  // parentId ごとにグループ化
+  const groups = new Map<ID | null, Node[]>();
+  for (const n of Object.values(nextNodes)) {
+    const key = n.parentId ?? null;
+    const arr = groups.get(key) ?? [];
+    arr.push(n);
+    groups.set(key, arr);
+  }
+
+  // order が欠けているものに採番
+  for (const [pid, arr] of groups.entries()) {
+    // 既存の order の最大値を拾う
+    let max = -1;
+    for (const n of arr) {
+      if (typeof n.order === "number") max = Math.max(max, n.order);
+    }
+
+    // order が無いものは「従来の表示順（フォルダ→ファイル→名前順）」で付与
+    const missing = arr
+      .filter((n) => typeof n.order !== "number")
+      .sort((a, b) => {
+        if (a.kind !== b.kind) return a.kind === "folder" ? -1 : 1;
+        return a.name.localeCompare(b.name, "ja");
+      });
+
+    for (const n of missing) {
+      max += 1;
+      nextNodes[n.id] = { ...n, order: max };
+    }
+  }
+
+  return { ...store, nodes: nextNodes, version: 1 };
+}
+
 // 初期状態：ルート直下に Python / TypeScript / C++ フォルダを用意
 function createDefaultStore(): Store {
   const pythonId = uid();
@@ -128,18 +180,21 @@ function createDefaultStore(): Store {
       name: "Python",
       parentId: null,
       kind: "folder",
+      order: 0,
     },
     [tsId]: {
       id: tsId,
       name: "TypeScript",
       parentId: null,
       kind: "folder",
+      order: 1,
     },
     [cppId]: {
       id: cppId,
       name: "C++",
       parentId: null,
       kind: "folder",
+      order: 2,
     },
   };
 
@@ -158,7 +213,7 @@ function loadLocal(): Store {
     const raw = localStorage.getItem(LOCAL_KEY);
     if (!raw) return createDefaultStore();
     const parsed = JSON.parse(raw) as Store;
-    return { ...parsed, version: 1 };
+    return ensureOrders({ ...parsed, version: 1 });
   } catch {
     return createDefaultStore();
   }
@@ -214,8 +269,9 @@ export default function CodeReading() {
       try {
         const remote = await loadUserDoc<Store>(DOC_KEY);
         if (remote && remote.version === 1) {
-          setStore(remote);
-          saveLocal(remote);
+          const fixed = ensureOrders(remote);
+          setStore(fixed);
+          saveLocal(fixed);
         }
       } catch (e) {
         console.warn("[code-reading] manual PULL failed:", e);
@@ -276,7 +332,7 @@ export default function CodeReading() {
       if (ev.key === LOCAL_KEY && ev.newValue) {
         try {
           const parsed = JSON.parse(ev.newValue) as Store;
-          setStore({ ...parsed, version: 1 });
+          setStore(ensureOrders({ ...parsed, version: 1 }));
         } catch {
           // 壊れたJSONは無視
         }
@@ -305,12 +361,16 @@ export default function CodeReading() {
       ? nodes[currentFolderId]
       : null;
 
-  // カレントフォルダの中身取得（フォルダ → ファイル の順で並べる）
+  // カレントフォルダの中身取得（並び順: order → kind(folder優先) → name）
   const children = useMemo(() => {
     const list = Object.values(nodes).filter(
       (n) => n.parentId === currentFolderId
     );
     return list.sort((a, b) => {
+      const ao = typeof a.order === "number" ? a.order : 0;
+      const bo = typeof b.order === "number" ? b.order : 0;
+      if (ao !== bo) return ao - bo;
+
       if (a.kind !== b.kind) {
         return a.kind === "folder" ? -1 : 1;
       }
@@ -343,6 +403,7 @@ export default function CodeReading() {
         name,
         parentId: s.currentFolderId,
         kind: "folder",
+        order: getNextOrder(s.nodes, s.currentFolderId),
       };
       return {
         ...s,
@@ -362,6 +423,7 @@ export default function CodeReading() {
         name,
         parentId: s.currentFolderId,
         kind: "file",
+        order: getNextOrder(s.nodes, s.currentFolderId),
       };
       const firstSet: ReadingSet = {
         id: uid(),
@@ -402,6 +464,43 @@ export default function CodeReading() {
     }));
   };
 
+  // ★ 追加：並び替え（上へ / 下へ）同一 parentId の中だけ
+  const moveNode = (id: ID, dir: "up" | "down") => {
+    setStore((s) => {
+      const target = s.nodes[id];
+      if (!target) return s;
+
+      const siblings = Object.values(s.nodes)
+        .filter((n) => n.parentId === target.parentId)
+        .sort((a, b) => {
+          const ao = typeof a.order === "number" ? a.order : 0;
+          const bo = typeof b.order === "number" ? b.order : 0;
+          if (ao !== bo) return ao - bo;
+          // order が同値だった場合の安定化
+          if (a.kind !== b.kind) return a.kind === "folder" ? -1 : 1;
+          return a.name.localeCompare(b.name, "ja");
+        });
+
+      const idx = siblings.findIndex((n) => n.id === id);
+      if (idx < 0) return s;
+
+      const swapWith = dir === "up" ? idx - 1 : idx + 1;
+      if (swapWith < 0 || swapWith >= siblings.length) return s;
+
+      const a = siblings[idx];
+      const b = siblings[swapWith];
+
+      const ao = typeof a.order === "number" ? a.order : 0;
+      const bo = typeof b.order === "number" ? b.order : 0;
+
+      const nextNodes = { ...s.nodes };
+      nextNodes[a.id] = { ...a, order: bo };
+      nextNodes[b.id] = { ...b, order: ao };
+
+      return { ...s, nodes: nextNodes };
+    });
+  };
+
   // フォルダ削除：中のサブフォルダとファイルもすべて削除
   const deleteFolder = (id: ID) => {
     if (!confirm("このフォルダと中身をすべて削除します。よろしいですか?")) return;
@@ -439,13 +538,13 @@ export default function CodeReading() {
         ? null
         : s.currentFileId;
 
-      return {
+      return ensureOrders({
         ...s,
         nodes: nextNodes,
         files: nextFiles,
         currentFolderId: currentFolderIdNew,
         currentFileId: currentFileIdNew,
-      };
+      });
     });
   };
 
@@ -457,12 +556,12 @@ export default function CodeReading() {
       delete nextNodes[id];
       delete nextFiles[id];
       const currentFileIdNew = s.currentFileId === id ? null : s.currentFileId;
-      return {
+      return ensureOrders({
         ...s,
         nodes: nextNodes,
         files: nextFiles,
         currentFileId: currentFileIdNew,
-      };
+      });
     });
   };
 
@@ -630,41 +729,78 @@ export default function CodeReading() {
             </p>
           ) : (
             <ul className="space-y-1 text-sm">
-              {children.map((n) => (
-                <li
-                  key={n.id}
-                  className="flex items-center justify-between gap-2"
-                >
-                  <button
-                    type="button"
-                    onClick={() =>
-                      n.kind === "folder" ? openFolder(n.id) : openFile(n.id)
-                    }
-                    className={
-                      "flex-1 text-left rounded-xl px-3 py-1.5 border " +
-                      (currentFileId === n.id
-                        ? "bg-black text-white"
-                        : "bg-white hover:bg-gray-50")
-                    }
+              {children.map((n, idx) => {
+                const isTop = idx === 0;
+                const isBottom = idx === children.length - 1;
+                return (
+                  <li
+                    key={n.id}
+                    className="flex items-center justify-between gap-2"
                   >
-                    <span className="mr-2 text-xs text-gray-400">
-                      {n.kind === "folder" ? "📁" : "📄"}
-                    </span>
-                    {n.name}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      n.kind === "folder"
-                        ? deleteFolder(n.id)
-                        : deleteFile(n.id)
-                    }
-                    className="text-xs rounded-lg border px-2 py-1 text-gray-600 hover:bg-gray-50"
-                  >
-                    削除
-                  </button>
-                </li>
-              ))}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        n.kind === "folder" ? openFolder(n.id) : openFile(n.id)
+                      }
+                      className={
+                        "flex-1 text-left rounded-xl px-3 py-1.5 border " +
+                        (currentFileId === n.id
+                          ? "bg-black text-white"
+                          : "bg-white hover:bg-gray-50")
+                      }
+                    >
+                      <span className="mr-2 text-xs text-gray-400">
+                        {n.kind === "folder" ? "📁" : "📄"}
+                      </span>
+                      {n.name}
+                    </button>
+
+                    {/* ★ 追加：並び替え（上/下） */}
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => moveNode(n.id, "up")}
+                        disabled={isTop}
+                        className={
+                          "text-xs rounded-lg border px-2 py-1 " +
+                          (isTop
+                            ? "text-gray-300"
+                            : "text-gray-600 hover:bg-gray-50")
+                        }
+                        title="上へ"
+                      >
+                        ↑
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => moveNode(n.id, "down")}
+                        disabled={isBottom}
+                        className={
+                          "text-xs rounded-lg border px-2 py-1 " +
+                          (isBottom
+                            ? "text-gray-300"
+                            : "text-gray-600 hover:bg-gray-50")
+                        }
+                        title="下へ"
+                      >
+                        ↓
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() =>
+                          n.kind === "folder"
+                            ? deleteFolder(n.id)
+                            : deleteFile(n.id)
+                        }
+                        className="text-xs rounded-lg border px-2 py-1 text-gray-600 hover:bg-gray-50"
+                      >
+                        削除
+                      </button>
+                    </div>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </div>
@@ -784,12 +920,7 @@ export default function CodeReading() {
                             theme={vscodeDark}
                             extensions={getExtensionsForLanguage(lang)}
                             onChange={(value) =>
-                              updateSetField(
-                                currentFile.id,
-                                s.id,
-                                "code",
-                                value
-                              )
+                              updateSetField(currentFile.id, s.id, "code", value)
                             }
                             basicSetup={{
                               lineNumbers: true,
