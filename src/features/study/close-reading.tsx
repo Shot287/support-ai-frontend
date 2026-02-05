@@ -197,9 +197,13 @@ function newId() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
-/** 英文を「単語/記号」単位に分割（空白は捨てる） */
+/** 英文を「単語/記号」単位に分割（空白は捨てる）
+ * ★修正：1980s のような「数字+英字」を 1トークンとして保持する
+ */
 function tokenize(text: string): Token[] {
-  const re = /[A-Za-z]+(?:'[A-Za-z]+)?|\d+(?:\.\d+)?|[^\sA-Za-z0-9]/g;
+  // 優先順位が重要：数字+英字（1980s, 3rd, 10km）を先に拾う
+  const re =
+    /\d+(?:\.\d+)?[A-Za-z]+(?:'[A-Za-z]+)?|[A-Za-z]+(?:'[A-Za-z]+)?|\d+(?:\.\d+)?|[^\sA-Za-z0-9]/g;
   const raw = text.match(re) ?? [];
   return raw.map((t) => ({
     id: newId(),
@@ -231,7 +235,12 @@ function safeParseJSON<T>(s: string | null): T | null {
 }
 
 function isWordToken(t: string) {
-  return /^[A-Za-z]+(?:'[A-Za-z]+)?$/.test(t) || /^\d+(?:\.\d+)?$/.test(t);
+  // ★修正：1980s などの「数字+英字」も単語扱いにする（下線/訳対象にする）
+  return (
+    /^[A-Za-z]+(?:'[A-Za-z]+)?$/.test(t) ||
+    /^\d+(?:\.\d+)?$/.test(t) ||
+    /^\d+(?:\.\d+)?[A-Za-z]+(?:'[A-Za-z]+)?$/.test(t)
+  );
 }
 
 function isSpecialPunct(t: string) {
@@ -306,7 +315,11 @@ function normalizeTokenIds(tokenIds: string[], idToIndex: Map<string, number>) {
 }
 
 /** 選択が飛び飛びなら、最小～最大の“連続範囲”に寄せる */
-function coerceToContiguousSelection(selectedIds: string[], idToIndex: Map<string, number>, tokens: Token[]) {
+function coerceToContiguousSelection(
+  selectedIds: string[],
+  idToIndex: Map<string, number>,
+  tokens: Token[]
+) {
   if (selectedIds.length <= 1) return selectedIds;
 
   const idxs = selectedIds
@@ -968,7 +981,7 @@ export default function CloseReading() {
     const kept = ids.filter((id) => {
       const t = map.get(id);
       if (!t) return false;
-      if (shouldUnderlineToken(t.text)) return true; // 単語/数値
+      if (shouldUnderlineToken(t.text)) return true; // 単語/数値/数字+英字
       if (allowPunct && isSpecialPunct(t.text)) return true; // 複数選択ならOK
       return false;
     });
@@ -1487,8 +1500,7 @@ export default function CloseReading() {
               type="button"
               onClick={() => setStore((s) => ({ ...s, currentFolderId: null, currentFileId: null }))}
               className={
-                "text-xs rounded-lg px-2 py-1 " +
-                (currentFolderId === null ? "bg-black text-white" : "bg-gray-100 hover:bg-gray-200")
+                "text-xs rounded-lg px-2 py-1 " + (currentFolderId === null ? "bg-black text-white" : "bg-gray-100 hover:bg-gray-200")
               }
             >
               ルート
@@ -1500,8 +1512,7 @@ export default function CloseReading() {
                   type="button"
                   onClick={() => openFolder(b.id)}
                   className={
-                    "text-xs rounded-lg px-2 py-1 " +
-                    (currentFolderId === b.id ? "bg-black text-white" : "bg-gray-100 hover:bg-gray-200")
+                    "text-xs rounded-lg px-2 py-1 " + (currentFolderId === b.id ? "bg-black text-white" : "bg-gray-100 hover:bg-gray-200")
                   }
                 >
                   {b.name}
@@ -1528,8 +1539,7 @@ export default function CloseReading() {
                     type="button"
                     onClick={() => (n.kind === "folder" ? openFolder(n.id) : openFile(n.id))}
                     className={
-                      "flex-1 text-left rounded-xl px-3 py-1.5 border " +
-                      (currentFileId === n.id ? "bg-blue-600 text-white" : "bg-white hover:bg-gray-50")
+                      "flex-1 text-left rounded-xl px-3 py-1.5 border " + (currentFileId === n.id ? "bg-blue-600 text-white" : "bg-white hover:bg-gray-50")
                     }
                   >
                     <span className="mr-2 text-xs text-gray-400">{n.kind === "folder" ? "📁" : "📝"}</span>
@@ -1710,12 +1720,7 @@ export default function CloseReading() {
 
                     return (
                       <div key={`${ui}-${u.tokenIds.join(",")}`} className="flex flex-col items-center">
-                        <div
-                          className={[
-                            "inline-flex items-end pb-1",
-                            unitHasUnderline ? "border-b border-gray-700" : "",
-                          ].join(" ")}
-                        >
+                        <div className={["inline-flex items-end pb-1", unitHasUnderline ? "border-b border-gray-700" : ""].join(" ")}>
                           {u.tokenIds.map((tid) => {
                             const idx = idToIndex.get(tid);
                             const token = idx !== undefined ? currentDoc.tokens[idx] : null;
@@ -1727,8 +1732,7 @@ export default function CloseReading() {
                             const opens = spanMarksByTokenId.starts.get(tid) ?? [];
                             const closes = spanMarksByTokenId.ends.get(tid) ?? [];
 
-                            const fade =
-                              !shouldUnderlineToken(token.text) && !isSpecialPunct(token.text) ? "opacity-80" : "";
+                            const fade = !shouldUnderlineToken(token.text) && !isSpecialPunct(token.text) ? "opacity-80" : "";
 
                             return (
                               <div key={tid} className="flex flex-col items-center mx-[2px]">
