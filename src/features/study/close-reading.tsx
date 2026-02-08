@@ -17,6 +17,7 @@ type Node = {
 
 type Role =
   | "S"
+  | "S（同）" // ★追加：同格語（Sの同格）
   | "V"
   | "V（現完）"
   | "V（受）"
@@ -149,6 +150,7 @@ const LOCAL_APPLIED_TYPE = "LOCAL_DOC_APPLIED";
 
 const ROLE_LABELS: { role: Role; label: string }[] = [
   { role: "S", label: "S（主語）" },
+  { role: "S（同）", label: "S（同）(同格語)" }, // ★追加
 
   { role: "V", label: "V（動詞）" },
   // ★追加：Vの細分類
@@ -271,6 +273,7 @@ function isJaTargetToken(t: string) {
 function classForRole(role: Role) {
   switch (role) {
     case "S":
+    case "S（同）": // ★追加：Sと同じ色
       return "bg-blue-100 text-blue-800 border-blue-200";
 
     case "V":
@@ -321,11 +324,7 @@ function normalizeTokenIds(tokenIds: string[], idToIndex: Map<string, number>) {
 }
 
 /** 選択が飛び飛びなら、最小～最大の“連続範囲”に寄せる */
-function coerceToContiguousSelection(
-  selectedIds: string[],
-  idToIndex: Map<string, number>,
-  tokens: Token[]
-) {
+function coerceToContiguousSelection(selectedIds: string[], idToIndex: Map<string, number>, tokens: Token[]) {
   if (selectedIds.length <= 1) return selectedIds;
 
   const idxs = selectedIds
@@ -546,16 +545,12 @@ function normalizeStore(raw: any): Store {
     }
 
     const currentFolderId =
-      raw.currentFolderId === null || typeof raw.currentFolderId === "string"
-        ? raw.currentFolderId
-        : def.currentFolderId;
+      raw.currentFolderId === null || typeof raw.currentFolderId === "string" ? raw.currentFolderId : def.currentFolderId;
     const currentFileId = raw.currentFileId === null || typeof raw.currentFileId === "string" ? raw.currentFileId : null;
 
     // current が壊れてたら補正
-    const safeFolderId =
-      currentFolderId && nodes2[currentFolderId]?.kind === "folder" ? currentFolderId : def.currentFolderId;
-    const safeFileId =
-      currentFileId && nodes2[currentFileId]?.kind === "file" && files[currentFileId] ? currentFileId : null;
+    const safeFolderId = currentFolderId && nodes2[currentFolderId]?.kind === "folder" ? currentFolderId : def.currentFolderId;
+    const safeFileId = currentFileId && nodes2[currentFileId]?.kind === "file" && files[currentFileId] ? currentFileId : null;
 
     return {
       version: 1,
@@ -1103,9 +1098,7 @@ export default function CloseReading() {
           id: typeof s.id === "string" ? s.id : newId(),
           kind: s.kind === "CLAUSE" || s.kind === "PHRASE" ? s.kind : "PHRASE",
           tokenIds: normalizeTokenIds(
-            (Array.isArray(s.tokenIds) ? (s.tokenIds as unknown[]).filter(isString) : []).filter((id) =>
-              tokenSet.has(id)
-            ),
+            (Array.isArray(s.tokenIds) ? (s.tokenIds as unknown[]).filter(isString) : []).filter((id) => tokenSet.has(id)),
             idToIndex2
           ),
         };
@@ -1150,9 +1143,7 @@ export default function CloseReading() {
     updateCurrentDoc((prev) => {
       const idToIndex2 = new Map(prev.tokens.map((t, i) => [t.id, i]));
       const selR = (() => {
-        const idxs = coerced
-          .map((id) => idToIndex2.get(id))
-          .filter((x): x is number => typeof x === "number");
+        const idxs = coerced.map((id) => idToIndex2.get(id)).filter((x): x is number => typeof x === "number");
         if (idxs.length === 0) return { start: 1e9, end: -1 };
         return { start: Math.min(...idxs), end: Math.max(...idxs) };
       })();
@@ -1304,9 +1295,7 @@ export default function CloseReading() {
       started.add(g.id);
 
       const orderedCore = normalizeTokenIds(g.tokenIds, idToIndex);
-      const idxs = orderedCore
-        .map((id) => idToIndex.get(id))
-        .filter((x): x is number => typeof x === "number");
+      const idxs = orderedCore.map((id) => idToIndex.get(id)).filter((x): x is number => typeof x === "number");
       if (idxs.length === 0) continue;
 
       const start = Math.min(...idxs);
@@ -1840,9 +1829,7 @@ export default function CloseReading() {
                       選択: <span className="font-semibold">{selectedText}</span>
                     </div>
                     <div className="text-xs text-gray-500">
-                      {selectedGroup
-                        ? `現在（同一まとまり）: ${selectedGroup.role}`
-                        : "現在:（複数まとまり/未まとまり混在。役割を押すと選択範囲で新しいまとまりを作成）"}
+                      {selectedGroup ? `現在（同一まとまり）: ${selectedGroup.role}` : "現在:（複数まとまり/未まとまり混在。役割を押すと選択範囲で新しいまとまりを作成）"}
                     </div>
                   </div>
 
