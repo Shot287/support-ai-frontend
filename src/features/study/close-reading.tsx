@@ -199,11 +199,15 @@ function newId() {
 
 /** 英文を「単語/記号」単位に分割（空白は捨てる）
  * ★修正：1980s のような「数字+英字」を 1トークンとして保持する
+ * ★修正：St. / Mr. / Dr. / U.S. などの「省略表記」は . と分離しない（1トークンにする）
  */
 function tokenize(text: string): Token[] {
-  // 優先順位が重要：数字+英字（1980s, 3rd, 10km）を先に拾う
+  // 優先順位が重要：
+  // 1) 省略表記（St. / U.S. / e.g. など）を先に拾う（"." を分離しない）
+  // 2) 数字+英字（1980s, 3rd, 10km）
   const re =
-    /\d+(?:\.\d+)?[A-Za-z]+(?:'[A-Za-z]+)?|[A-Za-z]+(?:'[A-Za-z]+)?|\d+(?:\.\d+)?|[^\sA-Za-z0-9]/g;
+    /(?:[A-Za-z]{1,6}\.)+(?=\s|$)|\d+(?:\.\d+)?[A-Za-z]+(?:'[A-Za-z]+)?|[A-Za-z]+(?:'[A-Za-z]+)?|\d+(?:\.\d+)?|[^\sA-Za-z0-9]/g;
+
   const raw = text.match(re) ?? [];
   return raw.map((t) => ({
     id: newId(),
@@ -236,10 +240,12 @@ function safeParseJSON<T>(s: string | null): T | null {
 
 function isWordToken(t: string) {
   // ★修正：1980s などの「数字+英字」も単語扱いにする（下線/訳対象にする）
+  // ★修正：St. / U.S. などの「省略表記」も単語扱いにする（下線/訳対象にする）
   return (
     /^[A-Za-z]+(?:'[A-Za-z]+)?$/.test(t) ||
     /^\d+(?:\.\d+)?$/.test(t) ||
-    /^\d+(?:\.\d+)?[A-Za-z]+(?:'[A-Za-z]+)?$/.test(t)
+    /^\d+(?:\.\d+)?[A-Za-z]+(?:'[A-Za-z]+)?$/.test(t) ||
+    /^(?:[A-Za-z]{1,6}\.)+$/.test(t)
   );
 }
 
@@ -981,7 +987,7 @@ export default function CloseReading() {
     const kept = ids.filter((id) => {
       const t = map.get(id);
       if (!t) return false;
-      if (shouldUnderlineToken(t.text)) return true; // 単語/数値/数字+英字
+      if (shouldUnderlineToken(t.text)) return true; // 単語/数値/数字+英字/省略表記
       if (allowPunct && isSpecialPunct(t.text)) return true; // 複数選択ならOK
       return false;
     });
