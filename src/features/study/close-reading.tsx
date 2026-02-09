@@ -27,6 +27,8 @@ type Role =
   | "V（現分）"
   | "O"
   | "C"
+  | "C（現分）" // ★追加
+  | "C（過分）" // ★追加
   | "M"
   | "SV"
   | "VC"
@@ -163,6 +165,8 @@ const ROLE_LABELS: { role: Role; label: string }[] = [
 
   { role: "O", label: "O（目的語）" },
   { role: "C", label: "C（補語）" },
+  { role: "C（現分）", label: "C（現分）" }, // ★追加
+  { role: "C（過分）", label: "C（過分）" }, // ★追加
   { role: "M", label: "M（修飾）" },
   { role: "SV", label: "SV（主語＋動詞）" },
   { role: "VO", label: "VO（動詞＋目的語）" },
@@ -290,6 +294,8 @@ function classForRole(role: Role) {
     case "O":
       return "bg-amber-100 text-amber-800 border-amber-200";
     case "C":
+    case "C（現分）": // ★追加：Cと同じ色
+    case "C（過分）": // ★追加：Cと同じ色
       return "bg-purple-100 text-purple-800 border-purple-200";
     case "M":
       return "bg-emerald-100 text-emerald-800 border-emerald-200";
@@ -555,7 +561,8 @@ function normalizeStore(raw: any): Store {
     // current が壊れてたら補正
     const safeFolderId =
       currentFolderId && nodes2[currentFolderId]?.kind === "folder" ? currentFolderId : def.currentFolderId;
-    const safeFileId = currentFileId && nodes2[currentFileId]?.kind === "file" && files[currentFileId] ? currentFileId : null;
+    const safeFileId =
+      currentFileId && nodes2[currentFileId]?.kind === "file" && files[currentFileId] ? currentFileId : null;
 
     return {
       version: 1,
@@ -1101,7 +1108,7 @@ export default function CloseReading() {
       for (const s of prev.spans ?? []) {
         const s2: Span = {
           id: typeof s.id === "string" ? s.id : newId(),
-          kind: s.kind === "CLAUSE" || s.kind === "PHRASE" ? s.kind : "PHRASE",
+          kind: s.kind === "CLAUSE" || s.kind === "PHRASE" ? (s.kind as SpanKind) : "PHRASE",
           tokenIds: normalizeTokenIds(
             (Array.isArray(s.tokenIds) ? (s.tokenIds as unknown[]).filter(isString) : []).filter((id) =>
               tokenSet.has(id)
