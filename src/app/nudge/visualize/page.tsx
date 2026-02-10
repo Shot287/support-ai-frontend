@@ -24,7 +24,7 @@ export default function VisualizePage() {
       <main className="app-width-guard minw-720">
         <div className="mb-4 flex items-center justify-between gap-3">
           <h1 className="text-2xl font-bold">
-            ビジュアライズ（試験までの残り日数）
+            デイリーメトリクス（試験までの残り日数）
           </h1>
           <Link
             href="/nudge"

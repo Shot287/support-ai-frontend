@@ -20,7 +20,7 @@ export const techniques: Technique[] = [
   },
   {
     id: "visualize",
-    title: "ビジュアライズ",
+    title: "デイリーメトリクス",
     description: "試験名と試験日を登録して、当日までの残り日数を見える化",
     href: "/nudge/visualize",
   },
