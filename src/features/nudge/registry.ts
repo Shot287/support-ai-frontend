@@ -3,12 +3,47 @@ import type { Technique } from "./types";
 import { fiveMinutePing } from "./techniques/fiveMinutePing"; // ← 追加
 
 export const techniques: Technique[] = [
+  // =========================
+  // 上位（使用頻度 高）
+  // =========================
   {
     id: "five-second",
     title: "5秒カウントダウン",
     description: "5→1で迷いを断ち切って即行動！",
     href: "/nudge/five-second",
   },
+  {
+    id: "self-talk",
+    title: "セルフトーク",
+    description: "1ページ1フレーズ。編集＆複数セット保存に対応",
+    href: "/nudge/self-talk",
+  },
+  {
+    id: "visualize",
+    title: "ビジュアライズ",
+    description: "試験名と試験日を登録して、当日までの残り日数を見える化",
+    href: "/nudge/visualize",
+  },
+  {
+    id: "process-goals",
+    title: "プロセスの目標",
+    description: "勉強時間・睡眠時間などを項目別に1ヶ月分記録・管理",
+    href: "/nudge/process-goals",
+  },
+
+  // =========================
+  // 区切り線（使用頻度 低）
+  // =========================
+  {
+    id: "__divider__",
+    title: "────────── ここから下：使用頻度 低 ──────────",
+    description: "",
+    href: "#",
+  },
+
+  // =========================
+  // 下位（使用頻度 低）
+  // =========================
   {
     id: "pomodoro",
     title: "ポモドーロ",
@@ -34,18 +69,6 @@ export const techniques: Technique[] = [
     href: "/nudge/plan",
   },
   {
-    id: "visualize",
-    title: "ビジュアライズ",
-    description: "試験名と試験日を登録して、当日までの残り日数を見える化",
-    href: "/nudge/visualize",
-  },
-  {
-    id: "self-talk",
-    title: "セルフトーク",
-    description: "1ページ1フレーズ。編集＆複数セット保存に対応",
-    href: "/nudge/self-talk",
-  },
-  {
     id: "todo",
     title: "ToDoリスト",
     description: "締め切りと残り日数を表示。完了→削除可。ローカルに永久保存",
@@ -64,18 +87,12 @@ export const techniques: Technique[] = [
     href: "/nudge/checklist/logs",
   },
   {
-    id: "process-goals",
-    title: "プロセスの目標",
-    description: "勉強時間・睡眠時間などを項目別に1ヶ月分記録・管理",
-    href: "/nudge/process-goals",
-  },
-  {
     id: "reflection-note",
     title: "反省ノート",
     description: "カレンダーで日付を選んで、その日の反省を1枚のノートに書き出す",
     href: "/nudge/reflection-note",
   },
 
-  // ⭐ ここに追加
+  // ⭐ ここに追加（既存維持）
   fiveMinutePing,
 ];
