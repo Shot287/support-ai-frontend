@@ -32,11 +32,18 @@ export const techniques: Technique[] = [
   },
 
   // =========================
-  // 区切り線（使用頻度 低）
+  // ここで「距離」を空ける（スペーサー）
+  // ※ UI 側を触れない前提で、空のカードを挟んで余白を作る
   // =========================
   {
-    id: "__divider__",
-    title: "────────── ここから下：使用頻度 低 ──────────",
+    id: "__spacer__1",
+    title: "　", // 全角スペース（空表示）
+    description: "",
+    href: "#",
+  },
+  {
+    id: "__spacer__2",
+    title: "　",
     description: "",
     href: "#",
   },
@@ -93,6 +100,6 @@ export const techniques: Technique[] = [
     href: "/nudge/reflection-note",
   },
 
-  // ⭐ ここに追加（既存維持）
+  // ⭐ 既存維持
   fiveMinutePing,
 ];
