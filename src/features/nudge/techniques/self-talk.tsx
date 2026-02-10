@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { loadUserDoc, saveUserDoc } from "@/lib/userDocStore";
 
 /* ========= 型 ========= */
 type ID = string;
@@ -17,7 +18,13 @@ type StoreShape = {
 };
 
 /* ========= 定数 ========= */
-const STORE_KEY = "selftalk_v1";
+const LOCAL_KEY = "selftalk_v1";
+const DOC_KEY = "selftalk_v1";
+
+const SYNC_CHANNEL = "support-ai-sync";
+const STORAGE_KEY_RESET_REQ = "support-ai:sync:reset:req"; // since未使用なら購読のみ
+const LOCAL_APPLIED_TYPE = "LOCAL_DOC_APPLIED";
+
 const REQUIRED_COUNT = 11;
 
 // デフォルト11フレーズ（ご指定の文言をそのまま採用）
@@ -39,70 +46,85 @@ const DEFAULT_SET_TITLE = "基本セット";
 
 /* ========= ユーティリティ ========= */
 const uid = () =>
-  (typeof crypto !== "undefined" && "randomUUID" in crypto)
+  typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
 function ensure11(phrases: string[]): string[] {
-  const arr = phrases.slice(0, REQUIRED_COUNT);
+  const arr = (phrases ?? []).slice(0, REQUIRED_COUNT);
   while (arr.length < REQUIRED_COUNT) arr.push("");
   return arr;
 }
 
-function loadStore(): StoreShape {
+function createDefaultStore(): StoreShape {
+  return {
+    sets: [
+      {
+        id: uid(),
+        title: DEFAULT_SET_TITLE,
+        phrases: ensure11(DEFAULT_PHRASES),
+        createdAt: Date.now(),
+      },
+    ],
+    version: 1,
+  };
+}
+
+function normalizeStore(raw: any): StoreShape {
+  // version 1 のみ（将来 version が増えたら migrate を追加）
+  if (!raw || raw.version !== 1) return createDefaultStore();
+
+  const setsRaw = Array.isArray(raw.sets) ? raw.sets : [];
+  const sets: SelfTalkSet[] = setsRaw
+    .filter((s: any) => s && typeof s === "object")
+    .map((s: any) => ({
+      id: typeof s.id === "string" && s.id ? s.id : uid(),
+      title: typeof s.title === "string" ? s.title : DEFAULT_SET_TITLE,
+      phrases: ensure11(Array.isArray(s.phrases) ? s.phrases : []),
+      createdAt: typeof s.createdAt === "number" ? s.createdAt : Date.now(),
+    }));
+
+  return { sets: sets.length ? sets : createDefaultStore().sets, version: 1 };
+}
+
+function loadLocal(): StoreShape {
   try {
     const raw =
-      typeof window !== "undefined" ? localStorage.getItem(STORE_KEY) : null;
-    if (!raw) {
-      // 初回：デフォルト1セットを生成
-      return {
-        sets: [
-          {
-            id: uid(),
-            title: DEFAULT_SET_TITLE,
-            phrases: ensure11(DEFAULT_PHRASES),
-            createdAt: Date.now(),
-          },
-        ],
-        version: 1,
-      };
-    }
-    const parsed = JSON.parse(raw) as StoreShape;
-    // 念のため各セットの長さを11に合わせる
-    parsed.sets = parsed.sets.map((s) => ({
-      ...s,
-      phrases: ensure11(s.phrases ?? []),
-    }));
-    return parsed;
+      typeof window !== "undefined" ? localStorage.getItem(LOCAL_KEY) : null;
+    if (!raw) return createDefaultStore();
+    return normalizeStore(JSON.parse(raw));
   } catch {
-    return {
-      sets: [
-        {
-          id: uid(),
-          title: DEFAULT_SET_TITLE,
-          phrases: ensure11(DEFAULT_PHRASES),
-          createdAt: Date.now(),
-        },
-      ],
-      version: 1,
-    };
+    return createDefaultStore();
   }
 }
-function saveStore(s: StoreShape) {
+
+function saveLocal(s: StoreShape) {
   if (typeof window !== "undefined") {
-    localStorage.setItem(STORE_KEY, JSON.stringify(s));
+    localStorage.setItem(LOCAL_KEY, JSON.stringify(s));
   }
+}
+
+function pickValidSelectedId(store: StoreShape, current: ID): ID {
+  if (current && store.sets.some((s) => s.id === current)) return current;
+  return store.sets[0]?.id ?? "";
 }
 
 /* ========= 本体コンポーネント ========= */
 export default function SelfTalk() {
-  const [store, setStore] = useState<StoreShape>(() => loadStore());
-  const [selectedSetId, setSelectedSetId] = useState<ID>(() =>
-    (loadStore().sets[0]?.id) ?? ""
-  );
+  // 初回ロードを1回にまとめる
+  const initialRef = useRef<StoreShape | null>(null);
+  if (initialRef.current === null) initialRef.current = loadLocal();
+
+  const [store, setStore] = useState<StoreShape>(() => initialRef.current!);
+  const [selectedSetId, setSelectedSetId] = useState<ID>(() => {
+    const s = initialRef.current!;
+    return s.sets[0]?.id ?? "";
+  });
+
+  const storeRef = useRef(store);
+
   const [index, setIndex] = useState(0); // 0..10
   const [isEditing, setIsEditing] = useState(false);
-  const [tmpTitle, setTmpTitle] = useState("");
 
   const currentSet = useMemo(
     () => store.sets.find((s) => s.id === selectedSetId) ?? store.sets[0],
@@ -110,7 +132,109 @@ export default function SelfTalk() {
   );
   const phrase = currentSet?.phrases[index] ?? "";
 
-  useEffect(() => saveStore(store), [store]);
+  // ★ ローカルへは即時保存（サーバー保存しない）
+  useEffect(() => {
+    storeRef.current = store;
+    saveLocal(store);
+    // 選択中セットが消えてたら補正（例：PULLでセット構造が変わった）
+    setSelectedSetId((cur) => pickValidSelectedId(store, cur));
+  }, [store]);
+
+  // ★ 手動同期の合図を購読（PULL / PUSH / LOCAL_DOC_APPLIED / storage）
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const doPull = async () => {
+      try {
+        const remote = await loadUserDoc<StoreShape>(DOC_KEY);
+        if (remote) {
+          const normalized = normalizeStore(remote as any);
+          setStore(normalized);
+          saveLocal(normalized);
+          setSelectedSetId((cur) => pickValidSelectedId(normalized, cur));
+          setIndex(0);
+        }
+      } catch (e) {
+        console.warn("[self-talk] manual PULL failed:", e);
+      }
+    };
+
+    const doPush = async () => {
+      try {
+        await saveUserDoc<StoreShape>(DOC_KEY, storeRef.current);
+      } catch (e) {
+        console.warn("[self-talk] manual PUSH failed:", e);
+      }
+    };
+
+    // BroadcastChannel
+    let bc: BroadcastChannel | null = null;
+    try {
+      if ("BroadcastChannel" in window) {
+        bc = new BroadcastChannel(SYNC_CHANNEL);
+        bc.onmessage = (ev) => {
+          const msg = (ev as MessageEvent)?.data;
+          if (!msg || typeof msg.type !== "string") return;
+          const t = msg.type.toUpperCase();
+
+          if (t.includes("PULL")) doPull();
+          else if (t.includes("PUSH")) doPush();
+          else if (t.includes("RESET")) {
+            // since 未使用なら noop（直後に PULL が来る想定）
+          } else if (t === LOCAL_APPLIED_TYPE && msg.docKey === DOC_KEY) {
+            const local = loadLocal(); // ホームが localStorage を直接書いた合図
+            setStore(local);
+            setSelectedSetId((cur) => pickValidSelectedId(local, cur));
+            setIndex(0);
+          }
+        };
+      }
+    } catch {}
+
+    // 同タブ postMessage
+    const onWinMsg = (ev: MessageEvent) => {
+      const msg = ev?.data;
+      if (!msg || typeof msg.type !== "string") return;
+      const t = msg.type.toUpperCase();
+
+      if (t.includes("PULL")) doPull();
+      else if (t.includes("PUSH")) doPush();
+      else if (t === LOCAL_APPLIED_TYPE && msg.docKey === DOC_KEY) {
+        const local = loadLocal();
+        setStore(local);
+        setSelectedSetId((cur) => pickValidSelectedId(local, cur));
+        setIndex(0);
+      }
+    };
+    window.addEventListener("message", onWinMsg);
+
+    // 他タブ storage（localKey 変更を拾う）
+    const onStorage = (ev: StorageEvent) => {
+      if (!ev.key) return;
+
+      if (ev.key === LOCAL_KEY && ev.newValue) {
+        try {
+          const next = normalizeStore(JSON.parse(ev.newValue));
+          setStore(next);
+          setSelectedSetId((cur) => pickValidSelectedId(next, cur));
+          setIndex(0);
+        } catch {}
+      }
+
+      if (ev.key === STORAGE_KEY_RESET_REQ) {
+        // noop（直後に PULL）
+      }
+    };
+    window.addEventListener("storage", onStorage);
+
+    return () => {
+      try {
+        bc?.close();
+      } catch {}
+      window.removeEventListener("message", onWinMsg);
+      window.removeEventListener("storage", onStorage);
+    };
+  }, []);
 
   const setPhrase = (i: number, value: string) => {
     if (!currentSet) return;
@@ -156,17 +280,25 @@ export default function SelfTalk() {
       alert("少なくとも1つのセットが必要です。削除できません。");
       return;
     }
-    if (!confirm(`セット「${currentSet.title}」を削除します。よろしいですか？`)) return;
+    if (!confirm(`セット「${currentSet.title}」を削除します。よろしいですか？`))
+      return;
+
     setStore((s) => {
-      const next = s.sets.filter((set) => set.id !== currentSet.id);
-      return { ...s, sets: next };
+      const nextSets = s.sets.filter((set) => set.id !== currentSet.id);
+      const nextStore: StoreShape = { ...s, sets: nextSets };
+      return nextStore;
     });
-    // セット変更
+
+    // 選択を安全に更新
     setTimeout(() => {
-      const first = (store.sets.find((s) => s.id !== currentSet.id) ?? store.sets[0])?.id;
-      setSelectedSetId(first);
+      const nextStore = loadLocal(); // 直近保存済み
+      const nextId =
+        nextStore.sets.find((s) => s.id !== currentSet.id)?.id ??
+        nextStore.sets[0]?.id ??
+        "";
+      setSelectedSetId(nextId);
       setIndex(0);
-    });
+    }, 0);
   };
 
   const prev = () => setIndex((i) => (i - 1 + REQUIRED_COUNT) % REQUIRED_COUNT);
@@ -198,13 +330,22 @@ export default function SelfTalk() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <button onClick={addSet} className="rounded-xl border px-3 py-2 hover:bg-gray-50">
+          <button
+            onClick={addSet}
+            className="rounded-xl border px-3 py-2 hover:bg-gray-50"
+          >
             セット追加
           </button>
-          <button onClick={renameSet} className="rounded-xl border px-3 py-2 hover:bg-gray-50">
+          <button
+            onClick={renameSet}
+            className="rounded-xl border px-3 py-2 hover:bg-gray-50"
+          >
             タイトル変更
           </button>
-          <button onClick={deleteSet} className="rounded-xl border px-3 py-2 hover:bg-gray-50">
+          <button
+            onClick={deleteSet}
+            className="rounded-xl border px-3 py-2 hover:bg-gray-50"
+          >
             セット削除
           </button>
           <button
@@ -218,13 +359,19 @@ export default function SelfTalk() {
 
       {/* ページャ（1フレーズ/ページ） */}
       <div className="flex items-center justify-between">
-        <button onClick={prev} className="rounded-xl border px-3 py-2 hover:bg-gray-50">
+        <button
+          onClick={prev}
+          className="rounded-xl border px-3 py-2 hover:bg-gray-50"
+        >
           ← 前へ
         </button>
         <div className="text-sm text-gray-600">
           {index + 1} / {REQUIRED_COUNT}
         </div>
-        <button onClick={next} className="rounded-xl border px-3 py-2 hover:bg-gray-50">
+        <button
+          onClick={next}
+          className="rounded-xl border px-3 py-2 hover:bg-gray-50"
+        >
           次へ →
         </button>
       </div>
@@ -242,7 +389,9 @@ export default function SelfTalk() {
             className="w-full min-h-40 rounded-xl border p-3"
             placeholder="このページのセルフトークを書いてください"
           />
-          <div className="text-right text-sm text-gray-500">自動保存されています</div>
+          <div className="text-right text-sm text-gray-500">
+            自動保存されています（端末ローカルのみ）
+          </div>
         </div>
       )}
 
