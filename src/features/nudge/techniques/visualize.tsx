@@ -43,12 +43,10 @@ function todayJstStr(): string {
   return `${y}-${m}-${d}`;
 }
 
-// 指定日の JST 23:59:59 を UTC ms に
-function jstEndOfDayMs(yyyyMmDd: string): number {
-  return Date.parse(`${yyyyMmDd}T23:59:59+09:00`);
-}
-function nowMs(): number {
-  return Date.now();
+/** YYYY-MM-DD の JST 00:00:00 を UTC ms に */
+function jstStartOfDayMs(yyyyMmDd: string): number {
+  // 例: 2026-02-10T00:00:00+09:00
+  return Date.parse(`${yyyyMmDd}T00:00:00+09:00`);
 }
 
 function createDefaultStore(): Store {
@@ -67,16 +65,11 @@ function normalizeStore(raw: unknown): Store {
   const exams: Exam[] = examsRaw
     .filter((x: unknown): x is Record<string, unknown> => isRecord(x))
     .map((x): Exam => {
-      const id =
-        typeof x.id === "string" && x.id ? x.id : uid();
-      const title =
-        typeof x.title === "string" ? x.title : "";
-      const date =
-        typeof x.date === "string" ? x.date : todayJstStr();
+      const id = typeof x.id === "string" && x.id ? x.id : uid();
+      const title = typeof x.title === "string" ? x.title : "";
+      const date = typeof x.date === "string" ? x.date : todayJstStr();
       const note =
-        typeof x.note === "string" && x.note.trim()
-          ? x.note
-          : undefined;
+        typeof x.note === "string" && x.note.trim() ? x.note : undefined;
       const createdAt =
         typeof x.createdAt === "number" ? x.createdAt : Date.now();
 
@@ -107,9 +100,18 @@ function saveLocal(s: Store) {
   }
 }
 
+/**
+ * 残り日数（JST日付差分）
+ * - target が今日なら 0（=「今日」）
+ * - target が明日なら 1（=「残り1日」）
+ * - target が昨日なら -1（=「経過1日」）
+ */
 function daysLeftJST(targetYmd: string): number {
-  const ms = jstEndOfDayMs(targetYmd) - nowMs();
-  return Math.ceil(ms / 86400000);
+  const todayYmd = todayJstStr();
+  const today0 = jstStartOfDayMs(todayYmd);
+  const target0 = jstStartOfDayMs(targetYmd);
+  // ここは常に「日付差」なので整数になる想定
+  return Math.round((target0 - today0) / 86400000);
 }
 
 function badgeColor(days: number) {
@@ -334,7 +336,7 @@ export default function DailyMetrics() {
           </div>
 
           <p className="text-xs text-gray-500 sm:col-span-2">
-            ※ 残り日数は「日付のJST 23:59:59」までを基準に計算します（当日は残り0日）。
+            ※ 残り日数は「JSTの日付差（00:00基準）」で計算します（当日は「今日」）。
           </p>
         </div>
       </section>
