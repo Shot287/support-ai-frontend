@@ -18,6 +18,7 @@ type Node = {
 type Role =
   | "S"
   | "S（同）" // ★追加：同格語（Sの同格）
+  | "(S)" // ★追加：準動詞用（S）
   | "V"
   | "V（現完）"
   | "V（受）"
@@ -25,11 +26,16 @@ type Role =
   | "V（進）"
   | "V（過分）"
   | "V（現分）"
+  | "(V)" // ★追加：準動詞用（V）
   | "O"
+  | "(O)" // ★追加：準動詞用（O）
   | "C"
   | "C（現分）" // ★追加
   | "C（過分）" // ★追加
+  | "(C)" // ★追加：準動詞用（C）
   | "M"
+  | "(M)" // ★追加：準動詞用（M）
+  | "M（同）" // ★追加：同格語（Mの同格）
   | "SV"
   | "VC"
   | "VO"
@@ -41,6 +47,7 @@ type Role =
 // ★追加：自（自動詞）, 他（他動詞）
 // ★追加：数（数詞）
 // ★追加：従（従属接続詞）
+// ★追加：準動詞用 <自> <他>
 type Detail =
   | "名"
   | "動"
@@ -56,6 +63,8 @@ type Detail =
   | "自"
   | "他"
   | "数"
+  | "<自>" // ★追加：準動詞用
+  | "<他>" // ★追加：準動詞用
   | "NONE";
 
 // 句/従属節の括弧（表示だけで、tokens順は絶対に動かさない）
@@ -153,6 +162,7 @@ const LOCAL_APPLIED_TYPE = "LOCAL_DOC_APPLIED";
 const ROLE_LABELS: { role: Role; label: string }[] = [
   { role: "S", label: "S（主語）" },
   { role: "S（同）", label: "S（同）(同格語)" }, // ★追加
+  { role: "(S)", label: "（S）(準動詞)" }, // ★追加
 
   { role: "V", label: "V（動詞）" },
   // ★追加：Vの細分類
@@ -162,12 +172,20 @@ const ROLE_LABELS: { role: Role; label: string }[] = [
   { role: "V（進）", label: "V（進）" },
   { role: "V（過分）", label: "V（過分）" },
   { role: "V（現分）", label: "V（現分）" },
+  { role: "(V)", label: "（V）(準動詞)" }, // ★追加
 
   { role: "O", label: "O（目的語）" },
+  { role: "(O)", label: "（O）(準動詞)" }, // ★追加
+
   { role: "C", label: "C（補語）" },
   { role: "C（現分）", label: "C（現分）" }, // ★追加
   { role: "C（過分）", label: "C（過分）" }, // ★追加
+  { role: "(C)", label: "（C）(準動詞)" }, // ★追加
+
   { role: "M", label: "M（修飾）" },
+  { role: "(M)", label: "（M）(準動詞)" }, // ★追加
+  { role: "M（同）", label: "M（同）(同格語)" }, // ★追加
+
   { role: "SV", label: "SV（主語＋動詞）" },
   { role: "VO", label: "VO（動詞＋目的語）" },
   { role: "VC", label: "VC（動詞＋補語）" },
@@ -191,6 +209,8 @@ const DETAIL_LABELS: { detail: Detail; label: string }[] = [
   { detail: "接", label: "接（接続詞）" },
   { detail: "従", label: "従（従属接続詞）" },
   { detail: "等", label: "等（等位・並列）" },
+  { detail: "<自>", label: "準動詞 <自>" }, // ★追加
+  { detail: "<他>", label: "準動詞 <他>" }, // ★追加
   { detail: "NONE", label: "未設定" },
 ];
 
@@ -209,23 +229,16 @@ function newId() {
  * ★修正：long-distance のように「語-語」の形は 1単語として扱う（"-" を分離しない）
  */
 function tokenize(text: string): Token[] {
-  // 優先順位が重要：
-  // 1) St./Mr./Ms. を先に拾う（"." を分離しない）
-  // 2) ハイフン連結（long-distance / 10-year / state-of-the-art など）を 1トークン
-  // 3) 数字+英字（1980s, 3rd, 10km）
-  // 4) 通常単語 / 数字
-  // 5) 記号
-
   const seg =
     String.raw`(?:\d+(?:\.\d+)?[A-Za-z]+(?:'[A-Za-z]+)?|[A-Za-z]+(?:'[A-Za-z]+)?|\d+(?:\.\d+)?)`;
 
   const re = new RegExp(
-    String.raw`\b(?:St|Mr|Ms)\.(?=\s|$)` + // 1
-      String.raw`|${seg}(?:-${seg})+` + // 2 ★ハイフン連結を先に拾う
-      String.raw`|\d+(?:\.\d+)?[A-Za-z]+(?:'[A-Za-z]+)?` + // 3
-      String.raw`|[A-Za-z]+(?:'[A-Za-z]+)?` + // 4
-      String.raw`|\d+(?:\.\d+)?` + // 4
-      String.raw`|[^\sA-Za-z0-9]`, // 5
+    String.raw`\b(?:St|Mr|Ms)\.(?=\s|$)` +
+      String.raw`|${seg}(?:-${seg})+` +
+      String.raw`|\d+(?:\.\d+)?[A-Za-z]+(?:'[A-Za-z]+)?` +
+      String.raw`|[A-Za-z]+(?:'[A-Za-z]+)?` +
+      String.raw`|\d+(?:\.\d+)?` +
+      String.raw`|[^\sA-Za-z0-9]`,
     "g"
   );
 
@@ -260,9 +273,6 @@ function safeParseJSON<T>(s: string | null): T | null {
 }
 
 function isWordToken(t: string) {
-  // ★修正：1980s などの「数字+英字」も単語扱いにする（下線/訳対象にする）
-  // ★修正：St./Mr./Ms. だけを単語扱い（下線/訳対象）にする
-  // ★修正：long-distance のような「語-語」を単語扱いにする
   const seg =
     /^(?:\d+(?:\.\d+)?[A-Za-z]+(?:'[A-Za-z]+)?|[A-Za-z]+(?:'[A-Za-z]+)?|\d+(?:\.\d+)?)$/;
   const hyphenWord = new RegExp(
@@ -274,8 +284,8 @@ function isWordToken(t: string) {
     /^\d+(?:\.\d+)?$/.test(t) ||
     /^\d+(?:\.\d+)?[A-Za-z]+(?:'[A-Za-z]+)?$/.test(t) ||
     /^(?:St|Mr|Ms)\.$/.test(t) ||
-    (seg.test(t) && hyphenWord.test(t)) || // ★ハイフン連結
-    hyphenWord.test(t) // 念のため（seg側が false でも hyphen 判定は通す）
+    (seg.test(t) && hyphenWord.test(t)) ||
+    hyphenWord.test(t)
   );
 }
 
@@ -283,17 +293,10 @@ function isSpecialPunct(t: string) {
   return t === "," || t === "." || t === '"';
 }
 
-/**
- * 下線を引きたいトークンか
- * - 通常は「単語/数値」のみ
- * - , . " は「単体では下線なし」
- * - ただし複数選択でグループ化する場合は、idsフィルタ側で許可する（表示の下線はユニット全体 border-b で担保）
- */
 function shouldUnderlineToken(t: string) {
   return isWordToken(t);
 }
 
-/** 訳入力の対象か（単語のみ。記号は単体で訳入力しない） */
 function isJaTargetToken(t: string) {
   return isWordToken(t);
 }
@@ -301,7 +304,8 @@ function isJaTargetToken(t: string) {
 function classForRole(role: Role) {
   switch (role) {
     case "S":
-    case "S（同）": // ★追加：Sと同じ色
+    case "S（同）":
+    case "(S)":
       return "bg-blue-100 text-blue-800 border-blue-200";
 
     case "V":
@@ -311,23 +315,33 @@ function classForRole(role: Role) {
     case "V（進）":
     case "V（過分）":
     case "V（現分）":
+    case "(V)":
       return "bg-red-100 text-red-800 border-red-200";
 
     case "O":
+    case "(O)":
       return "bg-amber-100 text-amber-800 border-amber-200";
+
     case "C":
-    case "C（現分）": // ★追加：Cと同じ色
-    case "C（過分）": // ★追加：Cと同じ色
+    case "C（現分）":
+    case "C（過分）":
+    case "(C)":
       return "bg-purple-100 text-purple-800 border-purple-200";
+
     case "M":
+    case "(M)":
+    case "M（同）":
       return "bg-emerald-100 text-emerald-800 border-emerald-200";
+
     case "SV":
     case "VO":
     case "VC":
     case "VOM":
       return "bg-slate-100 text-slate-800 border-slate-200";
+
     case "OTHER":
       return "bg-gray-100 text-gray-800 border-gray-200";
+
     case "NONE":
     default:
       return "bg-white text-gray-700 border-gray-200";
@@ -346,14 +360,12 @@ function uniq(arr: string[]) {
   return Array.from(new Set(arr));
 }
 
-/** tokens順に tokenIds を正規化 */
 function normalizeTokenIds(tokenIds: string[], idToIndex: Map<string, number>) {
   const dedup = Array.from(new Set(tokenIds));
   dedup.sort((a, b) => (idToIndex.get(a) ?? 1e9) - (idToIndex.get(b) ?? 1e9));
   return dedup;
 }
 
-/** 選択が飛び飛びなら、最小～最大の“連続範囲”に寄せる */
 function coerceToContiguousSelection(selectedIds: string[], idToIndex: Map<string, number>, tokens: Token[]) {
   if (selectedIds.length <= 1) return selectedIds;
 
@@ -394,7 +406,6 @@ function crosses(a: { start: number; end: number }, b: { start: number; end: num
   return true;
 }
 
-// ---- 型ガード（unknown[] → string[] を確実にする）----
 function isString(x: unknown): x is string {
   return typeof x === "string";
 }
@@ -402,7 +413,6 @@ function uniqueStringsPreserveOrder(xs: string[]) {
   return Array.from(new Set(xs));
 }
 
-/** v1-v6 を v6 に吸収（ドキュメント単体） */
 function migrateDoc(raw: any): StoreV6 {
   const base = defaultDocV6();
   if (!raw || typeof raw !== "object") return base;
@@ -470,7 +480,6 @@ function migrateDoc(raw: any): StoreV6 {
       })
       .filter(Boolean) as Span[];
 
-  // v6
   if (raw.version === 6) {
     const inputText = typeof raw.inputText === "string" ? raw.inputText : "";
     const tokens = normalizeTokens(raw.tokens);
@@ -482,7 +491,6 @@ function migrateDoc(raw: any): StoreV6 {
     return { version: 6, inputText, tokens, groups, spans, updatedAt };
   }
 
-  // v5/v4/v3/v2
   if (raw.version === 5 || raw.version === 4 || raw.version === 3 || raw.version === 2) {
     const inputText = typeof raw.inputText === "string" ? raw.inputText : "";
     const tokens = normalizeTokens(raw.tokens);
@@ -494,7 +502,6 @@ function migrateDoc(raw: any): StoreV6 {
     return { version: 6, inputText, tokens, groups, spans, updatedAt };
   }
 
-  // v1
   if (raw.version === 1) {
     const v1 = raw as StoreV1;
     const inputText = typeof v1.inputText === "string" ? v1.inputText : "";
@@ -517,7 +524,6 @@ function migrateDoc(raw: any): StoreV6 {
       : [];
     const idToIndex0 = new Map(tokens0.map((t, i) => [t.id, i]));
 
-    // role を group 化
     const groups0: Group[] = [];
     for (const t of tokens0) {
       const r = (t.role ?? "NONE") as Role;
@@ -551,7 +557,6 @@ function normalizeStore(raw: any): Store {
   const def = createDefaultStore();
   if (!raw || typeof raw !== "object") return def;
 
-  // 新フォーマット
   if (raw.version === 1 && raw.nodes && raw.files) {
     const nodesIn = raw.nodes as any;
     const filesIn = raw.files as any;
@@ -565,7 +570,6 @@ function normalizeStore(raw: any): Store {
       nodes[id] = { id, name, parentId, kind };
     }
 
-    // nodesが空ならデフォルト
     const hasAnyNode = Object.keys(nodes).length > 0;
     const nodes2 = hasAnyNode ? nodes : def.nodes;
 
@@ -580,7 +584,6 @@ function normalizeStore(raw: any): Store {
         : def.currentFolderId;
     const currentFileId = raw.currentFileId === null || typeof raw.currentFileId === "string" ? raw.currentFileId : null;
 
-    // current が壊れてたら補正
     const safeFolderId =
       currentFolderId && nodes2[currentFolderId]?.kind === "folder" ? currentFolderId : def.currentFolderId;
     const safeFileId =
@@ -595,7 +598,6 @@ function normalizeStore(raw: any): Store {
     };
   }
 
-  // 旧フォーマット（ドキュメント単体 v1~v6）→ 新フォーマットへ変換
   const doc = migrateDoc(raw);
 
   const s = createDefaultStore();
@@ -628,9 +630,7 @@ function saveLocal(s: Store) {
   }
 }
 
-/** 表示用：トークン配列から文字列（スペース調整） */
 function joinTokensForDisplay(tokens: string[]) {
-  // ざっくり：句読点の前にはスペースを入れない
   const noSpaceBefore = new Set([",", ".", "!", "?", ";", ":", ")", "]"]);
   const noSpaceAfter = new Set(["(", "["]);
 
@@ -648,7 +648,6 @@ export default function CloseReading() {
   const [store, setStore] = useState<Store>(() => loadLocal());
   const storeRef = useRef<Store>(store);
 
-  // 左ツリー：作成
   const [newFolderName, setNewFolderName] = useState("");
   const [newFileName, setNewFileName] = useState("");
 
@@ -659,30 +658,23 @@ export default function CloseReading() {
   const currentDoc: Doc | null = currentFileId ? store.files[currentFileId] ?? null : null;
   const currentFileName = currentFileId ? nodes[currentFileId]?.name ?? "" : "";
 
-  // ----------------- UI states (doc-local) -----------------
-  // 選択（ID）
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  // Shift用アンカー
   const anchorIndexRef = useRef<number | null>(null);
 
-  // 訳入力：矢印で「次/前」の対象を切り替える
   const [jaCursor, setJaCursor] = useState(0);
   const jaInputRef = useRef<HTMLTextAreaElement | null>(null);
 
-  // 現在ファイルが変わったら選択などをリセット
   useEffect(() => {
     setSelectedIds([]);
     anchorIndexRef.current = null;
     setJaCursor(0);
   }, [currentFileId]);
 
-  // Store change => localStorage
   useEffect(() => {
     storeRef.current = store;
     saveLocal(store);
   }, [store]);
 
-  // 手動同期購読（ホームの📥/☁のみ）
   useEffect(() => {
     if (typeof window === "undefined") return;
 
@@ -755,7 +747,6 @@ export default function CloseReading() {
     };
   }, []);
 
-  // ----------------- Tree UI derived -----------------
   const children = useMemo(() => {
     const list = Object.values(nodes).filter((n) => n.parentId === currentFolderId);
     return list.sort((a, b) => {
@@ -776,7 +767,6 @@ export default function CloseReading() {
     return items.reverse();
   }, [nodes, currentFolderId]);
 
-  // ----------------- Tree ops -----------------
   const addFolder = () => {
     const name = newFolderName.trim();
     if (!name) return;
@@ -889,7 +879,6 @@ export default function CloseReading() {
     });
   };
 
-  // ----------------- Current doc updater -----------------
   const updateCurrentDoc = (updater: (prev: Doc) => Doc) => {
     if (!currentFileId) return;
     setStore((s) => {
@@ -900,10 +889,8 @@ export default function CloseReading() {
     });
   };
 
-  // tokens順の index map（順番固定の要）
   const idToIndex = useMemo(() => new Map((currentDoc?.tokens ?? []).map((t, i) => [t.id, i])), [currentDoc?.tokens]);
 
-  // tokenId -> group
   const groupByTokenId = useMemo(() => {
     const m = new Map<string, Group>();
     for (const g of currentDoc?.groups ?? []) for (const tid of g.tokenIds) m.set(tid, g);
@@ -932,7 +919,6 @@ export default function CloseReading() {
     return "MIXED";
   }, [selectedTokens]);
 
-  // 入力文からトークン生成
   const onBuild = () => {
     if (!currentDoc) return;
     const tokens = tokenize(currentDoc.inputText);
@@ -951,7 +937,6 @@ export default function CloseReading() {
 
   const onClearSVOCM = () => {
     if (!currentDoc) return;
-    // グループを消す（訳も消える）。単語訳（token.ja）は残す
     updateCurrentDoc((prev) => ({
       ...prev,
       groups: [],
@@ -973,7 +958,6 @@ export default function CloseReading() {
     anchorIndexRef.current = null;
   };
 
-  // クリック選択（Shiftは範囲で置き換え）
   const onTokenClick = (index: number, id: string, ev: React.MouseEvent) => {
     const isShift = ev.shiftKey;
     const isMeta = ev.metaKey || ev.ctrlKey;
@@ -1003,12 +987,6 @@ export default function CloseReading() {
     anchorIndexRef.current = index;
   };
 
-  /**
-   * グループ化（role付与）時に、グループに入れてよいトークンIDを残す
-   * - 通常：単語/数値のみ
-   * - 複数選択（連続範囲）なら： , . " もグループに含めてOK（下線が途切れにくい）
-   * - ただし「記号だけ」のグループは作らない（最低1つ単語が必要）
-   */
   const filterGroupEligibleIds = (ids: string[], tokens: Token[]) => {
     const map = new Map(tokens.map((t) => [t.id, t] as const));
     const allowPunct = ids.length >= 2;
@@ -1016,12 +994,11 @@ export default function CloseReading() {
     const kept = ids.filter((id) => {
       const t = map.get(id);
       if (!t) return false;
-      if (shouldUnderlineToken(t.text)) return true; // 単語/数値/数字+英字/（St/Mr/Ms の省略表記）/（ハイフン連結語）
-      if (allowPunct && isSpecialPunct(t.text)) return true; // 複数選択ならOK
+      if (shouldUnderlineToken(t.text)) return true;
+      if (allowPunct && isSpecialPunct(t.text)) return true;
       return false;
     });
 
-    // 記号だけはNG（単語が1つも無いなら空扱い）
     const hasWord = kept.some((id) => {
       const t = map.get(id);
       return t ? isWordToken(t.text) : false;
@@ -1029,19 +1006,16 @@ export default function CloseReading() {
     return hasWord ? kept : [];
   };
 
-  // role付与（飛び飛びは連続範囲に補正）
   const setRoleToSelected = (role: Role) => {
     if (!currentDoc) return;
     if (selectedIds.length === 0) return;
 
-    // 連続範囲へ補正 → グループに入れてよいものだけ残す
     const coerced0 = coerceToContiguousSelection(selectedIds, idToIndex, currentDoc.tokens);
     const coerced = filterGroupEligibleIds(coerced0, currentDoc.tokens);
     if (coerced.length === 0) return;
 
     const selectedSet = new Set(coerced);
 
-    // 既存グループと完全一致なら role だけ更新
     if (selectedGroup) {
       const gSet = new Set(selectedGroup.tokenIds);
       const same = selectedGroup.tokenIds.length === coerced.length && coerced.every((x) => gSet.has(x));
@@ -1059,7 +1033,6 @@ export default function CloseReading() {
     updateCurrentDoc((prev) => {
       const idToIndex2 = new Map(prev.tokens.map((t, i) => [t.id, i]));
 
-      // 1) 選択tokenを既存グループから除去（空なら削除）
       const nextGroups: Group[] = [];
       for (const g of prev.groups) {
         const rest = g.tokenIds.filter((tid) => !selectedSet.has(tid));
@@ -1072,7 +1045,6 @@ export default function CloseReading() {
         }
       }
 
-      // 2) 新グループ作成（日本語訳は空で開始）
       nextGroups.push({
         id: newId(),
         tokenIds: normalizeTokenIds(coerced, idToIndex2),
@@ -1080,7 +1052,6 @@ export default function CloseReading() {
         ja: "",
       });
 
-      // 3) 表示順安定化（tokens順）
       nextGroups.sort((a, b) => {
         const amin = Math.min(...a.tokenIds.map((id) => idToIndex2.get(id) ?? 1e9));
         const bmin = Math.min(...b.tokenIds.map((id) => idToIndex2.get(id) ?? 1e9));
@@ -1093,7 +1064,6 @@ export default function CloseReading() {
     setSelectedIds(coerced);
   };
 
-  // 詳細タグ（上）付与
   const setDetailToSelected = (detail: Detail) => {
     if (!currentDoc) return;
     if (selectedIds.length === 0) return;
@@ -1110,7 +1080,6 @@ export default function CloseReading() {
     setSelectedIds(coerced);
   };
 
-  // 括弧（句/従属節）付与：交差する括弧は自動で解消
   const setSpanToSelected = (kind: SpanKind) => {
     if (!currentDoc) return;
     if (selectedIds.length === 0) return;
@@ -1142,10 +1111,7 @@ export default function CloseReading() {
 
         const r = spanRange(s2, idToIndex2);
 
-        // 完全一致なら置き換え
         if (s2.kind === kind && r.start === newR.start && r.end === newR.end) continue;
-
-        // 交差（クロス）するものは削除（ネストはOK）
         if (crosses(r, newR)) continue;
 
         kept.push(s2);
@@ -1159,7 +1125,7 @@ export default function CloseReading() {
         if (ra.start !== rb.start) return ra.start - rb.start;
         const la = ra.end - ra.start;
         const lb = rb.end - rb.start;
-        if (la !== lb) return lb - la; // 外側を先
+        if (la !== lb) return lb - la;
         if (a.kind !== b.kind) return a.kind === "CLAUSE" ? -1 : 1;
         return a.id.localeCompare(b.id);
       });
@@ -1170,7 +1136,6 @@ export default function CloseReading() {
     setSelectedIds(coerced);
   };
 
-  // 括弧を外す：選択範囲に被る span を削除
   const removeSpansOverlappingSelection = () => {
     if (!currentDoc) return;
     if (selectedIds.length === 0) return;
@@ -1195,7 +1160,6 @@ export default function CloseReading() {
     setSelectedIds(coerced);
   };
 
-  // 日本語訳（グループ）更新
   const setJaToGroup = (groupId: string, ja: string) => {
     if (!currentDoc) return;
     updateCurrentDoc((prev) => ({
@@ -1205,7 +1169,6 @@ export default function CloseReading() {
     }));
   };
 
-  // 日本語訳（単語）更新
   const setJaToToken = (tokenId: string, ja: string) => {
     if (!currentDoc) return;
     updateCurrentDoc((prev) => ({
@@ -1290,7 +1253,6 @@ export default function CloseReading() {
   const roleHintText =
     selectedTokens.length >= 2 ? `（${selectedTokens.length}語）` : selectedTokens.length === 1 ? "（1語）" : "";
 
-  // 表示ユニット（tokensを左→右に走査して生成：順番が絶対に入れ替わらない）
   const displayUnits = useMemo(() => {
     const doc = currentDoc;
     if (!doc) return [];
@@ -1307,11 +1269,6 @@ export default function CloseReading() {
       tokenJa: string;
     }[] = [];
 
-    /**
-     * グループの「最初〜最後」の範囲に挟まるトークン（, など）を表示上は同じユニットに吸収する。
-     * - データ上の tokens順は絶対固定
-     * - 表示上のまとまり下線（border-b）が途中で途切れにくい
-     */
     for (let i = 0; i < doc.tokens.length; i++) {
       const t = doc.tokens[i];
       const g = tokenToGroup.get(t.id);
@@ -1337,7 +1294,6 @@ export default function CloseReading() {
       const start = Math.min(...idxs);
       const end = Math.max(...idxs);
 
-      // 表示用：start〜end に挟まるトークンも含める
       const displayTokenIds = doc.tokens.slice(start, end + 1).map((x) => x.id);
 
       units.push({
@@ -1354,7 +1310,6 @@ export default function CloseReading() {
     return units;
   }, [currentDoc, idToIndex]);
 
-  // 括弧の開始/終了マーカー（ネスト対応：外側→内側の順）
   const spanMarksByTokenId = useMemo(() => {
     const doc = currentDoc;
     const starts = new Map<string, string[]>();
@@ -1369,7 +1324,6 @@ export default function CloseReading() {
       })
       .filter((x) => x.r.end >= x.r.start);
 
-    // start: 長い順（外側を先に開く）
     enriched
       .slice()
       .sort((a, b) => (a.r.start !== b.r.start ? a.r.start - b.r.start : b.len - a.len))
@@ -1382,7 +1336,6 @@ export default function CloseReading() {
         starts.set(first, arr);
       });
 
-    // end: 短い順（内側から閉じる）
     enriched
       .slice()
       .sort((a, b) => (a.r.end !== b.r.end ? a.r.end - b.r.end : a.len - b.len))
@@ -1398,7 +1351,6 @@ export default function CloseReading() {
     return { starts, ends };
   }, [currentDoc, idToIndex]);
 
-  /** 右パネルの「訳入力対象」：グループ or 単語 */
   type JaTarget =
     | { kind: "group"; id: string; role: Role; tokenIds: string[]; text: string; ja: string }
     | { kind: "token"; id: string; tokenId: string; text: string; ja: string };
@@ -1414,7 +1366,6 @@ export default function CloseReading() {
           .map((id) => doc.tokens[idToIndex.get(id) ?? -1]?.text)
           .filter((x): x is string => typeof x === "string");
 
-        // グループは「単語が1つでも含まれる」ものだけ訳対象（, . " は単体で訳対象にしない）
         const visibleWords = words.filter((t) => isJaTargetToken(t));
         if (visibleWords.length === 0) continue;
 
@@ -1444,7 +1395,6 @@ export default function CloseReading() {
     return targets;
   }, [currentDoc, displayUnits, idToIndex]);
 
-  // ターゲット数が変わったらカーソルを丸める
   useEffect(() => {
     if (jaTargets.length === 0) {
       setJaCursor(0);
@@ -1488,11 +1438,10 @@ export default function CloseReading() {
 
   const onUpdateJaTarget = (value: string) => {
     if (!currentJaTarget) return;
-    if (currentJaTarget.kind === "group") setJaToGroup(currentJaTarget.id.slice(2), value); // "g:" を外す
+    if (currentJaTarget.kind === "group") setJaToGroup(currentJaTarget.id.slice(2), value);
     else setJaToToken(currentJaTarget.tokenId, value);
   };
 
-  // 現在の選択が「訳カーソルの対象」に一致するなら、その対象へジャンプ
   const jumpCursorToSelected = () => {
     if (jaTargets.length === 0) return;
 
@@ -1531,7 +1480,8 @@ export default function CloseReading() {
               type="button"
               onClick={() => setStore((s) => ({ ...s, currentFolderId: null, currentFileId: null }))}
               className={
-                "text-xs rounded-lg px-2 py-1 " + (currentFolderId === null ? "bg-black text-white" : "bg-gray-100 hover:bg-gray-200")
+                "text-xs rounded-lg px-2 py-1 " +
+                (currentFolderId === null ? "bg-black text-white" : "bg-gray-100 hover:bg-gray-200")
               }
             >
               ルート
@@ -1543,7 +1493,8 @@ export default function CloseReading() {
                   type="button"
                   onClick={() => openFolder(b.id)}
                   className={
-                    "text-xs rounded-lg px-2 py-1 " + (currentFolderId === b.id ? "bg-black text-white" : "bg-gray-100 hover:bg-gray-200")
+                    "text-xs rounded-lg px-2 py-1 " +
+                    (currentFolderId === b.id ? "bg-black text-white" : "bg-gray-100 hover:bg-gray-200")
                   }
                 >
                   {b.name}
@@ -1744,7 +1695,6 @@ export default function CloseReading() {
                         ? (u.tokenJa ?? "").trim()
                         : "";
 
-                    // ユニット内に「単語（下線対象）」が1つでもあるならユニット全体に下線
                     const unitHasUnderline = u.tokenIds.some((tid) => {
                       const tok = currentDoc.tokens[idToIndex.get(tid) ?? -1];
                       return tok ? shouldUnderlineToken(tok.text) : false;
@@ -1866,7 +1816,9 @@ export default function CloseReading() {
                       選択: <span className="font-semibold">{selectedText}</span>
                     </div>
                     <div className="text-xs text-gray-500">
-                      {selectedGroup ? `現在（同一まとまり）: ${selectedGroup.role}` : "現在:（複数まとまり/未まとまり混在。役割を押すと選択範囲で新しいまとまりを作成）"}
+                      {selectedGroup
+                        ? `現在（同一まとまり）: ${selectedGroup.role}`
+                        : "現在:（複数まとまり/未まとまり混在。役割を押すと選択範囲で新しいまとまりを作成）"}
                     </div>
                   </div>
 
