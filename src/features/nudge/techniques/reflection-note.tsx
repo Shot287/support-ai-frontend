@@ -62,8 +62,7 @@ function fromKey(dateStr: string): Date | null {
   const [y, m, d] = dateStr.split("-").map((x) => Number(x));
   if (!y || !m || !d) return null;
   const dt = new Date(y, m - 1, d);
-  if (dt.getFullYear() !== y || dt.getMonth() !== m - 1 || dt.getDate() !== d)
-    return null;
+  if (dt.getFullYear() !== y || dt.getMonth() !== m - 1 || dt.getDate() !== d) return null;
   return dt;
 }
 
@@ -221,14 +220,11 @@ function loadLocal(): Store {
     if ((parsed as any)?.version === 1 || (parsed as any)?.notes) {
       // v1 っぽい or 古い
       const v1 = parsed as StoreV1;
-      // v1 かもしれないが、v2 の形で入ってる可能性もあるので安全に判定
       if (typeof (v1 as any).notes === "object" && !Array.isArray((v1 as any).items)) {
-        // v1
         if (typeof (v1 as any).notes?.[Object.keys((v1 as any).notes ?? {})[0]] === "string") {
           return migrateToV3(v1);
         }
       }
-      // それでも不明ならデフォルト
       return createDefaultStore();
     }
 
@@ -278,6 +274,18 @@ function ensureSelectedIdsAreValid(selectedIds: ID[], items: Item[]): ID[] {
   return ["overall"].filter((id) => set.has(id)) || [items[0]?.id ?? "overall"];
 }
 
+/** ★Enter改行を確実にする：カーソル位置へ \n を挿入 */
+function insertNewlineAtCaret(
+  el: HTMLTextAreaElement,
+  currentValue: string
+): { nextValue: string; nextCaret: number } {
+  const start = el.selectionStart ?? currentValue.length;
+  const end = el.selectionEnd ?? currentValue.length;
+  const nextValue = currentValue.slice(0, start) + "\n" + currentValue.slice(end);
+  const nextCaret = start + 1;
+  return { nextValue, nextCaret };
+}
+
 export default function ReflectionNote() {
   const [store, setStore] = useState<Store>(() => loadLocal());
   const storeRef = useRef(store);
@@ -296,6 +304,9 @@ export default function ReflectionNote() {
     const dt = fromKey(getToday()) ?? new Date();
     return dt.getMonth();
   });
+
+  // itemId -> textarea ref（カーソル復元用）
+  const taRefs = useRef<Record<ID, HTMLTextAreaElement | null>>({});
 
   // 端末ローカルへは即時保存（サーバ反映はホームの手動同期ボタンのみ）
   useEffect(() => {
@@ -316,7 +327,7 @@ export default function ReflectionNote() {
     const ids = normalizeDayItems(store, selectedDate);
     const fixed = ensureSelectedIdsAreValid(ids, store.items);
     setSelectedItemIds(fixed);
-  }, [selectedDate, store.items]); // store.dayItems 変更は setStore 内で更新される前提
+  }, [selectedDate, store.items]);
 
   // items が変わったら、選択中IDsを補正（消えた項目を外す）
   useEffect(() => {
@@ -461,9 +472,7 @@ export default function ReflectionNote() {
     const dateKey = selectedDate || getToday();
     setDayItems(
       dateKey,
-      selectedItemIds.includes(id)
-        ? selectedItemIds.filter((x) => x !== id)
-        : [...selectedItemIds, id]
+      selectedItemIds.includes(id) ? selectedItemIds.filter((x) => x !== id) : [...selectedItemIds, id]
     );
   };
 
@@ -512,8 +521,6 @@ export default function ReflectionNote() {
       else nextNotes[dateKey] = nextByItem;
 
       const cleanedNotes = cleanupEmptyDate(nextNotes, dateKey);
-
-      // dayItems は残す（＝「今日はこの項目を見る」は維持）
       return { ...s, notes: cleanedNotes };
     });
   };
@@ -698,10 +705,7 @@ export default function ReflectionNote() {
                 const checked = selectedItemIds.includes(it.id);
                 const hasText = (store.notes[selectedDate]?.[it.id] ?? "").trim().length > 0;
                 return (
-                  <li
-                    key={it.id}
-                    className="flex items-center gap-2 rounded-lg px-2 py-1 hover:bg-gray-50"
-                  >
+                  <li key={it.id} className="flex items-center gap-2 rounded-lg px-2 py-1 hover:bg-gray-50">
                     <input
                       type="checkbox"
                       checked={checked}
@@ -790,9 +794,7 @@ export default function ReflectionNote() {
                       onClick={() => handleChangeDate(cell.dateKey!)}
                       className={
                         "relative h-9 rounded-lg border text-center text-sm " +
-                        (isSelected
-                          ? "bg-black text-white border-black"
-                          : "bg-white hover:bg-gray-50") +
+                        (isSelected ? "bg-black text-white border-black" : "bg-white hover:bg-gray-50") +
                         (hasNote && !isSelected ? " ring-1 ring-black/20" : "")
                       }
                       title={formatJapaneseDate(cell.dateKey)}
@@ -837,7 +839,6 @@ export default function ReflectionNote() {
             </button>
           </div>
 
-          {/* 互換のため date input も残す（必要なら手入力できる） */}
           <div className="mt-3 space-y-2">
             <label className="block text-xs text-gray-600">日付を直接指定</label>
             <input
@@ -928,13 +929,39 @@ export default function ReflectionNote() {
                   </div>
 
                   <textarea
+                    ref={(el) => {
+                      taRefs.current[it.id] = el;
+                    }}
                     value={value}
                     onChange={(e) => handleChangeNote(it.id, e.target.value)}
-                    onKeyDownCapture={(e) => {
-                      // ★修正：外側の Enter ショートカット等に潰されないようにする
-                      // ここでは preventDefault しない（＝textarea の改行は生かす）
-                      if (e.key === "Enter") {
+                    onKeyDown={(e) => {
+                      // ★確実に改行させる：Enter は手動で \n を入れる
+                      // （他の挙動や環境差に左右されない）
+                      if (
+                        e.key === "Enter" &&
+                        !e.shiftKey &&
+                        !e.ctrlKey &&
+                        !e.metaKey &&
+                        !e.altKey
+                      ) {
+                        const el = e.currentTarget;
+                        e.preventDefault();
                         e.stopPropagation();
+
+                        const { nextValue, nextCaret } = insertNewlineAtCaret(el, value);
+                        handleChangeNote(it.id, nextValue);
+
+                        // caret を改行の直後へ戻す
+                        requestAnimationFrame(() => {
+                          try {
+                            const ta = taRefs.current[it.id];
+                            if (!ta) return;
+                            ta.focus();
+                            ta.setSelectionRange(nextCaret, nextCaret);
+                          } catch {
+                            // noop
+                          }
+                        });
                       }
                     }}
                     rows={6}
