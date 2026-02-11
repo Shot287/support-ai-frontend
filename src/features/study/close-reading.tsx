@@ -48,9 +48,12 @@ type Role =
 // ★追加：数（数詞）
 // ★追加：従（従属接続詞）
 // ★追加：準動詞用 <自> <他>
+// ★追加：動名（動名詞）, 不定（不定詞）
 type Detail =
   | "名"
   | "動"
+  | "動名" // ★追加
+  | "不定" // ★追加
   | "形"
   | "副"
   | "前"
@@ -200,6 +203,8 @@ const DETAIL_LABELS: { detail: Detail; label: string }[] = [
   { detail: "名", label: "名（名詞）" },
   { detail: "代", label: "代（代名詞）" },
   { detail: "動", label: "動（動詞）" },
+  { detail: "動名", label: "動名（動名詞）" }, // ★追加
+  { detail: "不定", label: "不定（不定詞）" }, // ★追加
   { detail: "自", label: "自（自動詞）" },
   { detail: "他", label: "他（他動詞）" },
   { detail: "数", label: "数（数詞）" },
@@ -366,7 +371,11 @@ function normalizeTokenIds(tokenIds: string[], idToIndex: Map<string, number>) {
   return dedup;
 }
 
-function coerceToContiguousSelection(selectedIds: string[], idToIndex: Map<string, number>, tokens: Token[]) {
+function coerceToContiguousSelection(
+  selectedIds: string[],
+  idToIndex: Map<string, number>,
+  tokens: Token[]
+) {
   if (selectedIds.length <= 1) return selectedIds;
 
   const idxs = selectedIds
@@ -436,7 +445,11 @@ function migrateDoc(raw: any): StoreV6 {
       })
       .filter(Boolean) as Token[];
 
-  const normalizeGroups = (groupsIn: any[], tokenSet: Set<string>, idToIndex: Map<string, number>): Group[] =>
+  const normalizeGroups = (
+    groupsIn: any[],
+    tokenSet: Set<string>,
+    idToIndex: Map<string, number>
+  ): Group[] =>
     (Array.isArray(groupsIn) ? groupsIn : [])
       .map((g: any) => {
         if (!g || typeof g !== "object") return null;
@@ -459,7 +472,11 @@ function migrateDoc(raw: any): StoreV6 {
       })
       .filter(Boolean) as Group[];
 
-  const normalizeSpans = (spansIn: any[], tokenSet: Set<string>, idToIndex: Map<string, number>): Span[] =>
+  const normalizeSpans = (
+    spansIn: any[],
+    tokenSet: Set<string>,
+    idToIndex: Map<string, number>
+  ): Span[] =>
     (Array.isArray(spansIn) ? spansIn : [])
       .map((s: any) => {
         if (!s || typeof s !== "object") return null;
@@ -467,7 +484,9 @@ function migrateDoc(raw: any): StoreV6 {
         if (!kind) return null;
 
         const tokenIdsRaw: string[] = Array.isArray(s.tokenIds)
-          ? uniqueStringsPreserveOrder((s.tokenIds as unknown[]).filter(isString)).filter((id) => tokenSet.has(id))
+          ? uniqueStringsPreserveOrder((s.tokenIds as unknown[]).filter(isString)).filter((id) =>
+              tokenSet.has(id)
+            )
           : [];
 
         if (tokenIdsRaw.length === 0) return null;
@@ -582,12 +601,12 @@ function normalizeStore(raw: any): Store {
       raw.currentFolderId === null || typeof raw.currentFolderId === "string"
         ? raw.currentFolderId
         : def.currentFolderId;
-    const currentFileId = raw.currentFileId === null || typeof raw.currentFileId === "string" ? raw.currentFileId : null;
+    const currentFileId =
+      raw.currentFileId === null || typeof raw.currentFileId === "string" ? raw.currentFileId : null;
 
     const safeFolderId =
       currentFolderId && nodes2[currentFolderId]?.kind === "folder" ? currentFolderId : def.currentFolderId;
-    const safeFileId =
-      currentFileId && nodes2[currentFileId]?.kind === "file" && files[currentFileId] ? currentFileId : null;
+    const safeFileId = currentFileId && nodes2[currentFileId]?.kind === "file" && files[currentFileId] ? currentFileId : null;
 
     return {
       version: 1,
@@ -889,7 +908,10 @@ export default function CloseReading() {
     });
   };
 
-  const idToIndex = useMemo(() => new Map((currentDoc?.tokens ?? []).map((t, i) => [t.id, i])), [currentDoc?.tokens]);
+  const idToIndex = useMemo(
+    () => new Map((currentDoc?.tokens ?? []).map((t, i) => [t.id, i])),
+    [currentDoc?.tokens]
+  );
 
   const groupByTokenId = useMemo(() => {
     const m = new Map<string, Group>();
@@ -902,7 +924,10 @@ export default function CloseReading() {
     return (currentDoc?.tokens ?? []).filter((t) => set.has(t.id));
   }, [currentDoc?.tokens, selectedIds]);
 
-  const selectedText = useMemo(() => joinTokensForDisplay(selectedTokens.map((t) => t.text)), [selectedTokens]);
+  const selectedText = useMemo(
+    () => joinTokensForDisplay(selectedTokens.map((t) => t.text)),
+    [selectedTokens]
+  );
 
   const selectedGroup = useMemo(() => {
     if (!currentDoc) return null;
@@ -1018,7 +1043,8 @@ export default function CloseReading() {
 
     if (selectedGroup) {
       const gSet = new Set(selectedGroup.tokenIds);
-      const same = selectedGroup.tokenIds.length === coerced.length && coerced.every((x) => gSet.has(x));
+      const same =
+        selectedGroup.tokenIds.length === coerced.length && coerced.every((x) => gSet.has(x));
       if (same) {
         updateCurrentDoc((prev) => ({
           ...prev,
@@ -1702,7 +1728,12 @@ export default function CloseReading() {
 
                     return (
                       <div key={`${ui}-${u.tokenIds.join(",")}`} className="flex flex-col items-center">
-                        <div className={["inline-flex items-end pb-1", unitHasUnderline ? "border-b border-gray-700" : ""].join(" ")}>
+                        <div
+                          className={[
+                            "inline-flex items-end pb-1",
+                            unitHasUnderline ? "border-b border-gray-700" : "",
+                          ].join(" ")}
+                        >
                           {u.tokenIds.map((tid) => {
                             const idx = idToIndex.get(tid);
                             const token = idx !== undefined ? currentDoc.tokens[idx] : null;
@@ -1714,7 +1745,10 @@ export default function CloseReading() {
                             const opens = spanMarksByTokenId.starts.get(tid) ?? [];
                             const closes = spanMarksByTokenId.ends.get(tid) ?? [];
 
-                            const fade = !shouldUnderlineToken(token.text) && !isSpecialPunct(token.text) ? "opacity-80" : "";
+                            const fade =
+                              !shouldUnderlineToken(token.text) && !isSpecialPunct(token.text)
+                                ? "opacity-80"
+                                : "";
 
                             return (
                               <div key={tid} className="flex flex-col items-center mx-[2px]">
