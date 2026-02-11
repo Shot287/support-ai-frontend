@@ -206,15 +206,28 @@ function newId() {
 /** 英文を「単語/記号」単位に分割（空白は捨てる）
  * ★修正：1980s のような「数字+英字」を 1トークンとして保持する
  * ★修正：". とくっつく" のは St. / Mr. / Ms. のみ（それ以外は "." を分離）
+ * ★修正：long-distance のように「語-語」の形は 1単語として扱う（"-" を分離しない）
  */
 function tokenize(text: string): Token[] {
   // 優先順位が重要：
   // 1) St./Mr./Ms. を先に拾う（"." を分離しない）
-  // 2) 数字+英字（1980s, 3rd, 10km）
-  // 3) 通常単語 / 数字
-  // 4) 記号
-  const re =
-    /\b(?:St|Mr|Ms)\.(?=\s|$)|\d+(?:\.\d+)?[A-Za-z]+(?:'[A-Za-z]+)?|[A-Za-z]+(?:'[A-Za-z]+)?|\d+(?:\.\d+)?|[^\sA-Za-z0-9]/g;
+  // 2) ハイフン連結（long-distance / 10-year / state-of-the-art など）を 1トークン
+  // 3) 数字+英字（1980s, 3rd, 10km）
+  // 4) 通常単語 / 数字
+  // 5) 記号
+
+  const seg =
+    String.raw`(?:\d+(?:\.\d+)?[A-Za-z]+(?:'[A-Za-z]+)?|[A-Za-z]+(?:'[A-Za-z]+)?|\d+(?:\.\d+)?)`;
+
+  const re = new RegExp(
+    String.raw`\b(?:St|Mr|Ms)\.(?=\s|$)` + // 1
+      String.raw`|${seg}(?:-${seg})+` + // 2 ★ハイフン連結を先に拾う
+      String.raw`|\d+(?:\.\d+)?[A-Za-z]+(?:'[A-Za-z]+)?` + // 3
+      String.raw`|[A-Za-z]+(?:'[A-Za-z]+)?` + // 4
+      String.raw`|\d+(?:\.\d+)?` + // 4
+      String.raw`|[^\sA-Za-z0-9]`, // 5
+    "g"
+  );
 
   const raw = text.match(re) ?? [];
   return raw.map((t) => ({
@@ -249,11 +262,20 @@ function safeParseJSON<T>(s: string | null): T | null {
 function isWordToken(t: string) {
   // ★修正：1980s などの「数字+英字」も単語扱いにする（下線/訳対象にする）
   // ★修正：St./Mr./Ms. だけを単語扱い（下線/訳対象）にする
+  // ★修正：long-distance のような「語-語」を単語扱いにする
+  const seg =
+    /^(?:\d+(?:\.\d+)?[A-Za-z]+(?:'[A-Za-z]+)?|[A-Za-z]+(?:'[A-Za-z]+)?|\d+(?:\.\d+)?)$/;
+  const hyphenWord = new RegExp(
+    String.raw`^(?:\d+(?:\.\d+)?[A-Za-z]+(?:'[A-Za-z]+)?|[A-Za-z]+(?:'[A-Za-z]+)?|\d+(?:\.\d+)?)(?:-(?:\d+(?:\.\d+)?[A-Za-z]+(?:'[A-Za-z]+)?|[A-Za-z]+(?:'[A-Za-z]+)?|\d+(?:\.\d+)?))+$`
+  );
+
   return (
     /^[A-Za-z]+(?:'[A-Za-z]+)?$/.test(t) ||
     /^\d+(?:\.\d+)?$/.test(t) ||
     /^\d+(?:\.\d+)?[A-Za-z]+(?:'[A-Za-z]+)?$/.test(t) ||
-    /^(?:St|Mr|Ms)\.$/.test(t)
+    /^(?:St|Mr|Ms)\.$/.test(t) ||
+    (seg.test(t) && hyphenWord.test(t)) || // ★ハイフン連結
+    hyphenWord.test(t) // 念のため（seg側が false でも hyphen 判定は通す）
   );
 }
 
@@ -994,7 +1016,7 @@ export default function CloseReading() {
     const kept = ids.filter((id) => {
       const t = map.get(id);
       if (!t) return false;
-      if (shouldUnderlineToken(t.text)) return true; // 単語/数値/数字+英字/（St/Mr/Ms の省略表記）
+      if (shouldUnderlineToken(t.text)) return true; // 単語/数値/数字+英字/（St/Mr/Ms の省略表記）/（ハイフン連結語）
       if (allowPunct && isSpecialPunct(t.text)) return true; // 複数選択ならOK
       return false;
     });
