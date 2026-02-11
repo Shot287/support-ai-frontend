@@ -651,9 +651,7 @@ export default function ReflectionNote() {
 
   const selectedItems = useMemo(() => {
     const map = new Map(store.items.map((x) => [x.id, x]));
-    return selectedItemIds
-      .map((id) => map.get(id))
-      .filter(Boolean) as Item[];
+    return selectedItemIds.map((id) => map.get(id)).filter(Boolean) as Item[];
   }, [selectedItemIds, store.items]);
 
   return (
@@ -698,10 +696,12 @@ export default function ReflectionNote() {
             <ul className="p-2 space-y-1">
               {store.items.map((it) => {
                 const checked = selectedItemIds.includes(it.id);
-                const hasText =
-                  (store.notes[selectedDate]?.[it.id] ?? "").trim().length > 0;
+                const hasText = (store.notes[selectedDate]?.[it.id] ?? "").trim().length > 0;
                 return (
-                  <li key={it.id} className="flex items-center gap-2 rounded-lg px-2 py-1 hover:bg-gray-50">
+                  <li
+                    key={it.id}
+                    className="flex items-center gap-2 rounded-lg px-2 py-1 hover:bg-gray-50"
+                  >
                     <input
                       type="checkbox"
                       checked={checked}
@@ -715,9 +715,7 @@ export default function ReflectionNote() {
                       title={it.name}
                     >
                       {it.name}
-                      {hasText && (
-                        <span className="ml-2 text-[10px] text-gray-500">(内容あり)</span>
-                      )}
+                      {hasText && <span className="ml-2 text-[10px] text-gray-500">(内容あり)</span>}
                     </button>
 
                     <button
@@ -799,9 +797,7 @@ export default function ReflectionNote() {
                       }
                       title={formatJapaneseDate(cell.dateKey)}
                     >
-                      <span className={isToday && !isSelected ? "font-semibold" : ""}>
-                        {cell.day}
-                      </span>
+                      <span className={isToday && !isSelected ? "font-semibold" : ""}>{cell.day}</span>
                       {hasNote && (
                         <span
                           className={
@@ -919,9 +915,7 @@ export default function ReflectionNote() {
                 <div key={it.id} className="rounded-2xl border p-3">
                   <div className="flex items-center gap-2 mb-2">
                     <h3 className="font-semibold text-sm">{it.name}</h3>
-                    {value.trim().length > 0 && (
-                      <span className="text-[10px] text-gray-500">保存済み</span>
-                    )}
+                    {value.trim().length > 0 && <span className="text-[10px] text-gray-500">保存済み</span>}
                     {value.trim().length > 0 && (
                       <button
                         type="button"
@@ -936,6 +930,13 @@ export default function ReflectionNote() {
                   <textarea
                     value={value}
                     onChange={(e) => handleChangeNote(it.id, e.target.value)}
+                    onKeyDownCapture={(e) => {
+                      // ★修正：外側の Enter ショートカット等に潰されないようにする
+                      // ここでは preventDefault しない（＝textarea の改行は生かす）
+                      if (e.key === "Enter") {
+                        e.stopPropagation();
+                      }
+                    }}
                     rows={6}
                     className="w-full rounded-xl border px-3 py-2 text-sm leading-relaxed"
                     placeholder={`「${it.name}」について書く`}
