@@ -250,14 +250,24 @@ function hasAnyNoteForDate(notes: Store["notes"], dateKey: string): boolean {
   return Object.values(byItem).some((t) => (t ?? "").trim().length > 0);
 }
 
+/**
+ * ★ここが原因：trimEnd() で末尾の改行が消えていた
+ * → 保存値は一切トリムしない（改行も保持）
+ * → 空判定だけ trim() で行う
+ */
 function cleanupEmptyDate(notes: Store["notes"], dateKey: string): Store["notes"] {
   const byItem = notes[dateKey];
   if (!byItem) return notes;
+
   const kept: Record<ID, string> = {};
   for (const [itemId, t] of Object.entries(byItem)) {
-    const tt = (t ?? "").trimEnd();
-    if (tt.trim().length > 0) kept[itemId] = tt;
+    const raw = (t ?? "").toString();
+    if (raw.trim().length > 0) {
+      // ✅ raw をそのまま保持（末尾改行も消さない）
+      kept[itemId] = raw;
+    }
   }
+
   const next = { ...notes };
   if (Object.keys(kept).length === 0) {
     delete next[dateKey];
@@ -387,9 +397,8 @@ export default function ReflectionNote() {
           if (t.includes("PULL")) doPull();
           else if (t.includes("PUSH")) doPush();
           else if (t.includes("RESET")) {
-            // since 未使用。直後に PULL が来る想定。
+            // noop
           } else if (t === LOCAL_APPLIED_TYPE && msg.docKey === DOC_KEY) {
-            // ホームが localStorage に直接反映した合図
             setStore(loadLocal());
           }
         };
@@ -422,7 +431,7 @@ export default function ReflectionNote() {
         }
       }
       if (ev.key === STORAGE_KEY_RESET_REQ) {
-        // RESET 自体は noop（直後に PULL が来る前提）
+        // noop
       }
     };
     window.addEventListener("storage", onStorage);
@@ -936,7 +945,6 @@ export default function ReflectionNote() {
                     onChange={(e) => handleChangeNote(it.id, e.target.value)}
                     onKeyDown={(e) => {
                       // ★確実に改行させる：Enter は手動で \n を入れる
-                      // （他の挙動や環境差に左右されない）
                       if (
                         e.key === "Enter" &&
                         !e.shiftKey &&
@@ -951,7 +959,6 @@ export default function ReflectionNote() {
                         const { nextValue, nextCaret } = insertNewlineAtCaret(el, value);
                         handleChangeNote(it.id, nextValue);
 
-                        // caret を改行の直後へ戻す
                         requestAnimationFrame(() => {
                           try {
                             const ta = taRefs.current[it.id];
