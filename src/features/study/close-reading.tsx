@@ -17,8 +17,8 @@ type Node = {
 
 type Role =
   | "S"
-  | "S（同）" // ★追加：同格語（Sの同格）
-  | "(S)" // ★追加：準動詞用（S）
+  | "S（同）"
+  | "(S)"
   | "V"
   | "V（現完）"
   | "V（受）"
@@ -26,16 +26,16 @@ type Role =
   | "V（進）"
   | "V（過分）"
   | "V（現分）"
-  | "(V)" // ★追加：準動詞用（V）
+  | "(V)"
   | "O"
-  | "(O)" // ★追加：準動詞用（O）
+  | "(O)"
   | "C"
-  | "C（現分）" // ★追加
-  | "C（過分）" // ★追加
-  | "(C)" // ★追加：準動詞用（C）
+  | "C（現分）"
+  | "C（過分）"
+  | "(C)"
   | "M"
-  | "(M)" // ★追加：準動詞用（M）
-  | "M（同）" // ★追加：同格語（Mの同格）
+  | "(M)"
+  | "M（同）"
   | "SV"
   | "VC"
   | "VO"
@@ -43,17 +43,11 @@ type Role =
   | "OTHER"
   | "NONE";
 
-// 単語の上に出す「詳細タグ（品詞など）」
-// ★追加：自（自動詞）, 他（他動詞）
-// ★追加：数（数詞）
-// ★追加：従（従属接続詞）
-// ★追加：準動詞用 <自> <他>
-// ★追加：動名（動名詞）, 不定（不定詞）
 type Detail =
   | "名"
   | "動"
-  | "動名" // ★追加
-  | "不定" // ★追加
+  | "動名"
+  | "不定"
   | "形"
   | "副"
   | "前"
@@ -66,87 +60,67 @@ type Detail =
   | "自"
   | "他"
   | "数"
-  | "<自>" // ★追加：準動詞用
-  | "<他>" // ★追加：準動詞用
+  | "<自>"
+  | "<他>"
   | "NONE";
 
-// 句/従属節の括弧（表示だけで、tokens順は絶対に動かさない）
-type SpanKind = "PHRASE" | "CLAUSE"; // PHRASE=( ) / CLAUSE=[ ]
+type SpanKind = "PHRASE" | "CLAUSE";
 
 type Token = {
   id: string;
   text: string;
-  role?: Role; // v1互換のため残す（v2以降は group が主役）
-  detail?: Detail; // 単語の上に出す詳細タグ
-  ja?: string; // 単語訳
+  // role, detail は v7 で廃止/移行（グループ管理へ）
+  // ただし ja は単語ごとの訳として残す
+  ja?: string;
 };
 
+// 下線（SVOCM）用のグループ
 type Group = {
   id: string;
-  tokenIds: string[]; // tokens順に正規化して保存
-  role: Role; // 下線の下に出す SVOCM 等（グループで1つだけ表示）
-  ja?: string; // グループの日本語訳
+  tokenIds: string[];
+  role: Role;
+  ja?: string;
+};
+
+// ★追加：上部詳細タグ（品詞）用のグループ
+type DetailGroup = {
+  id: string;
+  tokenIds: string[]; // tokens順に正規化
+  detail: Detail;
 };
 
 type Span = {
   id: string;
   kind: SpanKind;
-  tokenIds: string[]; // 連続範囲（tokens順に正規化して保存）
+  tokenIds: string[];
 };
 
-type StoreV1 = {
-  version: 1;
-  inputText: string;
-  tokens: { id: string; text: string; role: Role }[];
-  updatedAt: number;
-};
-
-type StoreV2 = {
-  version: 2;
-  inputText: string;
-  tokens: Token[];
-  groups: Group[];
-  updatedAt: number;
-};
-
-type StoreV3 = {
-  version: 3;
-  inputText: string;
-  tokens: Token[];
-  groups: Group[];
-  updatedAt: number;
-};
-
-type StoreV4 = {
-  version: 4;
-  inputText: string;
-  tokens: Token[];
-  groups: Group[];
-  spans: Span[];
-  updatedAt: number;
-};
-
-type StoreV5 = {
-  version: 5;
-  inputText: string;
-  tokens: Token[];
-  groups: Group[];
-  spans: Span[];
-  updatedAt: number;
-};
+// --- Legacy Stores for Migration ---
+type StoreV1 = { version: 1; inputText: string; tokens: { id: string; text: string; role: Role }[]; updatedAt: number };
+// V2~V5 omitted for brevity, logic handled in migration
 
 type StoreV6 = {
   version: 6;
   inputText: string;
-  tokens: Token[]; // token.ja を持つ
+  tokens: { id: string; text: string; role: Role; detail: Detail; ja?: string }[];
   groups: Group[];
   spans: Span[];
   updatedAt: number;
 };
 
-type Doc = StoreV6;
+// ★New Store Version
+type StoreV7 = {
+  version: 7;
+  inputText: string;
+  tokens: Token[];
+  groups: Group[];       // 下の役割 (SVOCM)
+  detailGroups: DetailGroup[]; // ★上の詳細タグ (品詞)
+  spans: Span[];         // 括弧
+  updatedAt: number;
+};
 
-// ★フォルダ/ファイル構造（If-Then と同じ骨格）
+type Doc = StoreV7;
+
 type Store = {
   version: 1;
   nodes: Record<ID, Node>;
@@ -164,37 +138,31 @@ const LOCAL_APPLIED_TYPE = "LOCAL_DOC_APPLIED";
 
 const ROLE_LABELS: { role: Role; label: string }[] = [
   { role: "S", label: "S（主語）" },
-  { role: "S（同）", label: "S（同）(同格語)" }, // ★追加
-  { role: "(S)", label: "（S）(準動詞)" }, // ★追加
-
+  { role: "S（同）", label: "S（同）(同格語)" },
+  { role: "(S)", label: "（S）(準動詞)" },
   { role: "V", label: "V（動詞）" },
-  // ★追加：Vの細分類
   { role: "V（現完）", label: "V（現完）" },
   { role: "V（受）", label: "V（受）" },
   { role: "V（否）", label: "V（否）" },
   { role: "V（進）", label: "V（進）" },
   { role: "V（過分）", label: "V（過分）" },
   { role: "V（現分）", label: "V（現分）" },
-  { role: "(V)", label: "（V）(準動詞)" }, // ★追加
-
+  { role: "(V)", label: "（V）(準動詞)" },
   { role: "O", label: "O（目的語）" },
-  { role: "(O)", label: "（O）(準動詞)" }, // ★追加
-
+  { role: "(O)", label: "（O）(準動詞)" },
   { role: "C", label: "C（補語）" },
-  { role: "C（現分）", label: "C（現分）" }, // ★追加
-  { role: "C（過分）", label: "C（過分）" }, // ★追加
-  { role: "(C)", label: "（C）(準動詞)" }, // ★追加
-
+  { role: "C（現分）", label: "C（現分）" },
+  { role: "C（過分）", label: "C（過分）" },
+  { role: "(C)", label: "（C）(準動詞)" },
   { role: "M", label: "M（修飾）" },
-  { role: "(M)", label: "（M）(準動詞)" }, // ★追加
-  { role: "M（同）", label: "M（同）(同格語)" }, // ★追加
-
-  { role: "SV", label: "SV（主語＋動詞）" },
-  { role: "VO", label: "VO（動詞＋目的語）" },
-  { role: "VC", label: "VC（動詞＋補語）" },
-  { role: "VOM", label: "VOM（動詞＋目的語＋修飾など）" },
+  { role: "(M)", label: "（M）(準動詞)" },
+  { role: "M（同）", label: "M（同）(同格語)" },
+  { role: "SV", label: "SV" },
+  { role: "VO", label: "VO" },
+  { role: "VC", label: "VC" },
+  { role: "VOM", label: "VOM" },
   { role: "OTHER", label: "その他" },
-  { role: "NONE", label: "未設定" },
+  { role: "NONE", label: "解除" },
 ];
 
 const DETAIL_LABELS: { detail: Detail; label: string }[] = [
@@ -203,8 +171,8 @@ const DETAIL_LABELS: { detail: Detail; label: string }[] = [
   { detail: "名", label: "名（名詞）" },
   { detail: "代", label: "代（代名詞）" },
   { detail: "動", label: "動（動詞）" },
-  { detail: "動名", label: "動名（動名詞）" }, // ★追加
-  { detail: "不定", label: "不定（不定詞）" }, // ★追加
+  { detail: "動名", label: "動名（動名詞）" },
+  { detail: "不定", label: "不定（不定詞）" },
   { detail: "自", label: "自（自動詞）" },
   { detail: "他", label: "他（他動詞）" },
   { detail: "数", label: "数（数詞）" },
@@ -214,9 +182,9 @@ const DETAIL_LABELS: { detail: Detail; label: string }[] = [
   { detail: "接", label: "接（接続詞）" },
   { detail: "従", label: "従（従属接続詞）" },
   { detail: "等", label: "等（等位・並列）" },
-  { detail: "<自>", label: "準動詞 <自>" }, // ★追加
-  { detail: "<他>", label: "準動詞 <他>" }, // ★追加
-  { detail: "NONE", label: "未設定" },
+  { detail: "<自>", label: "準動詞 <自>" },
+  { detail: "<他>", label: "準動詞 <他>" },
+  { detail: "NONE", label: "解除" },
 ];
 
 const uid = () =>
@@ -228,11 +196,6 @@ function newId() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
-/** 英文を「単語/記号」単位に分割（空白は捨てる）
- * ★修正：1980s のような「数字+英字」を 1トークンとして保持する
- * ★修正：". とくっつく" のは St. / Mr. / Ms. のみ（それ以外は "." を分離）
- * ★修正：long-distance のように「語-語」の形は 1単語として扱う（"-" を分離しない）
- */
 function tokenize(text: string): Token[] {
   const seg =
     String.raw`(?:\d+(?:\.\d+)?[A-Za-z]+(?:'[A-Za-z]+)?|[A-Za-z]+(?:'[A-Za-z]+)?|\d+(?:\.\d+)?)`;
@@ -251,18 +214,17 @@ function tokenize(text: string): Token[] {
   return raw.map((t) => ({
     id: newId(),
     text: t,
-    role: "NONE",
-    detail: "NONE",
     ja: "",
   }));
 }
 
-function defaultDocV6(): StoreV6 {
+function defaultDocV7(): StoreV7 {
   return {
-    version: 6,
+    version: 7,
     inputText: "",
     tokens: [],
     groups: [],
+    detailGroups: [],
     spans: [],
     updatedAt: Date.now(),
   };
@@ -422,24 +384,21 @@ function uniqueStringsPreserveOrder(xs: string[]) {
   return Array.from(new Set(xs));
 }
 
-function migrateDoc(raw: any): StoreV6 {
-  const base = defaultDocV6();
+function migrateDoc(raw: any): StoreV7 {
+  const base = defaultDocV7();
   if (!raw || typeof raw !== "object") return base;
 
+  // Common normalizers
   const normalizeTokens = (tokensIn: any[]): Token[] =>
     (Array.isArray(tokensIn) ? tokensIn : [])
       .map((x: any) => {
         if (!x || typeof x !== "object") return null;
         const text = typeof x.text === "string" ? x.text : null;
         if (!text) return null;
-        const role = typeof x.role === "string" ? (x.role as Role) : "NONE";
-        const detail = typeof x.detail === "string" ? (x.detail as Detail) : "NONE";
         const ja = typeof x.ja === "string" ? x.ja : "";
         return {
           id: typeof x.id === "string" ? x.id : newId(),
           text,
-          role,
-          detail,
           ja,
         } satisfies Token;
       })
@@ -453,15 +412,11 @@ function migrateDoc(raw: any): StoreV6 {
     (Array.isArray(groupsIn) ? groupsIn : [])
       .map((g: any) => {
         if (!g || typeof g !== "object") return null;
-
         const role = typeof g.role === "string" ? (g.role as Role) : "NONE";
-
         const tokenIdsRaw: string[] = Array.isArray(g.tokenIds)
           ? (g.tokenIds as unknown[]).filter(isString).filter((id) => tokenSet.has(id))
           : [];
-
         if (tokenIdsRaw.length === 0) return null;
-
         const ja = typeof g.ja === "string" ? g.ja : "";
         return {
           id: typeof g.id === "string" ? g.id : newId(),
@@ -471,6 +426,27 @@ function migrateDoc(raw: any): StoreV6 {
         } satisfies Group;
       })
       .filter(Boolean) as Group[];
+
+  const normalizeDetailGroups = (
+    dGroupsIn: any[],
+    tokenSet: Set<string>,
+    idToIndex: Map<string, number>
+  ): DetailGroup[] =>
+    (Array.isArray(dGroupsIn) ? dGroupsIn : [])
+      .map((g: any) => {
+        if (!g || typeof g !== "object") return null;
+        const detail = typeof g.detail === "string" ? (g.detail as Detail) : "NONE";
+        const tokenIdsRaw: string[] = Array.isArray(g.tokenIds)
+          ? (g.tokenIds as unknown[]).filter(isString).filter((id) => tokenSet.has(id))
+          : [];
+        if (tokenIdsRaw.length === 0) return null;
+        return {
+          id: typeof g.id === "string" ? g.id : newId(),
+          detail,
+          tokenIds: normalizeTokenIds(uniqueStringsPreserveOrder(tokenIdsRaw), idToIndex),
+        } satisfies DetailGroup;
+      })
+      .filter(Boolean) as DetailGroup[];
 
   const normalizeSpans = (
     spansIn: any[],
@@ -482,15 +458,12 @@ function migrateDoc(raw: any): StoreV6 {
         if (!s || typeof s !== "object") return null;
         const kind = s.kind === "CLAUSE" || s.kind === "PHRASE" ? (s.kind as SpanKind) : null;
         if (!kind) return null;
-
         const tokenIdsRaw: string[] = Array.isArray(s.tokenIds)
           ? uniqueStringsPreserveOrder((s.tokenIds as unknown[]).filter(isString)).filter((id) =>
               tokenSet.has(id)
             )
           : [];
-
         if (tokenIdsRaw.length === 0) return null;
-
         return {
           id: typeof s.id === "string" ? s.id : newId(),
           kind,
@@ -499,60 +472,73 @@ function migrateDoc(raw: any): StoreV6 {
       })
       .filter(Boolean) as Span[];
 
-  if (raw.version === 6) {
+  if (raw.version === 7) {
     const inputText = typeof raw.inputText === "string" ? raw.inputText : "";
     const tokens = normalizeTokens(raw.tokens);
     const idToIndex = new Map(tokens.map((t, i) => [t.id, i]));
     const tokenSet = new Set(tokens.map((t) => t.id));
     const groups = normalizeGroups(raw.groups, tokenSet, idToIndex);
+    const detailGroups = normalizeDetailGroups(raw.detailGroups, tokenSet, idToIndex);
     const spans = normalizeSpans(raw.spans, tokenSet, idToIndex);
     const updatedAt = typeof raw.updatedAt === "number" ? raw.updatedAt : Date.now();
-    return { version: 6, inputText, tokens, groups, spans, updatedAt };
+    return { version: 7, inputText, tokens, groups, detailGroups, spans, updatedAt };
   }
 
-  if (raw.version === 5 || raw.version === 4 || raw.version === 3 || raw.version === 2) {
-    const inputText = typeof raw.inputText === "string" ? raw.inputText : "";
-    const tokens = normalizeTokens(raw.tokens);
+  // Migration from V6 or lower -> V7
+  // V6 had `token.detail`. We need to convert these to `DetailGroup`.
+  if (
+    raw.version === 6 ||
+    raw.version === 5 ||
+    raw.version === 4 ||
+    raw.version === 3 ||
+    raw.version === 2 ||
+    raw.version === 1
+  ) {
+    // Treat V1-V6 roughly the same for token extraction, but V6 has detail
+    const rawTokens = Array.isArray(raw.tokens) ? raw.tokens : [];
+    const tokens: Token[] = [];
+    const detailGroups: DetailGroup[] = [];
+    
+    // Extract tokens and convert details
+    rawTokens.forEach((rt: any) => {
+        if (!rt || typeof rt !== 'object') return;
+        const tId = typeof rt.id === 'string' ? rt.id : newId();
+        const text = typeof rt.text === 'string' ? rt.text : '';
+        const ja = typeof rt.ja === 'string' ? rt.ja : '';
+        if (!text) return;
+        
+        tokens.push({ id: tId, text, ja });
+
+        const detail = typeof rt.detail === 'string' ? (rt.detail as Detail) : "NONE";
+        if (detail !== "NONE") {
+            detailGroups.push({
+                id: newId(),
+                tokenIds: [tId],
+                detail
+            });
+        }
+    });
+
     const idToIndex = new Map(tokens.map((t, i) => [t.id, i]));
     const tokenSet = new Set(tokens.map((t) => t.id));
-    const groups = normalizeGroups(raw.groups, tokenSet, idToIndex);
-    const spans = normalizeSpans(raw.spans, tokenSet, idToIndex);
-    const updatedAt = typeof raw.updatedAt === "number" ? raw.updatedAt : Date.now();
-    return { version: 6, inputText, tokens, groups, spans, updatedAt };
-  }
 
-  if (raw.version === 1) {
-    const v1 = raw as StoreV1;
-    const inputText = typeof v1.inputText === "string" ? v1.inputText : "";
-    const tokens0: Token[] = Array.isArray(v1.tokens)
-      ? (v1.tokens
-          .map((x: any) => {
-            if (!x || typeof x !== "object") return null;
-            const text = typeof x.text === "string" ? x.text : null;
-            if (!text) return null;
-            const role = typeof x.role === "string" ? (x.role as Role) : "NONE";
-            return {
-              id: typeof x.id === "string" ? x.id : newId(),
-              text,
-              role,
-              detail: "NONE",
-              ja: "",
-            } as Token;
-          })
-          .filter(Boolean) as Token[])
-      : [];
-    const idToIndex0 = new Map(tokens0.map((t, i) => [t.id, i]));
-
-    const groups0: Group[] = [];
-    for (const t of tokens0) {
-      const r = (t.role ?? "NONE") as Role;
-      if (r !== "NONE") groups0.push({ id: newId(), tokenIds: [t.id], role: r, ja: "" });
-      t.role = "NONE";
+    // For V1, we need to create groups from roles
+    let groups: Group[] = [];
+    if (raw.version === 1) {
+       rawTokens.forEach((rt: any) => {
+           if(rt.role && rt.role !== "NONE" && typeof rt.role === "string" && typeof rt.id === "string") {
+               groups.push({ id: newId(), tokenIds: [rt.id], role: rt.role as Role, ja: "" });
+           }
+       });
+    } else {
+       groups = normalizeGroups(raw.groups, tokenSet, idToIndex);
     }
-    const groups = groups0.map((g) => ({ ...g, tokenIds: normalizeTokenIds(g.tokenIds, idToIndex0) }));
+    
+    const spans = normalizeSpans(raw.spans, tokenSet, idToIndex);
+    const inputText = typeof raw.inputText === "string" ? raw.inputText : "";
+    const updatedAt = typeof raw.updatedAt === "number" ? raw.updatedAt : Date.now();
 
-    const updatedAt = typeof v1.updatedAt === "number" ? v1.updatedAt : Date.now();
-    return { version: 6, inputText, tokens: tokens0, groups, spans: [], updatedAt };
+    return { version: 7, inputText, tokens, groups, detailGroups, spans, updatedAt };
   }
 
   return base;
@@ -751,9 +737,6 @@ export default function CloseReading() {
         const parsed = safeParseJSON<any>(ev.newValue);
         if (parsed) setStore(normalizeStore(parsed));
       }
-      if (ev.key === STORAGE_KEY_RESET_REQ) {
-        // noop
-      }
     };
     window.addEventListener("storage", onStorage);
 
@@ -803,7 +786,7 @@ export default function CloseReading() {
     setStore((s) => {
       const id = uid();
       const node: Node = { id, name, parentId: s.currentFolderId, kind: "file" };
-      const doc: Doc = defaultDocV6();
+      const doc: Doc = defaultDocV7();
       return {
         ...s,
         nodes: { ...s.nodes, [id]: node },
@@ -919,6 +902,13 @@ export default function CloseReading() {
     return m;
   }, [currentDoc?.groups]);
 
+  // ★追加：DetailGroup lookup
+  const detailGroupByTokenId = useMemo(() => {
+    const m = new Map<string, DetailGroup>();
+    for (const dg of currentDoc?.detailGroups ?? []) for (const tid of dg.tokenIds) m.set(tid, dg);
+    return m;
+  }, [currentDoc?.detailGroups]);
+
   const selectedTokens = useMemo(() => {
     const set = new Set(selectedIds);
     return (currentDoc?.tokens ?? []).filter((t) => set.has(t.id));
@@ -939,19 +929,26 @@ export default function CloseReading() {
 
   const selectedDetailState = useMemo(() => {
     if (selectedTokens.length === 0) return "";
-    const details = uniq(selectedTokens.map((t) => (t.detail ?? "NONE") as string));
+    
+    // Check all selected tokens' details
+    const details = uniq(selectedTokens.map(t => {
+        const dg = detailGroupByTokenId.get(t.id);
+        return dg ? dg.detail : "NONE";
+    }));
+
     if (details.length === 1) return details[0] === "NONE" ? "NONE" : details[0];
     return "MIXED";
-  }, [selectedTokens]);
+  }, [selectedTokens, detailGroupByTokenId]);
 
   const onBuild = () => {
     if (!currentDoc) return;
     const tokens = tokenize(currentDoc.inputText);
     updateCurrentDoc((prev) => ({
       ...prev,
-      version: 6,
+      version: 7,
       tokens,
       groups: [],
+      detailGroups: [],
       spans: [],
       updatedAt: Date.now(),
     }));
@@ -1031,6 +1028,7 @@ export default function CloseReading() {
     return hasWord ? kept : [];
   };
 
+  // SVOCM roles
   const setRoleToSelected = (role: Role) => {
     if (!currentDoc) return;
     if (selectedIds.length === 0) return;
@@ -1090,18 +1088,55 @@ export default function CloseReading() {
     setSelectedIds(coerced);
   };
 
+  // ★詳細タグ（品詞）の設定：複数選択時は DetailGroup を作成して束ねる
   const setDetailToSelected = (detail: Detail) => {
     if (!currentDoc) return;
     if (selectedIds.length === 0) return;
 
+    // 連続範囲に補正
     const coerced = coerceToContiguousSelection(selectedIds, idToIndex, currentDoc.tokens);
     const set = new Set(coerced);
 
-    updateCurrentDoc((prev) => ({
-      ...prev,
-      tokens: prev.tokens.map((t) => (set.has(t.id) ? { ...t, detail } : t)),
-      updatedAt: Date.now(),
-    }));
+    updateCurrentDoc((prev) => {
+        const idToIndex2 = new Map(prev.tokens.map((t, i) => [t.id, i]));
+        
+        // 既存のDetailGroupから、選択されたトークンを削除する（再編）
+        const nextDetailGroups: DetailGroup[] = [];
+        for (const dg of prev.detailGroups) {
+            const remaining = dg.tokenIds.filter(tid => !set.has(tid));
+            // 残ったトークンがあれば、そのグループを維持（縮小）
+            // ※「a few」の「few」だけ変えた場合、「a」は孤立したグループとして残る
+            if (remaining.length > 0) {
+                // Fragmented groups remain as separate groups if needed, 
+                // but usually adjacent remainders stay together? 
+                // We just normalize order. If it became discontinuous, it's effectively one group visually 
+                // with a gap, or we should maybe split. 
+                // For simplicity: keep as one group with remaining tokens.
+                 nextDetailGroups.push({
+                    ...dg,
+                    tokenIds: normalizeTokenIds(remaining, idToIndex2)
+                 });
+            }
+        }
+
+        // Add new group if not NONE
+        if (detail !== "NONE") {
+            nextDetailGroups.push({
+                id: newId(),
+                tokenIds: normalizeTokenIds(coerced, idToIndex2),
+                detail
+            });
+        }
+
+        // Sort groups by position for cleanliness (optional)
+        nextDetailGroups.sort((a, b) => {
+             const amin = Math.min(...a.tokenIds.map((id) => idToIndex2.get(id) ?? 1e9));
+             const bmin = Math.min(...b.tokenIds.map((id) => idToIndex2.get(id) ?? 1e9));
+             return amin - bmin;
+        });
+
+        return { ...prev, detailGroups: nextDetailGroups, updatedAt: Date.now() };
+    });
 
     setSelectedIds(coerced);
   };
@@ -1208,61 +1243,38 @@ export default function CloseReading() {
     if (!currentDoc) return;
 
     const vSet = new Set([
-      "am",
-      "is",
-      "are",
-      "was",
-      "were",
-      "be",
-      "been",
-      "being",
-      "do",
-      "does",
-      "did",
-      "have",
-      "has",
-      "had",
-      "can",
-      "could",
-      "will",
-      "would",
-      "shall",
-      "should",
-      "may",
-      "might",
-      "must",
-      "live",
-      "exists",
-      "exist",
-      "make",
-      "made",
-      "give",
-      "gave",
-      "get",
-      "got",
-      "go",
-      "went",
+      "am", "is", "are", "was", "were", "be", "been", "being",
+      "do", "does", "did", "have", "has", "had",
+      "can", "could", "will", "would", "shall", "should", "may", "might", "must",
+      "live", "exists", "exist", "make", "made", "give", "gave", "get", "got", "go", "went",
     ]);
 
     updateCurrentDoc((prev) => {
       const idToIndex2 = new Map(prev.tokens.map((t, i) => [t.id, i]));
       const tokenSetInGroups = new Set(prev.groups.flatMap((g) => g.tokenIds));
+      
       const nextGroups = [...prev.groups];
+      const nextDetailGroups = [...prev.detailGroups];
+      
+      // Existing detail coverage
+      const coveredByDetail = new Set(prev.detailGroups.flatMap(g => g.tokenIds));
 
-      const nextTokens = prev.tokens.map((t) => {
-        if (!isWordToken(t.text)) return t;
-        const key = t.text.toLowerCase();
-        if (!vSet.has(key)) return t;
-        const nextDetail = (t.detail ?? "NONE") === "NONE" ? "動" : t.detail;
-        return { ...t, detail: nextDetail };
-      });
-
-      for (const t of nextTokens) {
+      for (const t of prev.tokens) {
         if (!isWordToken(t.text)) continue;
         const key = t.text.toLowerCase();
         if (!vSet.has(key)) continue;
-        if (tokenSetInGroups.has(t.id)) continue;
-        nextGroups.push({ id: newId(), tokenIds: [t.id], role: "V", ja: "" });
+
+        // SVOCM hint
+        if (!tokenSetInGroups.has(t.id)) {
+            nextGroups.push({ id: newId(), tokenIds: [t.id], role: "V", ja: "" });
+            tokenSetInGroups.add(t.id);
+        }
+
+        // Detail hint
+        if (!coveredByDetail.has(t.id)) {
+             nextDetailGroups.push({ id: newId(), tokenIds: [t.id], detail: "動" });
+             coveredByDetail.add(t.id);
+        }
       }
 
       for (const g of nextGroups) g.tokenIds = normalizeTokenIds(g.tokenIds, idToIndex2);
@@ -1272,7 +1284,7 @@ export default function CloseReading() {
         return amin - bmin;
       });
 
-      return { ...prev, tokens: nextTokens, groups: nextGroups, updatedAt: Date.now() };
+      return { ...prev, groups: nextGroups, detailGroups: nextDetailGroups, updatedAt: Date.now() };
     });
   };
 
@@ -1709,7 +1721,7 @@ export default function CloseReading() {
               {currentDoc.tokens.length === 0 ? (
                 <div className="text-sm text-gray-500">まだ分解されていません。「単語に分解（タグ付け開始）」を押してください。</div>
               ) : (
-                <div className="flex flex-wrap gap-3 items-end">
+                <div className="flex flex-wrap gap-0 items-end">
                   {displayUnits.map((u, ui) => {
                     const roleText = roleShort(u.roleToShow);
                     const roleClass = classForRole(u.roleToShow === "NONE" ? "NONE" : u.roleToShow);
@@ -1727,7 +1739,7 @@ export default function CloseReading() {
                     });
 
                     return (
-                      <div key={`${ui}-${u.tokenIds.join(",")}`} className="flex flex-col items-center">
+                      <div key={`${ui}-${u.tokenIds.join(",")}`} className="flex flex-col items-center mx-[2px]">
                         <div
                           className={[
                             "inline-flex items-end pb-1",
@@ -1740,7 +1752,31 @@ export default function CloseReading() {
                             if (!token || idx === undefined) return null;
 
                             const selected = selectedIds.includes(tid);
-                            const top = detailShort((token.detail ?? "NONE") as Detail);
+                            
+                            // ★Detail Group Visualization
+                            const dg = detailGroupByTokenId.get(tid);
+                            const topDetailLabel = dg ? detailShort(dg.detail) : "";
+                            
+                            let isGroupStart = false;
+                            let isGroupEnd = false;
+                            let isGroupMiddle = false;
+                            
+                            if (dg && dg.tokenIds.length > 1) {
+                                const pos = dg.tokenIds.indexOf(tid);
+                                isGroupStart = pos === 0;
+                                isGroupEnd = pos === dg.tokenIds.length - 1;
+                                isGroupMiddle = !isGroupStart && !isGroupEnd;
+                            } else if (dg) {
+                                // Single item group -> behaves like normal single word tag
+                            }
+
+                            // ブラケット風のボーダー
+                            const topBorderStyle = dg && dg.tokenIds.length > 1 ? "border-gray-400 border-t" : "";
+                            const leftBorderStyle = isGroupStart ? "border-gray-400 border-l rounded-tl" : "";
+                            const rightBorderStyle = isGroupEnd ? "border-gray-400 border-r rounded-tr" : "";
+                            
+                            // ラベルはグループの先頭（シングルならその単語）にのみ表示
+                            const showLabel = dg ? (dg.tokenIds.length > 1 ? isGroupStart : true) : false;
 
                             const opens = spanMarksByTokenId.starts.get(tid) ?? [];
                             const closes = spanMarksByTokenId.ends.get(tid) ?? [];
@@ -1751,10 +1787,17 @@ export default function CloseReading() {
                                 : "";
 
                             return (
-                              <div key={tid} className="flex flex-col items-center mx-[2px]">
-                                <div className="text-[10px] text-gray-700 min-h-[12px] leading-none">{top}</div>
+                              <div key={tid} className="flex flex-col items-center">
+                                {/* 上部詳細タグエリア：ボーダーとラベル */}
+                                <div className={`relative w-full h-[18px] flex items-end justify-center ${topBorderStyle} ${leftBorderStyle} ${rightBorderStyle} box-border`}>
+                                   {showLabel && (
+                                     <div className="absolute bottom-[2px] left-0 whitespace-nowrap text-[10px] text-gray-700 leading-none">
+                                        {topDetailLabel}
+                                     </div>
+                                   )}
+                                </div>
 
-                                <div className="flex items-center gap-[2px]">
+                                <div className="flex items-center gap-[0px] px-[1px]">
                                   {opens.map((m, i) => (
                                     <div key={`o-${tid}-${i}`} className="text-xs text-gray-700 select-none">
                                       {m}
@@ -1764,7 +1807,7 @@ export default function CloseReading() {
                                   <button
                                     onClick={(ev) => onTokenClick(idx, tid, ev)}
                                     className={[
-                                      "rounded-xl border px-2 py-1 transition",
+                                      "rounded-xl border px-2 py-1 transition mx-[1px]",
                                       roleClass,
                                       selected ? "ring-2 ring-black/15" : "hover:bg-gray-50",
                                       fade,
@@ -1785,7 +1828,7 @@ export default function CloseReading() {
                           })}
                         </div>
 
-                        <div className="mt-1 text-[10px] text-gray-600 min-h-[12px]">{roleText}</div>
+                        <div className="mt-1 text-[10px] text-gray-600 min-h-[12px] leading-none">{roleText}</div>
 
                         <div className="mt-0.5 text-[10px] text-gray-500 min-h-[12px] max-w-[240px] text-center break-words">
                           {jaText ? jaText : ""}
@@ -1831,7 +1874,7 @@ export default function CloseReading() {
                   </div>
 
                   <div className="text-xs text-gray-500">
-                    ※複数選択中なら、選択範囲のトークンすべてに同じ詳細タグを付けます（飛び飛び選択は連続範囲に補正）。
+                    ※複数選択してタグを押すと、それらを1つのまとまりとしてタグ付けします（例：a few → 1つの(形)）。
                   </div>
                 </div>
               )}
