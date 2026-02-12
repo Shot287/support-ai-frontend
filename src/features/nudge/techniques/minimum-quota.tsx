@@ -176,6 +176,18 @@ function summarizeDay(store: Store, dateKey: string) {
   return { total: d.quotaIds.length, done, fail, pending };
 }
 
+/** 指定日より前で、ノルマが設定されている直近の日付キーを探す（無ければ null） */
+function findLatestConfiguredDayBefore(store: Store, dateKey: string): string | null {
+  const keys = Object.keys(store.days ?? {});
+  if (keys.length === 0) return null;
+
+  // dateKey より前だけに絞って、最大（最新）を取る
+  const candidates = keys.filter((k) => k < dateKey && (store.days[k]?.quotaIds?.length ?? 0) > 0);
+  if (candidates.length === 0) return null;
+  candidates.sort(); // 昇順
+  return candidates[candidates.length - 1];
+}
+
 export default function MinimumQuota() {
   const [store, setStore] = useState<Store>(() => loadLocal());
   const storeRef = useRef(store);
@@ -310,6 +322,50 @@ export default function MinimumQuota() {
     });
   };
 
+  /** ★追加：前日（正確には「直前に設定がある日」）と同じノルマを、この日に丸ごと揃える */
+  const copyAllFromPreviousDay = () => {
+    setStore((s) => {
+      const targetDate = selectedDate || getToday();
+
+      const prevKey = findLatestConfiguredDayBefore(s, targetDate) ?? addDaysKey(targetDate, -1);
+      const prevDay = s.days?.[prevKey];
+
+      if (!prevDay || (prevDay.quotaIds?.length ?? 0) === 0) {
+        alert("前日（または直近の日）にノルマがありません。");
+        return s;
+      }
+
+      const curDay = ensureDay(s, targetDate);
+      const hasCurrent = (curDay.quotaIds?.length ?? 0) > 0;
+
+      const msg = hasCurrent
+        ? `「${formatJapaneseDate(prevKey)}」のノルマで、この日のノルマを上書きします。\n（この日の○×チェックはリセットされます）\nよろしいですか？`
+        : `「${formatJapaneseDate(prevKey)}」と同じノルマを、この日に設定します。\nよろしいですか？`;
+
+      if (!confirm(msg)) return s;
+
+      // 参照するノルマIDのうち、現 store.quotas に実体があるものだけ残す
+      const ids = uniqKeepOrder(prevDay.quotaIds.filter((id) => !!s.quotas[id]));
+
+      // もし quotas 側が掃除されていて空になった場合は何もしない
+      if (ids.length === 0) {
+        alert("前日のノルマ定義が見つかりませんでした（データ不整合）。");
+        return s;
+      }
+
+      return {
+        ...s,
+        days: {
+          ...s.days,
+          [targetDate]: {
+            quotaIds: ids,
+            checks: {}, // ★揃えた日は未チェックにする（毎日のチェック運用）
+          },
+        },
+      };
+    });
+  };
+
   const renameQuota = (id: ID) => {
     const q = store.quotas[id];
     if (!q) return;
@@ -387,7 +443,8 @@ export default function MinimumQuota() {
 
   const clearAllForDay = () => {
     if (day.quotaIds.length === 0) return;
-    if (!confirm("この日の最低ノルマを全て削除します（ノルマ自体も削除）。よろしいですか？")) return;
+    if (!confirm("この日の最低ノルマを全て削除します（ノルマ自体も削除）。よろしいですか？"))
+      return;
 
     setStore((s) => {
       const d = ensureDay(s, selectedDate);
@@ -401,6 +458,18 @@ export default function MinimumQuota() {
       return { ...s, quotas: nextQuotas, days: nextDays };
     });
   };
+
+  const canCopyFromPrev = useMemo(() => {
+    const prev = findLatestConfiguredDayBefore(store, selectedDate);
+    if (!prev) return false;
+    return (store.days?.[prev]?.quotaIds?.length ?? 0) > 0;
+  }, [store, selectedDate]);
+
+  const prevConfiguredLabel = useMemo(() => {
+    const prev = findLatestConfiguredDayBefore(store, selectedDate);
+    if (!prev) return null;
+    return prev;
+  }, [store, selectedDate]);
 
   return (
     <div className="grid gap-6 lg:grid-cols-[340px_minmax(0,1fr)]">
@@ -457,6 +526,23 @@ export default function MinimumQuota() {
             ＋ 今日のノルマを追加
           </button>
 
+          <button
+            type="button"
+            onClick={copyAllFromPreviousDay}
+            disabled={!canCopyFromPrev && day.quotaIds.length === 0}
+            className={
+              "rounded-xl border px-3 py-2 text-xs " +
+              ((canCopyFromPrev || day.quotaIds.length > 0) ? "hover:bg-gray-50" : "opacity-50")
+            }
+            title={
+              prevConfiguredLabel
+                ? `直近：${formatJapaneseDate(prevConfiguredLabel)} と同じノルマを揃える`
+                : "前日（または直近の日）にノルマが無いと使えません"
+            }
+          >
+            前日と同じに揃える
+          </button>
+
           {day.quotaIds.length > 0 && (
             <button
               type="button"
@@ -467,6 +553,12 @@ export default function MinimumQuota() {
             </button>
           )}
         </div>
+
+        {prevConfiguredLabel && (
+          <p className="text-[11px] text-gray-500 mt-2 leading-relaxed">
+            直近の設定日：{formatJapaneseDate(prevConfiguredLabel)}（ここからコピーします）
+          </p>
+        )}
 
         <p className="text-xs text-gray-500 mt-3 leading-relaxed">
           「最低ノルマ」は“ゼロを防ぐ”ための最小行動。
@@ -487,19 +579,36 @@ export default function MinimumQuota() {
             >
               追加
             </button>
+            <button
+              type="button"
+              onClick={copyAllFromPreviousDay}
+              className="rounded-xl border px-3 py-2 text-xs hover:bg-gray-50"
+              title="前日（または直近の日）と同じノルマを、この日に揃えて設定します"
+            >
+              前日コピー
+            </button>
           </div>
         </div>
 
         {orderedQuotas.length === 0 ? (
           <div className="rounded-xl border bg-gray-50 p-4">
             <p className="text-sm text-gray-700">この日の最低ノルマがまだありません。</p>
-            <button
-              type="button"
-              onClick={addQuotaForDay}
-              className="mt-2 rounded-xl border px-3 py-2 text-xs hover:bg-white"
-            >
-              まず1つ追加する
-            </button>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={addQuotaForDay}
+                className="rounded-xl border px-3 py-2 text-xs hover:bg-white"
+              >
+                まず1つ追加する
+              </button>
+              <button
+                type="button"
+                onClick={copyAllFromPreviousDay}
+                className="rounded-xl border px-3 py-2 text-xs hover:bg-white"
+              >
+                前日と同じに揃える
+              </button>
+            </div>
           </div>
         ) : (
           <div className="grid gap-3">
