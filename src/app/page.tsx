@@ -33,6 +33,7 @@ const DOCS = [
   //{ docKey: "todo_v1", localKey: "todo_v1" },
   { docKey: "visualize_v1",             localKey: "visualize_v1" },
   { docKey: "selftalk_v1", localKey: "selftalk_v1" },
+  { docKey: "minimum_quota_v1", localKey: "minimum_quota_v1" },
 ] as const;
 
 // エラー表示用：できるだけ詳細に

@@ -30,6 +30,12 @@ export const techniques: Technique[] = [
     description: "勉強時間・睡眠時間などを項目別に1ヶ月分記録・管理",
     href: "/nudge/process-goals",
   },
+  {
+    id: "minimum-quota",
+    title: "最低ノルマ",
+    description: "1日ごとに複数ノルマを設定し、夜に○/×で達成チェック",
+    href: "/nudge/minimum-quota",
+  },
 
   // =========================
   // ここで「距離」を空ける（スペーサー）
