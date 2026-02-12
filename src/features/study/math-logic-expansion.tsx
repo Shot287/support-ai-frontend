@@ -10,8 +10,7 @@ import ReactMarkdown from "react-markdown";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 
-// 【重要】remark-gfmの読み込みエラー対策
-// 型定義エラーやESLintエラーを回避するための記述です
+// remark-gfmの読み込みエラー対策
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore
 import remarkGfm from "remark-gfm";
@@ -59,9 +58,7 @@ const DOC_KEY = "math_logic_expansion_v1";
 const uid = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
-    : `${Date.now().toString(36)}-${Math.random()
-        .toString(36)
-        .slice(2, 10)}`;
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
 // ------ LaTeX / Markdown テキスト自動補正 ------
 function normalizeMathText(raw: string): string {
@@ -161,7 +158,7 @@ function saveLocal(store: Store) {
   }
 }
 
-// -------- MathMarkdown コンポーネント --------
+// -------- MathMarkdown コンポーネント (ここを強化しました) --------
 function MathMarkdown({
   text,
   placeholder,
@@ -179,12 +176,32 @@ function MathMarkdown({
     );
   }
 
+  // Tailwind CSSの「任意のスタイル機能」を使って、表(table)のデザインを強制的に適用します
   return (
-    <div className="prose prose-sm max-w-none prose-p:my-1 prose-headings:my-2 prose-table:my-2 prose-td:border prose-td:p-1 prose-th:bg-gray-100 prose-th:p-1">
+    <div className="
+      text-sm leading-relaxed text-gray-800
+      [&_p]:my-2
+      [&_h1]:text-xl [&_h1]:font-bold [&_h1]:my-4 [&_h1]:pb-2 [&_h1]:border-b
+      [&_h2]:text-lg [&_h2]:font-bold [&_h2]:my-3 [&_h2]:pb-1 [&_h2]:border-b
+      [&_h3]:text-base [&_h3]:font-bold [&_h3]:my-2
+      [&_ul]:list-disc [&_ul]:pl-5 [&_ul]:my-2
+      [&_ol]:list-decimal [&_ol]:pl-5 [&_ol]:my-2
+      [&_blockquote]:border-l-4 [&_blockquote]:border-gray-300 [&_blockquote]:pl-4 [&_blockquote]:italic [&_blockquote]:text-gray-600 [&_blockquote]:my-2
+      
+      /* ↓↓↓ テーブル(表)のデザイン定義 ↓↓↓ */
+      [&_table]:w-full [&_table]:border-collapse [&_table]:my-4 [&_table]:border [&_table]:border-gray-300
+      [&_th]:border [&_th]:border-gray-300 [&_th]:bg-gray-100 [&_th]:p-2 [&_th]:text-center [&_th]:font-semibold
+      [&_td]:border [&_td]:border-gray-300 [&_td]:p-2 [&_td]:text-center
+      /* ↑↑↑ ここまで ↑↑↑ */
+      
+      [&_a]:text-blue-600 [&_a]:underline
+      [&_hr]:my-4 [&_hr]:border-gray-300
+    ">
       <ReactMarkdown
         remarkPlugins={[remarkMath, remarkGfm]}
         rehypePlugins={[rehypeKatex]}
         components={{
+          // 特殊なコンポーネント置換が必要な場合はここに記述
           p: ({ children }) => (
             <div className="mb-2 leading-relaxed">{children}</div>
           ),
@@ -259,7 +276,7 @@ function SectionItem({
           <textarea
             value={value}
             onChange={(e) => onChange(e.target.value)}
-            rows={5}
+            rows={8} // 少し広げました
             className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
             placeholder={placeholder || "LaTeX/Markdownを入力..."}
           />
