@@ -10,9 +10,9 @@ import ReactMarkdown from "react-markdown";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 
-// 【修正1】importだと型エラーが出るため、requireで読み込んでany型として扱います
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const remarkGfm = require("remark-gfm");
+// 【重要】型定義エラーを無視して import します (requireは使いません)
+// @ts-ignore
+import remarkGfm from "remark-gfm";
 
 // ------------------------------------------
 // Types
@@ -64,18 +64,71 @@ function normalizeMathText(raw: string): string {
   if (!raw) return "";
   let text = raw;
   text = text.replace(/¥/g, "\\");
+  
+  // 文書構造コマンドを Markdown に簡易変換
   text = text.replace(/\\section\*?\{(.*?)\}/g, "\n## $1\n");
   text = text.replace(/\\subsection\*?\{(.*?)\}/g, "\n### $1\n");
   text = text.replace(/\\textbf\{(.*?)\}/g, "**$1**");
   text = text.replace(/\\textit\{(.*?)\}/g, "*$1*");
+  
+  // 数式環境の補正
   text = text.replace(/\$\$([\s\S]*?)\$\$/g, (_match, inner) => `\n$$\n${inner.trim()}\n$$\n`);
   
+  // 裸の数式環境を $$ で囲む
   const envs = ["align", "align*", "equation", "equation*", "cases", "gather", "matrix", "pmatrix", "bmatrix"];
   envs.forEach((env) => {
     const regex = new RegExp(`(^|\\n)(\\\\begin\\{${env}\\}[\\s\\S]*?\\\\end\\{${env}\\})`, "g");
     text = text.replace(regex, "$1\n$$\n$2\n$$\n");
   });
   return text;
+}
+
+// -------- Helper Functions (以前のコードで漏れていた部分を復活) --------
+
+function createDefaultStore(): Store {
+  const rootId = uid();
+  const rootNode: Node = {
+    id: rootId,
+    name: "数学・論理",
+    parentId: null,
+    kind: "folder",
+  };
+
+  return {
+    nodes: { [rootId]: rootNode },
+    files: {},
+    currentFolderId: rootId,
+    currentFileId: null,
+    version: 1,
+  };
+}
+
+function loadLocal(): Store {
+  try {
+    if (typeof window === "undefined") return createDefaultStore();
+    const raw = localStorage.getItem(LOCAL_KEY);
+    if (!raw) return createDefaultStore();
+    const parsed = JSON.parse(raw) as Partial<Store>;
+    if (!parsed || typeof parsed !== "object") return createDefaultStore();
+    const def = createDefaultStore();
+    return {
+      nodes: parsed.nodes ?? def.nodes,
+      files: parsed.files ?? {},
+      currentFolderId: parsed.currentFolderId ?? def.currentFolderId,
+      currentFileId: parsed.currentFileId ?? null,
+      version: 1,
+    };
+  } catch {
+    return createDefaultStore();
+  }
+}
+
+function saveLocal(store: Store) {
+  try {
+    if (typeof window !== "undefined") {
+      localStorage.setItem(LOCAL_KEY, JSON.stringify(store));
+    }
+  } catch { /* 無視 */ }
 }
 
 // -------- MathMarkdown コンポーネント --------
@@ -101,7 +154,7 @@ function MathMarkdown({ text, placeholder }: { text: string; placeholder?: strin
   );
 }
 
-// 【修正2】JSXスプレッドエラーを防ぐため、サブコンポーネント化
+// -------- SectionItem コンポーネント (JSXエラー回避用) --------
 type SectionItemProps = {
   label: string;
   value: string;
@@ -180,47 +233,6 @@ function SectionItem({
       </div>
     </div>
   );
-}
-
-// -------- Store ロード／保存 --------
-function createDefaultStore(): Store {
-  const rootId = uid();
-  const rootNode: Node = { id: rootId, name: "数学・論理", parentId: null, kind: "folder" };
-  return {
-    nodes: { [rootId]: rootNode },
-    files: {},
-    currentFolderId: rootId,
-    currentFileId: null,
-    version: 1,
-  };
-}
-
-function loadLocal(): Store {
-  try {
-    if (typeof window === "undefined") return createDefaultStore();
-    const raw = localStorage.getItem(LOCAL_KEY);
-    if (!raw) return createDefaultStore();
-    const parsed = JSON.parse(raw) as Partial<Store>;
-    if (!parsed || typeof parsed !== "object") return createDefaultStore();
-    const def = createDefaultStore();
-    return {
-      nodes: parsed.nodes ?? def.nodes,
-      files: parsed.files ?? {},
-      currentFolderId: parsed.currentFolderId ?? def.currentFolderId,
-      currentFileId: parsed.currentFileId ?? null,
-      version: 1,
-    };
-  } catch {
-    return createDefaultStore();
-  }
-}
-
-function saveLocal(store: Store) {
-  try {
-    if (typeof window !== "undefined") {
-      localStorage.setItem(LOCAL_KEY, JSON.stringify(store));
-    }
-  } catch { /* 無視 */ }
 }
 
 // ------------------------------------------
