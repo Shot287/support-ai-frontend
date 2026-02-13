@@ -47,7 +47,7 @@ type Store = {
   currentFolderId: ID | null;
   currentFileId: ID | null;
   version: 1;
-  // 指示文の設定を追加
+  // 指示文の設定
   promptConfig?: {
     transcribe: string;
     solve: string;
@@ -65,7 +65,7 @@ const uid = () =>
     ? crypto.randomUUID()
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
-// デフォルトの指示文
+// ▼▼▼ 修正: \fbox が必ず数式になるよう指示を強化 ▼▼▼
 const DEFAULT_PROMPT_TRANSCRIBE = `添付した画像の「数学の問題文」を、一言一句正確に文字起こししてください。
 解答や解説は不要です。**問題文のテキストデータのみ**を出力してください。
 
@@ -77,9 +77,10 @@ const DEFAULT_PROMPT_TRANSCRIBE = `添付した画像の「数学の問題文」
    - 文中の数式は \`$\` で囲む（例: \`$x^2$\`）。
    - 独立した行の数式は \`$$\` で囲む（例: \`$$ y = ax $$\`）。
    - \`\\[ ... \\]\` は**使用禁止**です。
-3. **空欄・解答欄**:
-   - 問題文中の「ア」や「53」などの解答欄は、必ず **\`\\fbox{...}\`** で囲んでください。
-   - 例: \`$a = \\fbox{53}$\`
+3. **空欄・解答欄（重要）**:
+   - 問題文中の「ア」や「61」などの解答欄は、**文中にある場合でも必ず数式モード**として扱い、\`$\` で囲んでください。
+   - 正しい例: \`$A$ と $B$ は $\\fbox{61}$ である\`
+   - 悪い例: \`$A$ と $B$ は \\fbox{61} である\`
 4. **表**: LaTeXの \`\\begin{tabular}\` 環境は**使用禁止**です。
    - 表が必要な場合は、必ず **Markdownの表組み記法**（\`| ヘッダー |\`）を使用してください。
 5. **見出し**: \`\\section\` などのコマンドは使わず、Markdownの見出し（\`##\`, \`###\`）を使用してください。`;
@@ -94,9 +95,8 @@ const DEFAULT_PROMPT_SOLVE = `以下の数学の問題について、詳細な�
    - 文中の数式は \`$\` で囲む。
    - 独立した行の数式は \`$$\` で囲む。
    - \`\\[ ... \\]\` は**使用禁止**です。
-3. **強調**:
-   - 最終的な答えや重要な部分は、\`\\fbox{...}\` で囲むか、太字 \`**...**\` を使用してください。
-   - 例: 答えは \`$\\fbox{5}$\` です。
+3. **強調・答え**:
+   - 最終的な答えや重要な部分は、\`$\\fbox{...}$\` （数式モードの枠）で囲むか、太字 \`**...**\` を使用してください。
 4. **表**: \`\\begin{tabular}\` は使用せず、Markdownの表組み（\`| ... |\`）を使用してください。
 
 ---
@@ -112,8 +112,15 @@ function normalizeMathText(raw: string): string {
   text = text.replace(/\\subsection\*?\{(.*?)\}/g, "\n### $1\n");
   text = text.replace(/\\textbf\{(.*?)\}/g, "**$1**");
   text = text.replace(/\\textit\{(.*?)\}/g, "*$1*");
+  
+  // \[ ... \] を $$ ... $$ に置換
+  text = text.replaceAll("\\[", "\n$$\n");
+  text = text.replaceAll("\\]", "\n$$\n");
+
+  // $$ ... $$ の整形
   text = text.replace(/\$\$([\s\S]*?)\$\$/g, (_match, inner) => `\n$$\n${inner.trim()}\n$$\n`);
   
+  // 裸の数式環境を $$ で囲む
   const envs = ["align", "align*", "equation", "equation*", "cases", "gather", "matrix", "pmatrix", "bmatrix"];
   envs.forEach((env) => {
     const regex = new RegExp(`(^|\\n)(\\\\begin\\{${env}\\}[\\s\\S]*?\\\\end\\{${env}\\})`, "g");
@@ -183,7 +190,18 @@ function MathMarkdown({ text, placeholder }: { text: string; placeholder?: strin
   }
 
   return (
-    <div className="prose prose-sm max-w-none prose-p:my-1 prose-headings:my-2 prose-table:my-2 prose-td:border prose-td:p-1 prose-th:bg-gray-100 prose-th:p-1">
+    <div className="
+      text-sm leading-relaxed text-gray-800
+      [&_p]:my-2
+      [&_h1]:text-xl [&_h1]:font-bold [&_h1]:my-4 [&_h1]:pb-2 [&_h1]:border-b
+      [&_h2]:text-lg [&_h2]:font-bold [&_h2]:my-3 [&_h2]:pb-1 [&_h2]:border-b
+      [&_h3]:text-base [&_h3]:font-bold [&_h3]:my-2
+      [&_table]:w-full [&_table]:border-collapse [&_table]:my-4 [&_table]:border [&_table]:border-gray-300
+      [&_th]:border [&_th]:border-gray-300 [&_th]:bg-gray-100 [&_th]:p-2 [&_th]:text-center [&_th]:font-semibold
+      [&_td]:border [&_td]:border-gray-300 [&_td]:p-2 [&_td]:text-center
+      [&_a]:text-blue-600 [&_a]:underline
+      [&_hr]:my-4 [&_hr]:border-gray-300
+    ">
       <ReactMarkdown
         remarkPlugins={[remarkMath, remarkGfm]}
         rehypePlugins={[rehypeKatex]}
@@ -207,9 +225,8 @@ type SectionItemProps = {
   onToggleReveal?: () => void;
   onChange: (val: string) => void;
   placeholder?: string;
-  // 追加: コピーボタン用
-  copyPromptText?: string;
-  copyButtonLabel?: string;
+  copyPromptText?: string;  // コピーする指示文の内容
+  copyButtonLabel?: string; // コピーボタンのラベル
 };
 
 function SectionItem({
@@ -242,6 +259,7 @@ function SectionItem({
       <div className="flex items-center justify-between gap-2 border-b pb-1 border-gray-100">
         <span className="text-sm font-bold text-gray-700">{label}</span>
         <div className="flex items-center gap-2">
+          {/* 指示文コピーボタン */}
           {copyPromptText && (
             <button
               type="button"
@@ -249,6 +267,7 @@ function SectionItem({
               className={`text-xs rounded px-2 py-1 border transition-colors flex items-center gap-1 ${
                 copied ? "bg-green-50 text-green-600 border-green-200" : "text-gray-500 hover:bg-gray-50"
               }`}
+              title="Geminiへの指示文をコピー"
             >
               <span>{copied ? "コピー完了" : (copyButtonLabel || "指示文コピー")}</span>
               {!copied && <span className="text-[10px]">📋</span>}
@@ -264,6 +283,7 @@ function SectionItem({
           >
             {isEditing ? "完了(プレビュー)" : "編集(LaTeX)"}
           </button>
+          
           {onToggleReveal && (
             <button
               type="button"
@@ -283,12 +303,12 @@ function SectionItem({
           <textarea
             value={value}
             onChange={(e) => onChange(e.target.value)}
-            rows={5}
+            rows={8}
             className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
             placeholder={placeholder || "LaTeX/Markdownを入力..."}
           />
           <p className="text-[10px] text-gray-400 text-right mt-1">
-            ¥は\に自動変換。 \section&#123;...&#125; や $$...$$ が使えます。
+            ※ ¥は\に自動変換。$..$, $$..$$, \[..\], \section等に対応
           </p>
         </div>
       )}
@@ -325,7 +345,7 @@ export default function MathLogicExpansion() {
   const [newFolderName, setNewFolderName] = useState("");
   const [newFileName, setNewFileName] = useState("");
   
-  // 指示文設定モーダル用
+  // 設定モーダル用
   const [showConfig, setShowConfig] = useState(false);
   const [tempConfig, setTempConfig] = useState({ transcribe: "", solve: "" });
 
@@ -508,7 +528,7 @@ export default function MathLogicExpansion() {
     });
   };
 
-  // Config Modal Handlers
+  // Config Handlers
   const openConfig = () => {
     setTempConfig({
       transcribe: store.promptConfig?.transcribe ?? DEFAULT_PROMPT_TRANSCRIBE,
@@ -529,7 +549,7 @@ export default function MathLogicExpansion() {
         <div>
           <div className="flex items-center justify-between mb-4">
             <h2 className="font-bold text-lg">数学・論理ノート</h2>
-            <button onClick={openConfig} className="text-gray-400 hover:text-gray-600 text-xs border rounded p-1">⚙️設定</button>
+            <button onClick={openConfig} className="text-gray-400 hover:text-gray-600 text-xs border rounded p-1">⚙️指示文設定</button>
           </div>
           
           <div className="flex flex-wrap items-center gap-1 text-xs mb-4">
@@ -646,10 +666,11 @@ export default function MathLogicExpansion() {
                       isRevealed={true} // 常時表示
                       onToggleEdit={() => toggleEdit(set.id, "problem")}
                       onChange={(val) => updateSet(set.id, "problemText", val)}
-                      placeholder="問題文を入力... \section{...} も変換されます"
+                      placeholder="問題文を入力... \section{...} や \[ ... \] も自動変換されます"
                       copyPromptText={store.promptConfig?.transcribe ?? DEFAULT_PROMPT_TRANSCRIBE}
                       copyButtonLabel="文字起こし指示"
                     />
+                    
                     <SectionItem
                       label="自分の解釈"
                       value={set.myNote}
@@ -659,6 +680,7 @@ export default function MathLogicExpansion() {
                       onToggleReveal={() => toggleReveal(set.id, "my")}
                       onChange={(val) => updateSet(set.id, "myNote", val)}
                     />
+                    
                     <SectionItem
                       label="AI添削"
                       value={set.aiNote}
@@ -668,8 +690,9 @@ export default function MathLogicExpansion() {
                       onToggleReveal={() => toggleReveal(set.id, "ai")}
                       onChange={(val) => updateSet(set.id, "aiNote", val)}
                       copyPromptText={store.promptConfig?.solve ?? DEFAULT_PROMPT_SOLVE}
-                      copyButtonLabel="解答解説指示"
+                      copyButtonLabel="解答・解説指示"
                     />
+                    
                     <SectionItem
                       label="途中式"
                       value={set.stepsNote}
@@ -687,16 +710,16 @@ export default function MathLogicExpansion() {
         )}
       </section>
 
-      {/* 設定モーダル */}
+      {/* 指示文設定モーダル */}
       {showConfig && (
         <div className="absolute inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-2xl w-full max-w-2xl p-6 shadow-xl max-h-[90vh] overflow-y-auto">
-            <h3 className="font-bold text-lg mb-4">指示文（プロンプト）設定</h3>
+            <h3 className="font-bold text-lg mb-4">Geminiへの指示文設定</h3>
             
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-bold text-gray-700 mb-1">
-                  1. 文字起こし指示（問題文のコピーボタン）
+                  1. 文字起こし指示（「問題文」エリア用）
                 </label>
                 <textarea
                   className="w-full h-40 border rounded-lg p-3 text-xs font-mono"
@@ -707,7 +730,7 @@ export default function MathLogicExpansion() {
               
               <div>
                 <label className="block text-sm font-bold text-gray-700 mb-1">
-                  2. 解答・解説指示（AI添削のコピーボタン）
+                  2. 解答・解説指示（「AI添削」エリア用）
                 </label>
                 <textarea
                   className="w-full h-40 border rounded-lg p-3 text-xs font-mono"
