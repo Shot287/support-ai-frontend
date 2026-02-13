@@ -1012,6 +1012,13 @@ export default function CloseReading() {
     anchorIndexRef.current = index;
   };
 
+  // ★追加：括弧（Span）をクリックしたときの処理
+  const onSpanClick = (span: Span, ev: React.MouseEvent) => {
+    ev.stopPropagation(); // トークンのクリックイベントなどを防ぐ
+    // 括弧内のトークンIDをすべて選択状態にする
+    setSelectedIds(span.tokenIds);
+  };
+
   const filterGroupEligibleIds = (ids: string[], tokens: Token[]) => {
     const map = new Map(tokens.map((t) => [t.id, t] as const));
     const allowPunct = ids.length >= 2;
@@ -1110,11 +1117,6 @@ export default function CloseReading() {
             // 残ったトークンがあれば、そのグループを維持（縮小）
             // ※「a few」の「few」だけ変えた場合、「a」は孤立したグループとして残る
             if (remaining.length > 0) {
-                // Fragmented groups remain as separate groups if needed, 
-                // but usually adjacent remainders stay together? 
-                // We just normalize order. If it became discontinuous, it's effectively one group visually 
-                // with a gap, or we should maybe split. 
-                // For simplicity: keep as one group with remaining tokens.
                  nextDetailGroups.push({
                     ...dg,
                     tokenIds: normalizeTokenIds(remaining, idToIndex2)
@@ -1353,8 +1355,9 @@ export default function CloseReading() {
 
   const spanMarksByTokenId = useMemo(() => {
     const doc = currentDoc;
-    const starts = new Map<string, string[]>();
-    const ends = new Map<string, string[]>();
+    // 修正: 値を string[] から {char: string, span: Span}[] に変更
+    const starts = new Map<string, { char: string; span: Span }[]>();
+    const ends = new Map<string, { char: string; span: Span }[]>();
     if (!doc) return { starts, ends };
 
     const spans = doc.spans ?? [];
@@ -1373,7 +1376,7 @@ export default function CloseReading() {
         const first = s.tokenIds[0];
         if (!first) return;
         const arr = starts.get(first) ?? [];
-        arr.push(open);
+        arr.push({ char: open, span: s });
         starts.set(first, arr);
       });
 
@@ -1385,7 +1388,7 @@ export default function CloseReading() {
         const last = s.tokenIds[s.tokenIds.length - 1];
         if (!last) return;
         const arr = ends.get(last) ?? [];
-        arr.push(close);
+        arr.push({ char: close, span: s });
         ends.set(last, arr);
       });
 
@@ -1801,10 +1804,16 @@ export default function CloseReading() {
                                 </div>
 
                                 <div className="flex items-center gap-[0px] px-[1px]">
-                                  {opens.map((m, i) => (
-                                    <div key={`o-${tid}-${i}`} className="text-xs text-gray-700 select-none">
-                                      {m}
-                                    </div>
+                                  {opens.map((item, i) => (
+                                    // ★修正: 括弧をクリックできるようにbutton化し、onClickイベントを追加
+                                    <button
+                                        key={`o-${tid}-${i}`}
+                                        onClick={(e) => onSpanClick(item.span, e)}
+                                        className="text-xs text-gray-700 select-none hover:text-blue-600 hover:font-bold cursor-pointer"
+                                        title="クリックでこの範囲を選択"
+                                    >
+                                      {item.char}
+                                    </button>
                                   ))}
 
                                   <button
@@ -1820,10 +1829,16 @@ export default function CloseReading() {
                                     <div className="text-sm leading-none">{token.text}</div>
                                   </button>
 
-                                  {closes.map((m, i) => (
-                                    <div key={`c-${tid}-${i}`} className="text-xs text-gray-700 select-none">
-                                      {m}
-                                    </div>
+                                  {closes.map((item, i) => (
+                                    // ★修正: 括弧をクリックできるようにbutton化し、onClickイベントを追加
+                                    <button
+                                        key={`c-${tid}-${i}`}
+                                        onClick={(e) => onSpanClick(item.span, e)}
+                                        className="text-xs text-gray-700 select-none hover:text-blue-600 hover:font-bold cursor-pointer"
+                                        title="クリックでこの範囲を選択"
+                                    >
+                                      {item.char}
+                                    </button>
                                   ))}
                                 </div>
                               </div>
