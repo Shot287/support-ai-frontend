@@ -21,7 +21,7 @@ type Role =
   | "(S)"
   | "V"
   | "V（現完）"
-  | "V（過完）" // ★追加
+  | "V（過完）"
   | "V（受）"
   | "V（否）"
   | "V（進）"
@@ -90,10 +90,12 @@ type DetailGroup = {
   detail: Detail;
 };
 
+// ★修正：Spanにdetail（品詞）を追加
 type Span = {
   id: string;
   kind: SpanKind;
   tokenIds: string[];
+  detail?: Detail; // 括弧自体に付与する品詞（例：名詞節など）
 };
 
 // --- Legacy Stores for Migration ---
@@ -143,7 +145,7 @@ const ROLE_LABELS: { role: Role; label: string }[] = [
   { role: "(S)", label: "（S）(準動詞)" },
   { role: "V", label: "V（動詞）" },
   { role: "V（現完）", label: "V（現完）" },
-  { role: "V（過完）", label: "V（過完）" }, // ★追加
+  { role: "V（過完）", label: "V（過完）" },
   { role: "V（受）", label: "V（受）" },
   { role: "V（否）", label: "V（否）" },
   { role: "V（進）", label: "V（進）" },
@@ -279,7 +281,7 @@ function classForRole(role: Role) {
 
     case "V":
     case "V（現完）":
-    case "V（過完）": // ★追加
+    case "V（過完）":
     case "V（受）":
     case "V（否）":
     case "V（進）":
@@ -467,10 +469,14 @@ function migrateDoc(raw: any): StoreV7 {
             )
           : [];
         if (tokenIdsRaw.length === 0) return null;
+        
+        const detail = typeof s.detail === "string" ? (s.detail as Detail) : undefined;
+
         return {
           id: typeof s.id === "string" ? s.id : newId(),
           kind,
           tokenIds: normalizeTokenIds(tokenIdsRaw, idToIndex),
+          detail,
         } satisfies Span;
       })
       .filter(Boolean) as Span[];
@@ -667,6 +673,9 @@ export default function CloseReading() {
   const currentFileName = currentFileId ? nodes[currentFileId]?.name ?? "" : "";
 
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  // ★追加：括弧そのものを選択している場合のID
+  const [selectedSpanId, setSelectedSpanId] = useState<string | null>(null);
+
   const anchorIndexRef = useRef<number | null>(null);
 
   const [jaCursor, setJaCursor] = useState(0);
@@ -674,6 +683,7 @@ export default function CloseReading() {
 
   useEffect(() => {
     setSelectedIds([]);
+    setSelectedSpanId(null);
     anchorIndexRef.current = null;
     setJaCursor(0);
   }, [currentFileId]);
@@ -956,6 +966,7 @@ export default function CloseReading() {
       updatedAt: Date.now(),
     }));
     setSelectedIds([]);
+    setSelectedSpanId(null);
     anchorIndexRef.current = null;
     setJaCursor(0);
   };
@@ -980,6 +991,7 @@ export default function CloseReading() {
 
   const clearSelection = () => {
     setSelectedIds([]);
+    setSelectedSpanId(null);
     anchorIndexRef.current = null;
   };
 
@@ -988,6 +1000,9 @@ export default function CloseReading() {
     const isMeta = ev.metaKey || ev.ctrlKey;
 
     if (!currentDoc) return;
+
+    // トークンクリック時はSpan選択を解除
+    setSelectedSpanId(null);
 
     if (isShift) {
       const anchor = anchorIndexRef.current ?? index;
@@ -1015,8 +1030,10 @@ export default function CloseReading() {
   // ★追加：括弧（Span）をクリックしたときの処理
   const onSpanClick = (span: Span, ev: React.MouseEvent) => {
     ev.stopPropagation(); // トークンのクリックイベントなどを防ぐ
-    // 括弧内のトークンIDをすべて選択状態にする
+    // 括弧内のトークンIDをすべて選択状態にする（視覚的にもわかりやすく）
     setSelectedIds(span.tokenIds);
+    // Span選択状態にする
+    setSelectedSpanId(span.id);
   };
 
   const filterGroupEligibleIds = (ids: string[], tokens: Token[]) => {
@@ -1101,6 +1118,20 @@ export default function CloseReading() {
   // ★詳細タグ（品詞）の設定：複数選択時は DetailGroup を作成して束ねる
   const setDetailToSelected = (detail: Detail) => {
     if (!currentDoc) return;
+    
+    // ★Span選択モードの場合：選択中のSpanに対してdetailを付与する
+    if (selectedSpanId) {
+        updateCurrentDoc((prev) => ({
+            ...prev,
+            spans: prev.spans.map(s => {
+                if (s.id !== selectedSpanId) return s;
+                return { ...s, detail: detail === "NONE" ? undefined : detail };
+            }),
+            updatedAt: Date.now()
+        }));
+        return;
+    }
+
     if (selectedIds.length === 0) return;
 
     // 連続範囲に補正
@@ -1172,6 +1203,7 @@ export default function CloseReading() {
             ),
             idToIndex2
           ),
+          detail: s.detail // 既存のdetailを維持
         };
         if (s2.tokenIds.length === 0) continue;
 
@@ -1355,7 +1387,7 @@ export default function CloseReading() {
 
   const spanMarksByTokenId = useMemo(() => {
     const doc = currentDoc;
-    // 修正: 値を string[] から {char: string, span: Span}[] に変更
+    // 修正: 値を {char: string, span: Span}[] に変更し、Spanオブジェクトを持たせる
     const starts = new Map<string, { char: string; span: Span }[]>();
     const ends = new Map<string, { char: string; span: Span }[]>();
     if (!doc) return { starts, ends };
@@ -1373,10 +1405,14 @@ export default function CloseReading() {
       .sort((a, b) => (a.r.start !== b.r.start ? a.r.start - b.r.start : b.len - a.len))
       .forEach(({ s }) => {
         const open = spanMarkers(s.kind).open;
+        
+        // ★修正: detailがある場合は括弧と一緒に表示
+        const label = s.detail ? `${open}${s.detail}` : open;
+
         const first = s.tokenIds[0];
         if (!first) return;
         const arr = starts.get(first) ?? [];
-        arr.push({ char: open, span: s });
+        arr.push({ char: label, span: s });
         starts.set(first, arr);
       });
 
@@ -1809,8 +1845,8 @@ export default function CloseReading() {
                                     <button
                                         key={`o-${tid}-${i}`}
                                         onClick={(e) => onSpanClick(item.span, e)}
-                                        className="text-xs text-gray-700 select-none hover:text-blue-600 hover:font-bold cursor-pointer"
-                                        title="クリックでこの範囲を選択"
+                                        className={`text-xs select-none cursor-pointer ${item.span.id === selectedSpanId ? 'text-blue-600 font-bold' : 'text-gray-700 hover:text-blue-500'}`}
+                                        title="クリックでこの範囲を選択（品詞付与可）"
                                     >
                                       {item.char}
                                     </button>
@@ -1834,8 +1870,8 @@ export default function CloseReading() {
                                     <button
                                         key={`c-${tid}-${i}`}
                                         onClick={(e) => onSpanClick(item.span, e)}
-                                        className="text-xs text-gray-700 select-none hover:text-blue-600 hover:font-bold cursor-pointer"
-                                        title="クリックでこの範囲を選択"
+                                        className={`text-xs select-none cursor-pointer ${item.span.id === selectedSpanId ? 'text-blue-600 font-bold' : 'text-gray-700 hover:text-blue-500'}`}
+                                        title="クリックでこの範囲を選択（品詞付与可）"
                                     >
                                       {item.char}
                                     </button>
@@ -1871,7 +1907,9 @@ export default function CloseReading() {
                       選択: <span className="font-semibold">{selectedText}</span>
                     </div>
                     <div className="text-xs text-gray-500">
-                      {selectedDetailState === "MIXED"
+                      {selectedSpanId
+                        ? "【括弧（節/句）を選択中】この状態でタグを押すと括弧に品詞がつきます。"
+                        : selectedDetailState === "MIXED"
                         ? "現在（詳細タグ）: 混在"
                         : selectedDetailState === "NONE"
                         ? "現在（詳細タグ）: 未設定"
@@ -1884,7 +1922,7 @@ export default function CloseReading() {
                       <button
                         key={detail}
                         onClick={() => setDetailToSelected(detail)}
-                        className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
+                        className={`rounded-xl border px-3 py-2 text-sm hover:bg-gray-50 ${selectedSpanId ? 'ring-2 ring-blue-100 border-blue-300' : ''}`}
                       >
                         {label}
                       </button>
