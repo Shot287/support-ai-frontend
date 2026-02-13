@@ -21,6 +21,7 @@ type Role =
   | "(S)"
   | "V"
   | "V（現完）"
+  | "V（過完）" // ★追加
   | "V（受）"
   | "V（否）"
   | "V（進）"
@@ -113,9 +114,9 @@ type StoreV7 = {
   version: 7;
   inputText: string;
   tokens: Token[];
-  groups: Group[];       // 下の役割 (SVOCM)
+  groups: Group[];        // 下の役割 (SVOCM)
   detailGroups: DetailGroup[]; // ★上の詳細タグ (品詞)
-  spans: Span[];         // 括弧
+  spans: Span[];          // 括弧
   updatedAt: number;
 };
 
@@ -142,6 +143,7 @@ const ROLE_LABELS: { role: Role; label: string }[] = [
   { role: "(S)", label: "（S）(準動詞)" },
   { role: "V", label: "V（動詞）" },
   { role: "V（現完）", label: "V（現完）" },
+  { role: "V（過完）", label: "V（過完）" }, // ★追加
   { role: "V（受）", label: "V（受）" },
   { role: "V（否）", label: "V（否）" },
   { role: "V（進）", label: "V（進）" },
@@ -277,6 +279,7 @@ function classForRole(role: Role) {
 
     case "V":
     case "V（現完）":
+    case "V（過完）": // ★追加
     case "V（受）":
     case "V（否）":
     case "V（進）":
@@ -498,7 +501,7 @@ function migrateDoc(raw: any): StoreV7 {
     const rawTokens = Array.isArray(raw.tokens) ? raw.tokens : [];
     const tokens: Token[] = [];
     const detailGroups: DetailGroup[] = [];
-    
+     
     // Extract tokens and convert details
     rawTokens.forEach((rt: any) => {
         if (!rt || typeof rt !== 'object') return;
@@ -533,7 +536,7 @@ function migrateDoc(raw: any): StoreV7 {
     } else {
        groups = normalizeGroups(raw.groups, tokenSet, idToIndex);
     }
-    
+     
     const spans = normalizeSpans(raw.spans, tokenSet, idToIndex);
     const inputText = typeof raw.inputText === "string" ? raw.inputText : "";
     const updatedAt = typeof raw.updatedAt === "number" ? raw.updatedAt : Date.now();
@@ -929,7 +932,7 @@ export default function CloseReading() {
 
   const selectedDetailState = useMemo(() => {
     if (selectedTokens.length === 0) return "";
-    
+     
     // Check all selected tokens' details
     const details = uniq(selectedTokens.map(t => {
         const dg = detailGroupByTokenId.get(t.id);
@@ -1115,7 +1118,7 @@ export default function CloseReading() {
                  nextDetailGroups.push({
                     ...dg,
                     tokenIds: normalizeTokenIds(remaining, idToIndex2)
-                 });
+                  });
             }
         }
 
