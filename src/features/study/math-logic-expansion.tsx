@@ -47,6 +47,11 @@ type Store = {
   currentFolderId: ID | null;
   currentFileId: ID | null;
   version: 1;
+  // 指示文の設定を追加
+  promptConfig?: {
+    transcribe: string;
+    solve: string;
+  };
 };
 
 // ------------------------------------------
@@ -60,56 +65,64 @@ const uid = () =>
     ? crypto.randomUUID()
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
+// デフォルトの指示文
+const DEFAULT_PROMPT_TRANSCRIBE = `添付した画像の「数学の問題文」を、一言一句正確に文字起こししてください。
+解答や解説は不要です。**問題文のテキストデータのみ**を出力してください。
+
+自作アプリに保存するため、**以下の出力フォーマットを厳守**してください。
+
+【出力ルール】
+1. **全体**: 出力すべてをひとつの **Markdown形式のコードブロック**（\`\`\`markdown ... \`\`\`）の中に収めてください。
+2. **数式**: LaTeX記法を使用してください。
+   - 文中の数式は \`$\` で囲む（例: \`$x^2$\`）。
+   - 独立した行の数式は \`$$\` で囲む（例: \`$$ y = ax $$\`）。
+   - \`\\[ ... \\]\` は**使用禁止**です。
+3. **空欄・解答欄**:
+   - 問題文中の「ア」や「53」などの解答欄は、必ず **\`\\fbox{...}\`** で囲んでください。
+   - 例: \`$a = \\fbox{53}$\`
+4. **表**: LaTeXの \`\\begin{tabular}\` 環境は**使用禁止**です。
+   - 表が必要な場合は、必ず **Markdownの表組み記法**（\`| ヘッダー |\`）を使用してください。
+5. **見出し**: \`\\section\` などのコマンドは使わず、Markdownの見出し（\`##\`, \`###\`）を使用してください。`;
+
+const DEFAULT_PROMPT_SOLVE = `以下の数学の問題について、詳細な「解答・解説」と「途中式」を作成してください。
+
+自作アプリに保存するため、**以下の出力フォーマットを厳守**してください。
+
+【出力ルール】
+1. **全体**: 出力すべてをひとつの **Markdown形式のコードブロック**（\`\`\`markdown ... \`\`\`）の中に収めてください。
+2. **数式**: LaTeX記法を使用してください。
+   - 文中の数式は \`$\` で囲む。
+   - 独立した行の数式は \`$$\` で囲む。
+   - \`\\[ ... \\]\` は**使用禁止**です。
+3. **強調**:
+   - 最終的な答えや重要な部分は、\`\\fbox{...}\` で囲むか、太字 \`**...**\` を使用してください。
+   - 例: 答えは \`$\\fbox{5}$\` です。
+4. **表**: \`\\begin{tabular}\` は使用せず、Markdownの表組み（\`| ... |\`）を使用してください。
+
+---
+【問題文】
+（ここにさっき文字起こししたテキストを貼り付けてください）`;
+
 // ------ LaTeX / Markdown テキスト自動補正 ------
 function normalizeMathText(raw: string): string {
   if (!raw) return "";
   let text = raw;
-
-  // 1. 日本語環境の ¥ を \ に変換
   text = text.replace(/¥/g, "\\");
-
-  // 2. ディスプレイ数式 \[ ... \] を $$ ... $$ に置換
-  text = text.replaceAll("\\[", "\n$$\n");
-  text = text.replaceAll("\\]", "\n$$\n");
-
-  // 3. LaTeXの文書構造コマンドを Markdown に変換
   text = text.replace(/\\section\*?\{(.*?)\}/g, "\n## $1\n");
   text = text.replace(/\\subsection\*?\{(.*?)\}/g, "\n### $1\n");
-  text = text.replace(/\\subsubsection\*?\{(.*?)\}/g, "\n#### $1\n");
-
-  // 4. 文字装飾
   text = text.replace(/\\textbf\{(.*?)\}/g, "**$1**");
   text = text.replace(/\\textit\{(.*?)\}/g, "*$1*");
-
-  // 5. 既存の $$ ... $$ を整形
-  text = text.replace(/\$\$([\s\S]*?)\$\$/g, (_match, inner) => {
-    return `\n$$\n${inner.trim()}\n$$\n`;
-  });
-
-  // 6. 裸の数式環境（align等）を $$ で囲む
-  const envs = [
-    "align",
-    "align*",
-    "equation",
-    "equation*",
-    "cases",
-    "gather",
-    "matrix",
-    "pmatrix",
-    "bmatrix",
-  ];
+  text = text.replace(/\$\$([\s\S]*?)\$\$/g, (_match, inner) => `\n$$\n${inner.trim()}\n$$\n`);
+  
+  const envs = ["align", "align*", "equation", "equation*", "cases", "gather", "matrix", "pmatrix", "bmatrix"];
   envs.forEach((env) => {
-    const regex = new RegExp(
-      `(^|\\n)(\\\\begin\\{${env}\\}[\\s\\S]*?\\\\end\\{${env}\\})`,
-      "g"
-    );
+    const regex = new RegExp(`(^|\\n)(\\\\begin\\{${env}\\}[\\s\\S]*?\\\\end\\{${env}\\})`, "g");
     text = text.replace(regex, "$1\n$$\n$2\n$$\n");
   });
-
   return text;
 }
 
-// -------- Helper Functions (Store) --------
+// -------- Helper Functions --------
 function createDefaultStore(): Store {
   const rootId = uid();
   const rootNode: Node = {
@@ -125,6 +138,10 @@ function createDefaultStore(): Store {
     currentFolderId: rootId,
     currentFileId: null,
     version: 1,
+    promptConfig: {
+      transcribe: DEFAULT_PROMPT_TRANSCRIBE,
+      solve: DEFAULT_PROMPT_SOLVE,
+    },
   };
 }
 
@@ -142,6 +159,7 @@ function loadLocal(): Store {
       currentFolderId: parsed.currentFolderId ?? def.currentFolderId,
       currentFileId: parsed.currentFileId ?? null,
       version: 1,
+      promptConfig: parsed.promptConfig ?? def.promptConfig,
     };
   } catch {
     return createDefaultStore();
@@ -153,58 +171,24 @@ function saveLocal(store: Store) {
     if (typeof window !== "undefined") {
       localStorage.setItem(LOCAL_KEY, JSON.stringify(store));
     }
-  } catch {
-    // 無視
-  }
+  } catch { /* 無視 */ }
 }
 
-// -------- MathMarkdown コンポーネント (ここを強化しました) --------
-function MathMarkdown({
-  text,
-  placeholder,
-}: {
-  text: string;
-  placeholder?: string;
-}) {
+// -------- MathMarkdown コンポーネント --------
+function MathMarkdown({ text, placeholder }: { text: string; placeholder?: string }) {
   const normalized = normalizeMathText(text);
 
   if (!normalized.trim()) {
-    return (
-      <p className="text-xs text-gray-400 italic">
-        {placeholder || "まだ内容がありません。"}
-      </p>
-    );
+    return <p className="text-xs text-gray-400 italic">{placeholder || "まだ内容がありません。"}</p>;
   }
 
-  // Tailwind CSSの「任意のスタイル機能」を使って、表(table)のデザインを強制的に適用します
   return (
-    <div className="
-      text-sm leading-relaxed text-gray-800
-      [&_p]:my-2
-      [&_h1]:text-xl [&_h1]:font-bold [&_h1]:my-4 [&_h1]:pb-2 [&_h1]:border-b
-      [&_h2]:text-lg [&_h2]:font-bold [&_h2]:my-3 [&_h2]:pb-1 [&_h2]:border-b
-      [&_h3]:text-base [&_h3]:font-bold [&_h3]:my-2
-      [&_ul]:list-disc [&_ul]:pl-5 [&_ul]:my-2
-      [&_ol]:list-decimal [&_ol]:pl-5 [&_ol]:my-2
-      [&_blockquote]:border-l-4 [&_blockquote]:border-gray-300 [&_blockquote]:pl-4 [&_blockquote]:italic [&_blockquote]:text-gray-600 [&_blockquote]:my-2
-      
-      /* ↓↓↓ テーブル(表)のデザイン定義 ↓↓↓ */
-      [&_table]:w-full [&_table]:border-collapse [&_table]:my-4 [&_table]:border [&_table]:border-gray-300
-      [&_th]:border [&_th]:border-gray-300 [&_th]:bg-gray-100 [&_th]:p-2 [&_th]:text-center [&_th]:font-semibold
-      [&_td]:border [&_td]:border-gray-300 [&_td]:p-2 [&_td]:text-center
-      /* ↑↑↑ ここまで ↑↑↑ */
-      
-      [&_a]:text-blue-600 [&_a]:underline
-      [&_hr]:my-4 [&_hr]:border-gray-300
-    ">
+    <div className="prose prose-sm max-w-none prose-p:my-1 prose-headings:my-2 prose-table:my-2 prose-td:border prose-td:p-1 prose-th:bg-gray-100 prose-th:p-1">
       <ReactMarkdown
         remarkPlugins={[remarkMath, remarkGfm]}
         rehypePlugins={[rehypeKatex]}
         components={{
-          // 特殊なコンポーネント置換が必要な場合はここに記述
-          p: ({ children }) => (
-            <div className="mb-2 leading-relaxed">{children}</div>
-          ),
+          p: ({ children }) => <div className="mb-2 leading-relaxed">{children}</div>,
         }}
       >
         {normalized}
@@ -213,7 +197,7 @@ function MathMarkdown({
   );
 }
 
-// -------- SectionItem コンポーネント (共通入力UI) --------
+// -------- SectionItem コンポーネント --------
 type SectionItemProps = {
   label: string;
   value: string;
@@ -223,6 +207,9 @@ type SectionItemProps = {
   onToggleReveal?: () => void;
   onChange: (val: string) => void;
   placeholder?: string;
+  // 追加: コピーボタン用
+  copyPromptText?: string;
+  copyButtonLabel?: string;
 };
 
 function SectionItem({
@@ -234,34 +221,55 @@ function SectionItem({
   onToggleReveal,
   onChange,
   placeholder,
+  copyPromptText,
+  copyButtonLabel,
 }: SectionItemProps) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    if (!copyPromptText) return;
+    try {
+      await navigator.clipboard.writeText(copyPromptText);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error("Failed to copy:", err);
+    }
+  };
+
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-2 border-b pb-1 border-gray-100">
         <span className="text-sm font-bold text-gray-700">{label}</span>
         <div className="flex items-center gap-2">
-          {/* 編集ボタン */}
+          {copyPromptText && (
+            <button
+              type="button"
+              onClick={handleCopy}
+              className={`text-xs rounded px-2 py-1 border transition-colors flex items-center gap-1 ${
+                copied ? "bg-green-50 text-green-600 border-green-200" : "text-gray-500 hover:bg-gray-50"
+              }`}
+            >
+              <span>{copied ? "コピー完了" : (copyButtonLabel || "指示文コピー")}</span>
+              {!copied && <span className="text-[10px]">📋</span>}
+            </button>
+          )}
+
           <button
             type="button"
             onClick={onToggleEdit}
             className={`text-xs rounded px-2 py-1 border transition-colors ${
-              isEditing
-                ? "bg-blue-50 text-blue-600 border-blue-200"
-                : "text-gray-500 hover:bg-gray-50"
+              isEditing ? "bg-blue-50 text-blue-600 border-blue-200" : "text-gray-500 hover:bg-gray-50"
             }`}
           >
             {isEditing ? "完了(プレビュー)" : "編集(LaTeX)"}
           </button>
-
-          {/* めくるボタン */}
           {onToggleReveal && (
             <button
               type="button"
               onClick={onToggleReveal}
               className={`text-xs rounded px-2 py-1 border transition-colors ${
-                isRevealed
-                  ? "bg-gray-100 text-gray-700"
-                  : "bg-black text-white border-black hover:bg-gray-800"
+                isRevealed ? "bg-gray-100 text-gray-700" : "bg-black text-white border-black hover:bg-gray-800"
               }`}
             >
               {isRevealed ? "隠す" : "めくる"}
@@ -270,28 +278,22 @@ function SectionItem({
         </div>
       </div>
 
-      {/* 編集エリア */}
       {isEditing && (
         <div className="animate-in fade-in slide-in-from-top-1 duration-200">
           <textarea
             value={value}
             onChange={(e) => onChange(e.target.value)}
-            rows={8} // 少し広げました
+            rows={5}
             className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
             placeholder={placeholder || "LaTeX/Markdownを入力..."}
           />
           <p className="text-[10px] text-gray-400 text-right mt-1">
-            ※ ¥は\に自動変換。$..$, $$..$$, \[..\], \section等に対応
+            ¥は\に自動変換。 \section&#123;...&#125; や $$...$$ が使えます。
           </p>
         </div>
       )}
 
-      {/* プレビューエリア */}
-      <div
-        className={`rounded-xl border px-4 py-3 bg-gray-50/50 min-h-[60px] ${
-          !isEditing ? "block" : "hidden"
-        }`}
-      >
+      <div className={`rounded-xl border px-4 py-3 bg-gray-50/50 min-h-[60px] ${!isEditing ? "block" : "hidden"}`}>
         {!onToggleReveal || isRevealed ? (
           <MathMarkdown text={value} placeholder="（内容がありません）" />
         ) : (
@@ -299,9 +301,7 @@ function SectionItem({
             onClick={onToggleReveal}
             className="flex items-center justify-center h-full min-h-[80px] cursor-pointer text-gray-400 hover:text-gray-600 hover:bg-gray-100/50 rounded transition-colors"
           >
-            <span className="text-xs">
-              ここをクリック または「めくる」で表示
-            </span>
+            <span className="text-xs">ここをクリック または「めくる」で表示</span>
           </div>
         )}
       </div>
@@ -316,33 +316,26 @@ export default function MathLogicExpansion() {
   const [store, setStore] = useState<Store>(() => loadLocal());
   const storeRef = useRef(store);
 
-  // 表示状態管理
   type RevealState = { my: boolean; ai: boolean; steps: boolean };
   const [revealMap, setRevealMap] = useState<Record<ID, RevealState>>({});
 
-  // 編集状態管理
-  type EditState = {
-    problem: boolean;
-    my: boolean;
-    ai: boolean;
-    steps: boolean;
-  };
+  type EditState = { problem: boolean; my: boolean; ai: boolean; steps: boolean };
   const [editMap, setEditMap] = useState<Record<ID, EditState>>({});
 
   const [newFolderName, setNewFolderName] = useState("");
   const [newFileName, setNewFileName] = useState("");
+  
+  // 指示文設定モーダル用
+  const [showConfig, setShowConfig] = useState(false);
+  const [tempConfig, setTempConfig] = useState({ transcribe: "", solve: "" });
 
-  const currentFile = store.currentFileId
-    ? store.files[store.currentFileId] ?? null
-    : null;
+  const currentFile = store.currentFileId ? store.files[store.currentFileId] ?? null : null;
 
-  // Store変更時に保存
   useEffect(() => {
     storeRef.current = store;
     saveLocal(store);
   }, [store]);
 
-  // 手動同期ロジック
   useEffect(() => {
     const unsubscribe = registerManualSync({
       pull: async () => {
@@ -352,35 +345,24 @@ export default function MathLogicExpansion() {
             setStore(remote);
             saveLocal(remote);
           }
-        } catch (e) {
-          // eslint-disable-next-line no-console
-          console.warn("PULL failed:", e);
-        }
+        } catch (e) { console.warn("PULL failed:", e); }
       },
       push: async () => {
         try {
           await saveUserDoc<Store>(DOC_KEY, storeRef.current);
-        } catch (e) {
-          // eslint-disable-next-line no-console
-          console.warn("PUSH failed:", e);
-        }
+        } catch (e) { console.warn("PUSH failed:", e); }
       },
-      reset: async () => {
-        /* no-op */
-      },
+      reset: async () => { /* no-op */ },
     });
     return unsubscribe;
   }, []);
 
-  // --- Logic: Folder/File Navigation ---
   const nodes = store.nodes;
   const currentFolderId = store.currentFolderId;
   const currentFileId = store.currentFileId;
 
   const children = useMemo(() => {
-    const list = Object.values(nodes).filter(
-      (n) => n.parentId === currentFolderId
-    );
+    const list = Object.values(nodes).filter((n) => n.parentId === currentFolderId);
     return list.sort((a, b) => {
       if (a.kind !== b.kind) return a.kind === "folder" ? -1 : 1;
       return a.name.localeCompare(b.name, "ja");
@@ -399,7 +381,6 @@ export default function MathLogicExpansion() {
     return items.reverse();
   }, [nodes, currentFolderId]);
 
-  // --- Actions ---
   const addFolder = () => {
     const name = newFolderName.trim();
     if (!name) return;
@@ -407,10 +388,7 @@ export default function MathLogicExpansion() {
       const id = uid();
       return {
         ...s,
-        nodes: {
-          ...s.nodes,
-          [id]: { id, name, parentId: s.currentFolderId, kind: "folder" },
-        },
+        nodes: { ...s.nodes, [id]: { id, name, parentId: s.currentFolderId, kind: "folder" } },
       };
     });
     setNewFolderName("");
@@ -423,10 +401,7 @@ export default function MathLogicExpansion() {
       const id = uid();
       return {
         ...s,
-        nodes: {
-          ...s.nodes,
-          [id]: { id, name, parentId: s.currentFolderId, kind: "file" },
-        },
+        nodes: { ...s.nodes, [id]: { id, name, parentId: s.currentFolderId, kind: "file" } },
         files: { ...s.files, [id]: { id, sets: [] } },
         currentFileId: id,
       };
@@ -438,10 +413,7 @@ export default function MathLogicExpansion() {
     setStore((s) => ({
       ...s,
       currentFolderId: id,
-      currentFileId:
-        s.currentFileId && s.nodes[s.currentFileId]?.parentId === id
-          ? s.currentFileId
-          : null,
+      currentFileId: s.currentFileId && s.nodes[s.currentFileId]?.parentId === id ? s.currentFileId : null,
     }));
   };
 
@@ -451,11 +423,7 @@ export default function MathLogicExpansion() {
     if (!currentFolderId) return;
     const cur = nodes[currentFolderId];
     if (!cur) return;
-    setStore((s) => ({
-      ...s,
-      currentFolderId: cur.parentId,
-      currentFileId: null,
-    }));
+    setStore((s) => ({ ...s, currentFolderId: cur.parentId, currentFileId: null }));
   };
 
   const renameNode = (id: ID) => {
@@ -463,60 +431,37 @@ export default function MathLogicExpansion() {
     if (!node) return;
     const name = window.prompt("名称変更:", node.name);
     if (!name) return;
-    setStore((s) => ({
-      ...s,
-      nodes: { ...s.nodes, [id]: { ...s.nodes[id], name } },
-    }));
+    setStore((s) => ({ ...s, nodes: { ...s.nodes, [id]: { ...s.nodes[id], name } } }));
   };
 
   const deleteNodeRecursive = (id: ID) => {
     const node = store.nodes[id];
-    if (
-      !confirm(
-        `${
-          node?.kind === "folder" ? "フォルダ" : "ファイル"
-        }を削除しますか？`
-      )
-    )
-      return;
+    if (!confirm(`${node?.kind === "folder" ? "フォルダ" : "ファイル"}を削除しますか？`)) return;
     setStore((s) => {
       const toDelete = new Set<ID>();
       const queue: ID[] = [id];
       while (queue.length > 0) {
         const cur = queue.shift()!;
         toDelete.add(cur);
-        for (const n of Object.values(s.nodes))
-          if (n.parentId === cur) queue.push(n.id);
+        for (const n of Object.values(s.nodes)) if (n.parentId === cur) queue.push(n.id);
       }
       const nextNodes: Record<ID, Node> = {};
       const nextFiles: Record<ID, FileData> = {};
-      for (const [nid, n] of Object.entries(s.nodes))
-        if (!toDelete.has(nid)) nextNodes[nid] = n;
-      for (const [fid, f] of Object.entries(s.files))
-        if (!toDelete.has(fid)) nextFiles[fid] = f;
+      for (const [nid, n] of Object.entries(s.nodes)) if (!toDelete.has(nid)) nextNodes[nid] = n;
+      for (const [fid, f] of Object.entries(s.files)) if (!toDelete.has(fid)) nextFiles[fid] = f;
       return {
         ...s,
         nodes: nextNodes,
         files: nextFiles,
-        currentFolderId: toDelete.has(s.currentFolderId ?? "")
-          ? null
-          : s.currentFolderId,
-        currentFileId: toDelete.has(s.currentFileId ?? "")
-          ? null
-          : s.currentFileId,
+        currentFolderId: toDelete.has(s.currentFolderId ?? "") ? null : s.currentFolderId,
+        currentFileId: toDelete.has(s.currentFileId ?? "") ? null : s.currentFileId,
       };
     });
   };
 
   const addSet = () => {
     if (!currentFile) return;
-    const newSet: MathSet = {
-      id: uid(),
-      problemText: "",
-      myNote: "",
-      aiNote: "",
-      stepsNote: "",
-    };
+    const newSet: MathSet = { id: uid(), problemText: "", myNote: "", aiNote: "", stepsNote: "" };
     setStore((s) => ({
       ...s,
       files: {
@@ -527,24 +472,15 @@ export default function MathLogicExpansion() {
         },
       },
     }));
-    // 追加直後はエディタを開いた状態にする
-    setEditMap((prev) => ({
-      ...prev,
-      [newSet.id]: { problem: true, my: true, ai: true, steps: true },
-    }));
+    setEditMap((prev) => ({ ...prev, [newSet.id]: { problem: true, my: true, ai: true, steps: true } }));
   };
 
   const updateSet = (setId: ID, field: keyof MathSet, value: string) => {
     if (!currentFile) return;
     setStore((s) => {
       const file = s.files[currentFile.id];
-      const sets = file.sets.map((st) =>
-        st.id === setId ? { ...st, [field]: value } : st
-      );
-      return {
-        ...s,
-        files: { ...s.files, [currentFile.id]: { ...file, sets } },
-      };
+      const sets = file.sets.map((st) => (st.id === setId ? { ...st, [field]: value } : st));
+      return { ...s, files: { ...s.files, [currentFile.id]: { ...file, sets } } };
     });
   };
 
@@ -553,16 +489,9 @@ export default function MathLogicExpansion() {
     setStore((s) => {
       const file = s.files[currentFile.id];
       const sets = file.sets.filter((st) => st.id !== setId);
-      return {
-        ...s,
-        files: { ...s.files, [currentFile.id]: { ...file, sets } },
-      };
+      return { ...s, files: { ...s.files, [currentFile.id]: { ...file, sets } } };
     });
-    setRevealMap((prev) => {
-      const c = { ...prev };
-      delete c[setId];
-      return c;
-    });
+    setRevealMap((prev) => { const c = { ...prev }; delete c[setId]; return c; });
   };
 
   const toggleReveal = (setId: ID, key: keyof RevealState) => {
@@ -574,33 +503,39 @@ export default function MathLogicExpansion() {
 
   const toggleEdit = (setId: ID, key: keyof EditState) => {
     setEditMap((prev) => {
-      const st =
-        prev[setId] ?? { problem: false, my: false, ai: false, steps: false };
+      const st = prev[setId] ?? { problem: false, my: false, ai: false, steps: false };
       return { ...prev, [setId]: { ...st, [key]: !st[key] } };
     });
   };
 
+  // Config Modal Handlers
+  const openConfig = () => {
+    setTempConfig({
+      transcribe: store.promptConfig?.transcribe ?? DEFAULT_PROMPT_TRANSCRIBE,
+      solve: store.promptConfig?.solve ?? DEFAULT_PROMPT_SOLVE,
+    });
+    setShowConfig(true);
+  };
+
+  const saveConfig = () => {
+    setStore((s) => ({ ...s, promptConfig: tempConfig }));
+    setShowConfig(false);
+  };
+
   return (
-    <div className="grid gap-6 lg:grid-cols-[260px_minmax(0,1fr)] h-full">
+    <div className="grid gap-6 lg:grid-cols-[260px_minmax(0,1fr)] h-full relative">
       {/* 左サイドバー */}
       <section className="flex flex-col gap-4 rounded-2xl border p-4 shadow-sm bg-white h-fit">
         <div>
-          <h2 className="font-bold text-lg mb-4">数学・論理ノート</h2>
-          {/* パンくず & ルート */}
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="font-bold text-lg">数学・論理ノート</h2>
+            <button onClick={openConfig} className="text-gray-400 hover:text-gray-600 text-xs border rounded p-1">⚙️設定</button>
+          </div>
+          
           <div className="flex flex-wrap items-center gap-1 text-xs mb-4">
             <button
-              onClick={() =>
-                setStore((s) => ({
-                  ...s,
-                  currentFolderId: null,
-                  currentFileId: null,
-                }))
-              }
-              className={`px-2 py-1 rounded ${
-                currentFolderId === null
-                  ? "bg-black text-white"
-                  : "bg-gray-100 hover:bg-gray-200"
-              }`}
+              onClick={() => setStore((s) => ({ ...s, currentFolderId: null, currentFileId: null }))}
+              className={`px-2 py-1 rounded ${currentFolderId === null ? "bg-black text-white" : "bg-gray-100 hover:bg-gray-200"}`}
             >
               ROOT
             </button>
@@ -609,11 +544,7 @@ export default function MathLogicExpansion() {
                 <span className="text-gray-300">/</span>
                 <button
                   onClick={() => openFolder(b.id)}
-                  className={`px-2 py-1 rounded ${
-                    currentFolderId === b.id
-                      ? "bg-black text-white"
-                      : "bg-gray-100 hover:bg-gray-200"
-                  }`}
+                  className={`px-2 py-1 rounded ${currentFolderId === b.id ? "bg-black text-white" : "bg-gray-100 hover:bg-gray-200"}`}
                 >
                   {b.name}
                 </button>
@@ -621,56 +552,33 @@ export default function MathLogicExpansion() {
             ))}
           </div>
           {currentFolderId && (
-            <button
-              onClick={goUpFolder}
-              className="text-xs text-gray-500 hover:underline mb-2 block"
-            >
+            <button onClick={goUpFolder} className="text-xs text-gray-500 hover:underline mb-2 block">
               ← 上へ戻る
             </button>
           )}
 
-          {/* リスト */}
           <ul className="space-y-1">
-            {children.length === 0 && (
-              <li className="text-xs text-gray-400 p-2">空です</li>
-            )}
+            {children.length === 0 && <li className="text-xs text-gray-400 p-2">空です</li>}
             {children.map((n) => (
-              <li
-                key={n.id}
-                className="group flex items-center justify-between gap-1"
-              >
+              <li key={n.id} className="group flex items-center justify-between gap-1">
                 <button
-                  onClick={() =>
-                    n.kind === "folder" ? openFolder(n.id) : openFile(n.id)
-                  }
+                  onClick={() => (n.kind === "folder" ? openFolder(n.id) : openFile(n.id))}
                   className={`flex-1 text-left text-sm px-3 py-2 rounded-lg transition-colors flex items-center gap-2 ${
-                    currentFileId === n.id
-                      ? "bg-blue-600 text-white shadow-md"
-                      : "hover:bg-gray-100 text-gray-700"
+                    currentFileId === n.id ? "bg-blue-600 text-white shadow-md" : "hover:bg-gray-100 text-gray-700"
                   }`}
                 >
                   <span>{n.kind === "folder" ? "📁" : "📄"}</span>
                   <span className="truncate">{n.name}</span>
                 </button>
                 <div className="hidden group-hover:flex items-center gap-1">
-                  <button
-                    onClick={() => renameNode(n.id)}
-                    className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded"
-                  >
-                    ✎
-                  </button>
-                  <button
-                    onClick={() => deleteNodeRecursive(n.id)}
-                    className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded"
-                  >
-                    ✕
-                  </button>
+                  <button onClick={() => renameNode(n.id)} className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded">✎</button>
+                  <button onClick={() => deleteNodeRecursive(n.id)} className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded">✕</button>
                 </div>
               </li>
             ))}
           </ul>
         </div>
-
+        
         <div className="border-t pt-4 space-y-3">
           <div className="flex gap-2">
             <input
@@ -679,12 +587,7 @@ export default function MathLogicExpansion() {
               value={newFolderName}
               onChange={(e) => setNewFolderName(e.target.value)}
             />
-            <button
-              onClick={addFolder}
-              className="bg-gray-800 text-white text-xs px-3 rounded-lg hover:bg-black whitespace-nowrap"
-            >
-              追加
-            </button>
+            <button onClick={addFolder} className="bg-gray-800 text-white text-xs px-3 rounded-lg hover:bg-black whitespace-nowrap">追加</button>
           </div>
           <div className="flex gap-2">
             <input
@@ -693,12 +596,7 @@ export default function MathLogicExpansion() {
               value={newFileName}
               onChange={(e) => setNewFileName(e.target.value)}
             />
-            <button
-              onClick={addFile}
-              className="bg-gray-800 text-white text-xs px-3 rounded-lg hover:bg-black whitespace-nowrap"
-            >
-              追加
-            </button>
+            <button onClick={addFile} className="bg-gray-800 text-white text-xs px-3 rounded-lg hover:bg-black whitespace-nowrap">追加</button>
           </div>
         </div>
       </section>
@@ -713,9 +611,7 @@ export default function MathLogicExpansion() {
         ) : (
           <div className="space-y-6">
             <div className="flex items-center justify-between border-b pb-4">
-              <h1 className="text-xl font-bold text-gray-800">
-                {nodes[currentFile.id]?.name}
-              </h1>
+              <h1 className="text-xl font-bold text-gray-800">{nodes[currentFile.id]?.name}</h1>
               <button
                 onClick={addSet}
                 className="bg-black text-white px-4 py-2 rounded-xl text-sm font-medium hover:bg-gray-800 shadow-sm"
@@ -731,31 +627,14 @@ export default function MathLogicExpansion() {
             )}
 
             {currentFile.sets.map((set, idx) => {
-              const edit = editMap[set.id] || {
-                problem: false,
-                my: false,
-                ai: false,
-                steps: false,
-              };
-              const rev = revealMap[set.id] || {
-                my: false,
-                ai: false,
-                steps: false,
-              };
+              const edit = editMap[set.id] || { problem: false, my: false, ai: false, steps: false };
+              const rev = revealMap[set.id] || { my: false, ai: false, steps: false };
 
               return (
-                <div
-                  key={set.id}
-                  className="rounded-2xl border border-gray-200 bg-white shadow-sm overflow-hidden"
-                >
+                <div key={set.id} className="rounded-2xl border border-gray-200 bg-white shadow-sm overflow-hidden">
                   <div className="bg-gray-50 px-4 py-2 border-b flex justify-between items-center">
-                    <span className="font-bold text-gray-600">
-                      SET #{idx + 1}
-                    </span>
-                    <button
-                      onClick={() => deleteSet(set.id)}
-                      className="text-xs text-red-500 hover:underline"
-                    >
+                    <span className="font-bold text-gray-600">SET #{idx + 1}</span>
+                    <button onClick={() => deleteSet(set.id)} className="text-xs text-red-500 hover:underline">
                       削除
                     </button>
                   </div>
@@ -767,9 +646,10 @@ export default function MathLogicExpansion() {
                       isRevealed={true} // 常時表示
                       onToggleEdit={() => toggleEdit(set.id, "problem")}
                       onChange={(val) => updateSet(set.id, "problemText", val)}
-                      placeholder="問題文を入力... \section{...} や \[ ... \] も自動変換されます"
+                      placeholder="問題文を入力... \section{...} も変換されます"
+                      copyPromptText={store.promptConfig?.transcribe ?? DEFAULT_PROMPT_TRANSCRIBE}
+                      copyButtonLabel="文字起こし指示"
                     />
-
                     <SectionItem
                       label="自分の解釈"
                       value={set.myNote}
@@ -779,7 +659,6 @@ export default function MathLogicExpansion() {
                       onToggleReveal={() => toggleReveal(set.id, "my")}
                       onChange={(val) => updateSet(set.id, "myNote", val)}
                     />
-
                     <SectionItem
                       label="AI添削"
                       value={set.aiNote}
@@ -788,8 +667,9 @@ export default function MathLogicExpansion() {
                       onToggleEdit={() => toggleEdit(set.id, "ai")}
                       onToggleReveal={() => toggleReveal(set.id, "ai")}
                       onChange={(val) => updateSet(set.id, "aiNote", val)}
+                      copyPromptText={store.promptConfig?.solve ?? DEFAULT_PROMPT_SOLVE}
+                      copyButtonLabel="解答解説指示"
                     />
-
                     <SectionItem
                       label="途中式"
                       value={set.stepsNote}
@@ -806,6 +686,54 @@ export default function MathLogicExpansion() {
           </div>
         )}
       </section>
+
+      {/* 設定モーダル */}
+      {showConfig && (
+        <div className="absolute inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl w-full max-w-2xl p-6 shadow-xl max-h-[90vh] overflow-y-auto">
+            <h3 className="font-bold text-lg mb-4">指示文（プロンプト）設定</h3>
+            
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-1">
+                  1. 文字起こし指示（問題文のコピーボタン）
+                </label>
+                <textarea
+                  className="w-full h-40 border rounded-lg p-3 text-xs font-mono"
+                  value={tempConfig.transcribe}
+                  onChange={(e) => setTempConfig(prev => ({...prev, transcribe: e.target.value}))}
+                />
+              </div>
+              
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-1">
+                  2. 解答・解説指示（AI添削のコピーボタン）
+                </label>
+                <textarea
+                  className="w-full h-40 border rounded-lg p-3 text-xs font-mono"
+                  value={tempConfig.solve}
+                  onChange={(e) => setTempConfig(prev => ({...prev, solve: e.target.value}))}
+                />
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-3 mt-6">
+              <button
+                onClick={() => setShowConfig(false)}
+                className="px-4 py-2 text-sm text-gray-500 hover:bg-gray-100 rounded-lg"
+              >
+                キャンセル
+              </button>
+              <button
+                onClick={saveConfig}
+                className="px-4 py-2 text-sm bg-black text-white rounded-lg hover:bg-gray-800"
+              >
+                保存する
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
