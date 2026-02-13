@@ -295,7 +295,7 @@ function SectionItem({
   );
 }
 
-// -------- PlainTextSection コンポーネント (「自分の解釈」用・LaTeX非対応) --------
+// -------- PlainTextSection コンポーネント (「自分の解釈」用・LaTeX非対応・トグル付き) --------
 function PlainTextSection({
   label,
   value,
@@ -307,18 +307,38 @@ function PlainTextSection({
   onChange: (val: string) => void;
   placeholder?: string;
 }) {
+  // デフォルト非表示
+  const [isVisible, setIsVisible] = useState(false);
+
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-2 border-b pb-1 border-gray-100">
         <span className="text-sm font-bold text-gray-700">{label}</span>
+        <button
+          type="button"
+          onClick={() => setIsVisible(!isVisible)}
+          className={`text-xs rounded px-2 py-1 border transition-colors ${
+            isVisible
+              ? "bg-gray-100 text-gray-700"
+              : "bg-white text-gray-500 border-gray-200 hover:bg-gray-50"
+          }`}
+        >
+          {isVisible ? "隠す" : "表示する"}
+        </button>
       </div>
-      <textarea
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        rows={6}
-        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm font-sans focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
-        placeholder={placeholder || "自分の考えやメモを自由に入力..."}
-      />
+      
+      {/* 表示時のみテキストエリアを描画 */}
+      {isVisible && (
+        <div className="animate-in fade-in slide-in-from-top-1 duration-200">
+          <textarea
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            rows={6}
+            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm font-sans focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+            placeholder={placeholder || "自分の考えやメモを自由に入力..."}
+          />
+        </div>
+      )}
     </div>
   );
 }
@@ -330,10 +350,10 @@ export default function MathLogicExpansion() {
   const [store, setStore] = useState<Store>(() => loadLocal());
   const storeRef = useRef(store);
 
-  type RevealState = { ai: boolean; steps: boolean }; // my を削除
+  type RevealState = { ai: boolean; steps: boolean }; 
   const [revealMap, setRevealMap] = useState<Record<ID, RevealState>>({});
 
-  type EditState = { problem: boolean; ai: boolean; steps: boolean }; // my を削除
+  type EditState = { problem: boolean; ai: boolean; steps: boolean };
   const [editMap, setEditMap] = useState<Record<ID, EditState>>({});
 
   const [newFolderName, setNewFolderName] = useState("");
@@ -661,7 +681,7 @@ export default function MathLogicExpansion() {
                       copyButtonLabel="文字起こし指示"
                     />
                     
-                    {/* 自分の解釈 (プレーンテキストのみ) */}
+                    {/* 自分の解釈 (プレーンテキストのみ・トグル機能付き) */}
                     <PlainTextSection
                       label="自分の解釈"
                       value={set.myNote}
@@ -678,7 +698,7 @@ export default function MathLogicExpansion() {
                       onChange={(val) => updateSet(set.id, "aiNote", val)}
                     />
                     
-                    {/* 途中式の欄に「解答解説指示」コピーボタンを移動 */}
+                    {/* 途中式の欄に「解答解説指示」コピーボタンを配置 */}
                     <SectionItem
                       label="途中式"
                       value={set.stepsNote}
