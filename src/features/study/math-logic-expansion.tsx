@@ -31,7 +31,7 @@ type Node = {
 type MathSet = {
   id: ID;
   problemText: string;
-  myNote: string;
+  myNote: string; // ここはプレーンテキスト扱い
   aiNote: string;
   stepsNote: string;
 };
@@ -47,7 +47,6 @@ type Store = {
   currentFolderId: ID | null;
   currentFileId: ID | null;
   version: 1;
-  // 指示文の設定
   promptConfig?: {
     transcribe: string;
     solve: string;
@@ -65,7 +64,7 @@ const uid = () =>
     ? crypto.randomUUID()
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
-// ▼▼▼ 修正: \fbox が必ず数式になるよう指示を強化 ▼▼▼
+// ▼▼▼ 指示文のデフォルト設定 ▼▼▼
 const DEFAULT_PROMPT_TRANSCRIBE = `添付した画像の「数学の問題文」を、一言一句正確に文字起こししてください。
 解答や解説は不要です。**問題文のテキストデータのみ**を出力してください。
 
@@ -112,15 +111,10 @@ function normalizeMathText(raw: string): string {
   text = text.replace(/\\subsection\*?\{(.*?)\}/g, "\n### $1\n");
   text = text.replace(/\\textbf\{(.*?)\}/g, "**$1**");
   text = text.replace(/\\textit\{(.*?)\}/g, "*$1*");
-  
-  // \[ ... \] を $$ ... $$ に置換
   text = text.replaceAll("\\[", "\n$$\n");
   text = text.replaceAll("\\]", "\n$$\n");
-
-  // $$ ... $$ の整形
   text = text.replace(/\$\$([\s\S]*?)\$\$/g, (_match, inner) => `\n$$\n${inner.trim()}\n$$\n`);
   
-  // 裸の数式環境を $$ で囲む
   const envs = ["align", "align*", "equation", "equation*", "cases", "gather", "matrix", "pmatrix", "bmatrix"];
   envs.forEach((env) => {
     const regex = new RegExp(`(^|\\n)(\\\\begin\\{${env}\\}[\\s\\S]*?\\\\end\\{${env}\\})`, "g");
@@ -132,23 +126,14 @@ function normalizeMathText(raw: string): string {
 // -------- Helper Functions --------
 function createDefaultStore(): Store {
   const rootId = uid();
-  const rootNode: Node = {
-    id: rootId,
-    name: "数学・論理",
-    parentId: null,
-    kind: "folder",
-  };
-
+  const rootNode: Node = { id: rootId, name: "数学・論理", parentId: null, kind: "folder" };
   return {
     nodes: { [rootId]: rootNode },
     files: {},
     currentFolderId: rootId,
     currentFileId: null,
     version: 1,
-    promptConfig: {
-      transcribe: DEFAULT_PROMPT_TRANSCRIBE,
-      solve: DEFAULT_PROMPT_SOLVE,
-    },
+    promptConfig: { transcribe: DEFAULT_PROMPT_TRANSCRIBE, solve: DEFAULT_PROMPT_SOLVE },
   };
 }
 
@@ -168,26 +153,19 @@ function loadLocal(): Store {
       version: 1,
       promptConfig: parsed.promptConfig ?? def.promptConfig,
     };
-  } catch {
-    return createDefaultStore();
-  }
+  } catch { return createDefaultStore(); }
 }
 
 function saveLocal(store: Store) {
   try {
-    if (typeof window !== "undefined") {
-      localStorage.setItem(LOCAL_KEY, JSON.stringify(store));
-    }
+    if (typeof window !== "undefined") localStorage.setItem(LOCAL_KEY, JSON.stringify(store));
   } catch { /* 無視 */ }
 }
 
 // -------- MathMarkdown コンポーネント --------
 function MathMarkdown({ text, placeholder }: { text: string; placeholder?: string }) {
   const normalized = normalizeMathText(text);
-
-  if (!normalized.trim()) {
-    return <p className="text-xs text-gray-400 italic">{placeholder || "まだ内容がありません。"}</p>;
-  }
+  if (!normalized.trim()) return <p className="text-xs text-gray-400 italic">{placeholder || "まだ内容がありません。"}</p>;
 
   return (
     <div className="
@@ -202,20 +180,14 @@ function MathMarkdown({ text, placeholder }: { text: string; placeholder?: strin
       [&_a]:text-blue-600 [&_a]:underline
       [&_hr]:my-4 [&_hr]:border-gray-300
     ">
-      <ReactMarkdown
-        remarkPlugins={[remarkMath, remarkGfm]}
-        rehypePlugins={[rehypeKatex]}
-        components={{
-          p: ({ children }) => <div className="mb-2 leading-relaxed">{children}</div>,
-        }}
-      >
+      <ReactMarkdown remarkPlugins={[remarkMath, remarkGfm]} rehypePlugins={[rehypeKatex]} components={{ p: ({ children }) => <div className="mb-2 leading-relaxed">{children}</div> }}>
         {normalized}
       </ReactMarkdown>
     </div>
   );
 }
 
-// -------- SectionItem コンポーネント --------
+// -------- SectionItem コンポーネント (LaTeX対応版) --------
 type SectionItemProps = {
   label: string;
   value: string;
@@ -225,8 +197,8 @@ type SectionItemProps = {
   onToggleReveal?: () => void;
   onChange: (val: string) => void;
   placeholder?: string;
-  copyPromptText?: string;  // コピーする指示文の内容
-  copyButtonLabel?: string; // コピーボタンのラベル
+  copyPromptText?: string;
+  copyButtonLabel?: string;
 };
 
 function SectionItem({
@@ -249,9 +221,7 @@ function SectionItem({
       await navigator.clipboard.writeText(copyPromptText);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      console.error("Failed to copy:", err);
-    }
+    } catch (err) { console.error("Failed to copy:", err); }
   };
 
   return (
@@ -259,7 +229,6 @@ function SectionItem({
       <div className="flex items-center justify-between gap-2 border-b pb-1 border-gray-100">
         <span className="text-sm font-bold text-gray-700">{label}</span>
         <div className="flex items-center gap-2">
-          {/* 指示文コピーボタン */}
           {copyPromptText && (
             <button
               type="button"
@@ -267,13 +236,11 @@ function SectionItem({
               className={`text-xs rounded px-2 py-1 border transition-colors flex items-center gap-1 ${
                 copied ? "bg-green-50 text-green-600 border-green-200" : "text-gray-500 hover:bg-gray-50"
               }`}
-              title="Geminiへの指示文をコピー"
             >
               <span>{copied ? "コピー完了" : (copyButtonLabel || "指示文コピー")}</span>
               {!copied && <span className="text-[10px]">📋</span>}
             </button>
           )}
-
           <button
             type="button"
             onClick={onToggleEdit}
@@ -283,7 +250,6 @@ function SectionItem({
           >
             {isEditing ? "完了(プレビュー)" : "編集(LaTeX)"}
           </button>
-          
           {onToggleReveal && (
             <button
               type="button"
@@ -329,6 +295,34 @@ function SectionItem({
   );
 }
 
+// -------- PlainTextSection コンポーネント (「自分の解釈」用・LaTeX非対応) --------
+function PlainTextSection({
+  label,
+  value,
+  onChange,
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  onChange: (val: string) => void;
+  placeholder?: string;
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-2 border-b pb-1 border-gray-100">
+        <span className="text-sm font-bold text-gray-700">{label}</span>
+      </div>
+      <textarea
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        rows={6}
+        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm font-sans focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+        placeholder={placeholder || "自分の考えやメモを自由に入力..."}
+      />
+    </div>
+  );
+}
+
 // ------------------------------------------
 // Main Component
 // ------------------------------------------
@@ -336,16 +330,15 @@ export default function MathLogicExpansion() {
   const [store, setStore] = useState<Store>(() => loadLocal());
   const storeRef = useRef(store);
 
-  type RevealState = { my: boolean; ai: boolean; steps: boolean };
+  type RevealState = { ai: boolean; steps: boolean }; // my を削除
   const [revealMap, setRevealMap] = useState<Record<ID, RevealState>>({});
 
-  type EditState = { problem: boolean; my: boolean; ai: boolean; steps: boolean };
+  type EditState = { problem: boolean; ai: boolean; steps: boolean }; // my を削除
   const [editMap, setEditMap] = useState<Record<ID, EditState>>({});
 
   const [newFolderName, setNewFolderName] = useState("");
   const [newFileName, setNewFileName] = useState("");
   
-  // 設定モーダル用
   const [showConfig, setShowConfig] = useState(false);
   const [tempConfig, setTempConfig] = useState({ transcribe: "", solve: "" });
 
@@ -492,7 +485,7 @@ export default function MathLogicExpansion() {
         },
       },
     }));
-    setEditMap((prev) => ({ ...prev, [newSet.id]: { problem: true, my: true, ai: true, steps: true } }));
+    setEditMap((prev) => ({ ...prev, [newSet.id]: { problem: true, ai: true, steps: true } }));
   };
 
   const updateSet = (setId: ID, field: keyof MathSet, value: string) => {
@@ -516,19 +509,18 @@ export default function MathLogicExpansion() {
 
   const toggleReveal = (setId: ID, key: keyof RevealState) => {
     setRevealMap((prev) => {
-      const st = prev[setId] ?? { my: false, ai: false, steps: false };
+      const st = prev[setId] ?? { ai: false, steps: false };
       return { ...prev, [setId]: { ...st, [key]: !st[key] } };
     });
   };
 
   const toggleEdit = (setId: ID, key: keyof EditState) => {
     setEditMap((prev) => {
-      const st = prev[setId] ?? { problem: false, my: false, ai: false, steps: false };
+      const st = prev[setId] ?? { problem: false, ai: false, steps: false };
       return { ...prev, [setId]: { ...st, [key]: !st[key] } };
     });
   };
 
-  // Config Handlers
   const openConfig = () => {
     setTempConfig({
       transcribe: store.promptConfig?.transcribe ?? DEFAULT_PROMPT_TRANSCRIBE,
@@ -544,7 +536,6 @@ export default function MathLogicExpansion() {
 
   return (
     <div className="grid gap-6 lg:grid-cols-[260px_minmax(0,1fr)] h-full relative">
-      {/* 左サイドバー */}
       <section className="flex flex-col gap-4 rounded-2xl border p-4 shadow-sm bg-white h-fit">
         <div>
           <div className="flex items-center justify-between mb-4">
@@ -621,7 +612,6 @@ export default function MathLogicExpansion() {
         </div>
       </section>
 
-      {/* メインエリア */}
       <section className="bg-white rounded-2xl border shadow-sm p-6 min-h-[500px]">
         {!currentFile ? (
           <div className="h-full flex flex-col items-center justify-center text-gray-400">
@@ -647,8 +637,8 @@ export default function MathLogicExpansion() {
             )}
 
             {currentFile.sets.map((set, idx) => {
-              const edit = editMap[set.id] || { problem: false, my: false, ai: false, steps: false };
-              const rev = revealMap[set.id] || { my: false, ai: false, steps: false };
+              const edit = editMap[set.id] || { problem: false, ai: false, steps: false };
+              const rev = revealMap[set.id] || { ai: false, steps: false };
 
               return (
                 <div key={set.id} className="rounded-2xl border border-gray-200 bg-white shadow-sm overflow-hidden">
@@ -671,13 +661,10 @@ export default function MathLogicExpansion() {
                       copyButtonLabel="文字起こし指示"
                     />
                     
-                    <SectionItem
+                    {/* 自分の解釈 (プレーンテキストのみ) */}
+                    <PlainTextSection
                       label="自分の解釈"
                       value={set.myNote}
-                      isEditing={edit.my}
-                      isRevealed={rev.my}
-                      onToggleEdit={() => toggleEdit(set.id, "my")}
-                      onToggleReveal={() => toggleReveal(set.id, "my")}
                       onChange={(val) => updateSet(set.id, "myNote", val)}
                     />
                     
@@ -689,10 +676,9 @@ export default function MathLogicExpansion() {
                       onToggleEdit={() => toggleEdit(set.id, "ai")}
                       onToggleReveal={() => toggleReveal(set.id, "ai")}
                       onChange={(val) => updateSet(set.id, "aiNote", val)}
-                      copyPromptText={store.promptConfig?.solve ?? DEFAULT_PROMPT_SOLVE}
-                      copyButtonLabel="解答・解説指示"
                     />
                     
+                    {/* 途中式の欄に「解答解説指示」コピーボタンを移動 */}
                     <SectionItem
                       label="途中式"
                       value={set.stepsNote}
@@ -701,6 +687,8 @@ export default function MathLogicExpansion() {
                       onToggleEdit={() => toggleEdit(set.id, "steps")}
                       onToggleReveal={() => toggleReveal(set.id, "steps")}
                       onChange={(val) => updateSet(set.id, "stepsNote", val)}
+                      copyPromptText={store.promptConfig?.solve ?? DEFAULT_PROMPT_SOLVE}
+                      copyButtonLabel="解答・解説指示"
                     />
                   </div>
                 </div>
@@ -710,7 +698,6 @@ export default function MathLogicExpansion() {
         )}
       </section>
 
-      {/* 指示文設定モーダル */}
       {showConfig && (
         <div className="absolute inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-2xl w-full max-w-2xl p-6 shadow-xl max-h-[90vh] overflow-y-auto">
@@ -730,7 +717,7 @@ export default function MathLogicExpansion() {
               
               <div>
                 <label className="block text-sm font-bold text-gray-700 mb-1">
-                  2. 解答・解説指示（「AI添削」エリア用）
+                  2. 解答・解説指示（「途中式」エリア用）
                 </label>
                 <textarea
                   className="w-full h-40 border rounded-lg p-3 text-xs font-mono"
