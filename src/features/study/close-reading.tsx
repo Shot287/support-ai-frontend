@@ -103,7 +103,7 @@ type Span = {
   id: string;
   kind: SpanKind;
   tokenIds: string[];
-  detail?: Detail; // 括弧自体に付与する品詞（例：名詞節など）
+  detail?: Detail;
 };
 
 // --- Legacy Stores for Migration ---
@@ -126,7 +126,7 @@ type StoreV7 = {
   tokens: Token[];
   groups: Group[];        // 下の役割 (SVOCM)
   detailGroups: DetailGroup[]; // 上の詳細タグ (品詞)
-  idiomGroups: IdiomGroup[]; // ★追加：熟語
+  idiomGroups: IdiomGroup[]; // 熟語
   spans: Span[];          // 括弧
   updatedAt: number;
 };
@@ -983,7 +983,7 @@ export default function CloseReading() {
   const selectedIdiomGroup = useMemo(() => {
     if (!currentDoc) return null;
     if (selectedIds.length === 0) return null;
-    // 選択範囲が含まれる熟語グループを探す（1つだけヒットすることを想定）
+    // 選択範囲が含まれる熟語グループを探す
     const idiomIds = uniq(selectedIds.map((id) => idiomGroupByTokenId.get(id)?.id ?? "").filter((x) => x));
     if (idiomIds.length !== 1) return null;
     return currentDoc.idiomGroups.find((g) => g.id === idiomIds[0]) ?? null;
@@ -1494,53 +1494,98 @@ export default function CloseReading() {
       idiomJa: string;
     }[] = [];
 
+    // ★修正: 熟語に含まれるトークンは、熟語単位でまとめて表示する
+    const processed = new Set<string>();
+
     for (let i = 0; i < doc.tokens.length; i++) {
       const t = doc.tokens[i];
-      const g = tokenToGroup.get(t.id);
-      // 熟語グループも考慮するが、表示単位としてはSVOCMグループを優先
-      // 熟語訳がある場合はそれを優先的に表示するために、idiomGroupIdを追加する
-      const ig = tokenToIdiomGroup.get(t.id);
+      if (processed.has(t.id)) continue;
 
-      if (!g) {
-        units.push({
-          tokenIds: [t.id],
-          roleToShow: "NONE",
-          groupId: null,
-          groupJa: "",
-          tokenJa: typeof t.ja === "string" ? t.ja : "",
-          idiomGroupId: ig ? ig.id : null,
-          idiomJa: ig?.ja || ""
-        });
-        continue;
+      // 1. まず熟語グループをチェック
+      const ig = tokenToIdiomGroup.get(t.id);
+      if (ig) {
+          // 熟語の範囲をまとめて1つのユニットにする
+          // (SVOCMグループよりも優先して表示単位とする)
+          const orderedIdiomTokens = normalizeTokenIds(ig.tokenIds, idToIndex);
+          
+          // 表示用のトークンIDリスト
+          // ※飛び飛びの場合は間も含む必要があるが、ここでは簡易的に範囲全体とする
+          const idxs = orderedIdiomTokens.map(id => idToIndex.get(id)).filter((x): x is number => typeof x === "number");
+          const start = Math.min(...idxs);
+          const end = Math.max(...idxs);
+          
+          const displayTokenIds = doc.tokens.slice(start, end + 1).map(x => x.id);
+          
+          // この範囲に含まれるトークンを処理済みにする
+          displayTokenIds.forEach(id => processed.add(id));
+          
+          // 熟語ユニットを追加
+          // ※ roleToShowなどは、熟語全体としては持っていないので、必要に応じて調整
+          // ここでは、熟語内の最初のトークンが属するSVOCMグループのroleを表示するか、あるいは熟語であることを示すか...
+          // 要件は「熟語単位の日本語訳を付与」なので、表示上は熟語訳が優先されればOK
+          
+          units.push({
+            tokenIds: displayTokenIds,
+            roleToShow: "NONE", // 熟語全体としてのRoleは定義されていないためNONE、あるいは最初の語のRole?
+            groupId: null,
+            groupJa: "", // 熟語優先なので空に
+            tokenJa: "", // 熟語優先なので空に
+            idiomGroupId: ig.id,
+            idiomJa: ig.ja || ""
+          });
+          
+          // ループインデックスを進める必要はない（processedチェックでスキップされるため）
+          // ただし、iをendまで進めておくと効率的
+          i = end; 
+          continue;
       }
 
-      if (started.has(g.id)) continue;
-      started.add(g.id);
+      // 2. 次にSVOCMグループをチェック
+      const g = tokenToGroup.get(t.id);
+      if (g) {
+          if (started.has(g.id)) {
+              // 既に開始済みのグループ（通常ここには来ないはずだが念のため）
+              continue; 
+          }
+          started.add(g.id);
 
-      const orderedCore = normalizeTokenIds(g.tokenIds, idToIndex);
-      const idxs = orderedCore.map((id) => idToIndex.get(id)).filter((x): x is number => typeof x === "number");
-      if (idxs.length === 0) continue;
+          const orderedCore = normalizeTokenIds(g.tokenIds, idToIndex);
+          const idxs = orderedCore.map((id) => idToIndex.get(id)).filter((x): x is number => typeof x === "number");
+          if (idxs.length === 0) continue;
 
-      const start = Math.min(...idxs);
-      const end = Math.max(...idxs);
+          const start = Math.min(...idxs);
+          const end = Math.max(...idxs);
 
-      const displayTokenIds = doc.tokens.slice(start, end + 1).map((x) => x.id);
-      
-      // グループ内の最初のトークンの熟語情報を代表として取得（簡易実装）
-      const firstTokenId = displayTokenIds[0];
-      const groupIg = tokenToIdiomGroup.get(firstTokenId);
+          const displayTokenIds = doc.tokens.slice(start, end + 1).map((x) => x.id);
+          
+          // 処理済みマーク
+          displayTokenIds.forEach(id => processed.add(id));
 
+          units.push({
+            tokenIds: displayTokenIds,
+            roleToShow: g.role,
+            groupId: g.id,
+            groupJa: typeof g.ja === "string" ? g.ja : "",
+            tokenJa: "",
+            idiomGroupId: null,
+            idiomJa: ""
+          });
+
+          i = end;
+          continue;
+      }
+
+      // 3. 最後に単語単体
+      processed.add(t.id);
       units.push({
-        tokenIds: displayTokenIds,
-        roleToShow: g.role,
-        groupId: g.id,
-        groupJa: typeof g.ja === "string" ? g.ja : "",
-        tokenJa: "",
-        idiomGroupId: groupIg ? groupIg.id : null,
-        idiomJa: groupIg?.ja || ""
+        tokenIds: [t.id],
+        roleToShow: "NONE",
+        groupId: null,
+        groupJa: "",
+        tokenJa: typeof t.ja === "string" ? t.ja : "",
+        idiomGroupId: null,
+        idiomJa: ""
       });
-
-      i = end;
     }
 
     return units;
@@ -1602,7 +1647,8 @@ export default function CloseReading() {
     if (!doc) return [];
     
     const targets: JaTarget[] = [];
-    const processedTokenIds = new Set<string>(); // 既にターゲットとして処理された（熟語に含まれる）トークンID
+    // 熟語に含まれるトークンIDを記録
+    const idiomCoveredTokenIds = new Set<string>();
 
     // 1. まず熟語グループをターゲットに追加 (優先度高)
     // 熟語はSVOCMグループを跨ぐ可能性もあるが、今回は簡易的にリストアップ
@@ -1626,14 +1672,14 @@ export default function CloseReading() {
         });
         
         // 熟語に含まれるトークンを記録
-        ig.tokenIds.forEach(id => processedTokenIds.add(id));
+        ig.tokenIds.forEach(id => idiomCoveredTokenIds.add(id));
     }
 
     // 2. 表示ユニットベースでグループと単語を追加 (ただし熟語に含まれる場合はスキップ)
     for (const u of displayUnits) {
       // 熟語グループに含まれているトークンを持つユニットはスキップ
       // (熟語を優先してSVOCM単位の日本語訳をなくす要件に対応)
-      if (u.tokenIds.some(id => processedTokenIds.has(id))) {
+      if (u.tokenIds.some(id => idiomCoveredTokenIds.has(id))) {
           continue;
       }
 
@@ -2225,7 +2271,7 @@ export default function CloseReading() {
               <div className="text-sm font-medium">下線の下（SVOCMなど）を設定 {roleHintText}</div>
 
               {selectedTokens.length === 0 ? (
-                <div className="text-sm text-gray-500">上の単語をクリックしてしてください（2語なら Shift+クリック）。</div>
+                <div className="text-sm text-gray-500">上の単語をクリックしてください（2語なら Shift+クリック）。</div>
               ) : (
                 <div className="space-y-3">
                   <div className="flex flex-wrap items-center gap-2">
