@@ -83,14 +83,21 @@ type Group = {
   ja?: string;
 };
 
-// ★追加：上部詳細タグ（品詞）用のグループ
+// 上部詳細タグ（品詞）用のグループ
 type DetailGroup = {
   id: string;
   tokenIds: string[]; // tokens順に正規化
   detail: Detail;
 };
 
-// ★修正：Spanにdetail（品詞）を追加
+// ★追加：熟語グループ
+type IdiomGroup = {
+  id: string;
+  tokenIds: string[];
+  label: "熟語"; // 将来的な拡張のため型定義
+};
+
+// Spanにdetail（品詞）を追加
 type Span = {
   id: string;
   kind: SpanKind;
@@ -117,7 +124,8 @@ type StoreV7 = {
   inputText: string;
   tokens: Token[];
   groups: Group[];        // 下の役割 (SVOCM)
-  detailGroups: DetailGroup[]; // ★上の詳細タグ (品詞)
+  detailGroups: DetailGroup[]; // 上の詳細タグ (品詞)
+  idiomGroups: IdiomGroup[]; // ★追加：熟語
   spans: Span[];          // 括弧
   updatedAt: number;
 };
@@ -229,6 +237,7 @@ function defaultDocV7(): StoreV7 {
     tokens: [],
     groups: [],
     detailGroups: [],
+    idiomGroups: [], // ★追加
     spans: [],
     updatedAt: Date.now(),
   };
@@ -453,6 +462,27 @@ function migrateDoc(raw: any): StoreV7 {
       })
       .filter(Boolean) as DetailGroup[];
 
+  const normalizeIdiomGroups = (
+    iGroupsIn: any[],
+    tokenSet: Set<string>,
+    idToIndex: Map<string, number>
+  ): IdiomGroup[] =>
+    (Array.isArray(iGroupsIn) ? iGroupsIn : [])
+      .map((g: any) => {
+        if (!g || typeof g !== "object") return null;
+        const label = g.label === "熟語" ? "熟語" : "熟語"; // 現状は熟語のみ
+        const tokenIdsRaw: string[] = Array.isArray(g.tokenIds)
+          ? (g.tokenIds as unknown[]).filter(isString).filter((id) => tokenSet.has(id))
+          : [];
+        if (tokenIdsRaw.length === 0) return null;
+        return {
+          id: typeof g.id === "string" ? g.id : newId(),
+          label,
+          tokenIds: normalizeTokenIds(uniqueStringsPreserveOrder(tokenIdsRaw), idToIndex),
+        } satisfies IdiomGroup;
+      })
+      .filter(Boolean) as IdiomGroup[];
+
   const normalizeSpans = (
     spansIn: any[],
     tokenSet: Set<string>,
@@ -488,9 +518,10 @@ function migrateDoc(raw: any): StoreV7 {
     const tokenSet = new Set(tokens.map((t) => t.id));
     const groups = normalizeGroups(raw.groups, tokenSet, idToIndex);
     const detailGroups = normalizeDetailGroups(raw.detailGroups, tokenSet, idToIndex);
+    const idiomGroups = normalizeIdiomGroups(raw.idiomGroups, tokenSet, idToIndex); // ★追加
     const spans = normalizeSpans(raw.spans, tokenSet, idToIndex);
     const updatedAt = typeof raw.updatedAt === "number" ? raw.updatedAt : Date.now();
-    return { version: 7, inputText, tokens, groups, detailGroups, spans, updatedAt };
+    return { version: 7, inputText, tokens, groups, detailGroups, idiomGroups, spans, updatedAt };
   }
 
   // Migration from V6 or lower -> V7
@@ -547,7 +578,7 @@ function migrateDoc(raw: any): StoreV7 {
     const inputText = typeof raw.inputText === "string" ? raw.inputText : "";
     const updatedAt = typeof raw.updatedAt === "number" ? raw.updatedAt : Date.now();
 
-    return { version: 7, inputText, tokens, groups, detailGroups, spans, updatedAt };
+    return { version: 7, inputText, tokens, groups, detailGroups, idiomGroups: [], spans, updatedAt };
   }
 
   return base;
@@ -915,12 +946,19 @@ export default function CloseReading() {
     return m;
   }, [currentDoc?.groups]);
 
-  // ★追加：DetailGroup lookup
+  // ★DetailGroup lookup
   const detailGroupByTokenId = useMemo(() => {
     const m = new Map<string, DetailGroup>();
     for (const dg of currentDoc?.detailGroups ?? []) for (const tid of dg.tokenIds) m.set(tid, dg);
     return m;
   }, [currentDoc?.detailGroups]);
+
+  // ★追加：IdiomGroup lookup
+  const idiomGroupByTokenId = useMemo(() => {
+    const m = new Map<string, IdiomGroup>();
+    for (const ig of currentDoc?.idiomGroups ?? []) for (const tid of ig.tokenIds) m.set(tid, ig);
+    return m;
+  }, [currentDoc?.idiomGroups]);
 
   const selectedTokens = useMemo(() => {
     const set = new Set(selectedIds);
@@ -953,6 +991,18 @@ export default function CloseReading() {
     return "MIXED";
   }, [selectedTokens, detailGroupByTokenId]);
 
+  const selectedIdiomState = useMemo(() => {
+    if (selectedTokens.length === 0) return false;
+    
+    // 選択範囲が何らかの熟語グループに含まれているかチェック
+    const idiomIds = uniq(selectedTokens.map(t => {
+        const ig = idiomGroupByTokenId.get(t.id);
+        return ig ? ig.id : null;
+    }).filter((x): x is string => x !== null));
+
+    return idiomIds.length > 0;
+  }, [selectedTokens, idiomGroupByTokenId]);
+
   const onBuild = () => {
     if (!currentDoc) return;
     const tokens = tokenize(currentDoc.inputText);
@@ -962,6 +1012,7 @@ export default function CloseReading() {
       tokens,
       groups: [],
       detailGroups: [],
+      idiomGroups: [],
       spans: [],
       updatedAt: Date.now(),
     }));
@@ -1027,7 +1078,7 @@ export default function CloseReading() {
     anchorIndexRef.current = index;
   };
 
-  // ★追加：括弧（Span）をクリックしたときの処理
+  // 括弧（Span）をクリックしたときの処理
   const onSpanClick = (span: Span, ev: React.MouseEvent) => {
     ev.stopPropagation(); // トークンのクリックイベントなどを防ぐ
     // 括弧内のトークンIDをすべて選択状態にする（視覚的にもわかりやすく）
@@ -1115,11 +1166,11 @@ export default function CloseReading() {
     setSelectedIds(coerced);
   };
 
-  // ★詳細タグ（品詞）の設定：複数選択時は DetailGroup を作成して束ねる
+  // 詳細タグ（品詞）の設定：複数選択時は DetailGroup を作成して束ねる
   const setDetailToSelected = (detail: Detail) => {
     if (!currentDoc) return;
     
-    // ★Span選択モードの場合：選択中のSpanに対してdetailを付与する
+    // Span選択モードの場合：選択中のSpanに対してdetailを付与する
     if (selectedSpanId) {
         updateCurrentDoc((prev) => ({
             ...prev,
@@ -1175,6 +1226,76 @@ export default function CloseReading() {
     });
 
     setSelectedIds(coerced);
+  };
+
+  // ★追加：熟語マークの付与
+  const setIdiomToSelected = () => {
+    if (!currentDoc) return;
+    if (selectedIds.length === 0) return;
+
+    // 連続範囲に補正
+    const coerced = coerceToContiguousSelection(selectedIds, idToIndex, currentDoc.tokens);
+    const set = new Set(coerced);
+
+    updateCurrentDoc((prev) => {
+        const idToIndex2 = new Map(prev.tokens.map((t, i) => [t.id, i]));
+        
+        // 既存のIdiomGroupから、選択されたトークンを削除する（再編）
+        // ※重複を避けるため、選択範囲が含まれる既存の熟語グループは一旦削除・分割する
+        const nextIdiomGroups: IdiomGroup[] = [];
+        for (const ig of prev.idiomGroups) {
+            const remaining = ig.tokenIds.filter(tid => !set.has(tid));
+            if (remaining.length > 0) {
+                 nextIdiomGroups.push({
+                    ...ig,
+                    tokenIds: normalizeTokenIds(remaining, idToIndex2)
+                  });
+            }
+        }
+
+        // 新しい熟語グループを追加
+        nextIdiomGroups.push({
+            id: newId(),
+            tokenIds: normalizeTokenIds(coerced, idToIndex2),
+            label: "熟語"
+        });
+
+        // ソート
+        nextIdiomGroups.sort((a, b) => {
+             const amin = Math.min(...a.tokenIds.map((id) => idToIndex2.get(id) ?? 1e9));
+             const bmin = Math.min(...b.tokenIds.map((id) => idToIndex2.get(id) ?? 1e9));
+             return amin - bmin;
+        });
+
+        return { ...prev, idiomGroups: nextIdiomGroups, updatedAt: Date.now() };
+    });
+
+    setSelectedIds(coerced);
+  };
+
+  const removeIdiomFromSelected = () => {
+    if (!currentDoc) return;
+    if (selectedIds.length === 0) return;
+
+    const set = new Set(selectedIds);
+
+    updateCurrentDoc((prev) => {
+        const idToIndex2 = new Map(prev.tokens.map((t, i) => [t.id, i]));
+        
+        const nextIdiomGroups: IdiomGroup[] = [];
+        for (const ig of prev.idiomGroups) {
+            // 選択範囲に含まれるトークンを除外
+            const remaining = ig.tokenIds.filter(tid => !set.has(tid));
+            if (remaining.length > 0) {
+                 nextIdiomGroups.push({
+                    ...ig,
+                    tokenIds: normalizeTokenIds(remaining, idToIndex2)
+                  });
+            }
+        }
+
+        return { ...prev, idiomGroups: nextIdiomGroups, updatedAt: Date.now() };
+    });
   };
 
   const setSpanToSelected = (kind: SpanKind) => {
@@ -1321,7 +1442,7 @@ export default function CloseReading() {
         return amin - bmin;
       });
 
-      return { ...prev, groups: nextGroups, detailGroups: nextDetailGroups, updatedAt: Date.now() };
+      return { ...prev, groups: nextGroups, detailGroups: nextDetailGroups, idiomGroups: [], updatedAt: Date.now() };
     });
   };
 
@@ -1387,7 +1508,7 @@ export default function CloseReading() {
 
   const spanMarksByTokenId = useMemo(() => {
     const doc = currentDoc;
-    // 修正: 値を {char: string, span: Span}[] に変更し、Spanオブジェクトを持たせる
+    // 値を {char: string, span: Span}[] に変更し、Spanオブジェクトを持たせる
     const starts = new Map<string, { char: string; span: Span }[]>();
     const ends = new Map<string, { char: string; span: Span }[]>();
     if (!doc) return { starts, ends };
@@ -1406,7 +1527,7 @@ export default function CloseReading() {
       .forEach(({ s }) => {
         const open = spanMarkers(s.kind).open;
         
-        // ★修正: detailがある場合は括弧と一緒に表示
+        // detailがある場合は括弧と一緒に表示
         const label = s.detail ? `${open}${s.detail}` : open;
 
         const first = s.tokenIds[0];
@@ -1799,6 +1920,10 @@ export default function CloseReading() {
                             const dg = detailGroupByTokenId.get(tid);
                             const topDetailLabel = dg ? detailShort(dg.detail) : "";
                             
+                            // ★Idiom Group Visualization
+                            const ig = idiomGroupByTokenId.get(tid);
+                            const isIdiomStart = ig ? ig.tokenIds.indexOf(tid) === 0 : false;
+                            
                             let isGroupStart = false;
                             let isGroupEnd = false;
                             let isGroupMiddle = false;
@@ -1829,7 +1954,7 @@ export default function CloseReading() {
                                 : "";
 
                             return (
-                              <div key={tid} className="flex flex-col items-center">
+                              <div key={tid} className="flex flex-col items-center relative group">
                                 {/* 上部詳細タグエリア：ボーダーとラベル */}
                                 <div className={`relative w-full h-[18px] flex items-end justify-center ${topBorderStyle} ${leftBorderStyle} ${rightBorderStyle} box-border`}>
                                    {showLabel && (
@@ -1837,11 +1962,22 @@ export default function CloseReading() {
                                         {topDetailLabel}
                                      </div>
                                    )}
+                                   
+                                   {/* ★熟語ラベル (上部詳細タグの上に表示) */}
+                                   {isIdiomStart && (
+                                       <div className="absolute -top-[14px] left-0 whitespace-nowrap text-[9px] text-green-700 font-bold leading-none bg-green-50 px-1 rounded border border-green-200 z-10">
+                                           (熟語)
+                                       </div>
+                                   )}
+                                   {/* ★熟語ライン (単語の下、下線の上あたりに表示) */}
+                                   {ig && (
+                                       <div className="absolute bottom-[-2px] left-0 w-full h-[2px] bg-green-300 z-0 pointer-events-none opacity-50"></div>
+                                   )}
                                 </div>
 
-                                <div className="flex items-center gap-[0px] px-[1px]">
+                                <div className="flex items-center gap-[0px] px-[1px] relative z-10">
                                   {opens.map((item, i) => (
-                                    // ★修正: 括弧をクリックできるようにbutton化し、onClickイベントを追加
+                                    // 括弧をクリックできるようにbutton化し、onClickイベントを追加
                                     <button
                                         key={`o-${tid}-${i}`}
                                         onClick={(e) => onSpanClick(item.span, e)}
@@ -1866,7 +2002,7 @@ export default function CloseReading() {
                                   </button>
 
                                   {closes.map((item, i) => (
-                                    // ★修正: 括弧をクリックできるようにbutton化し、onClickイベントを追加
+                                    // 括弧をクリックできるようにbutton化し、onClickイベントを追加
                                     <button
                                         key={`c-${tid}-${i}`}
                                         onClick={(e) => onSpanClick(item.span, e)}
@@ -1932,6 +2068,42 @@ export default function CloseReading() {
                   <div className="text-xs text-gray-500">
                     ※複数選択してタグを押すと、それらを1つのまとまりとしてタグ付けします（例：a few → 1つの(形)）。
                   </div>
+                </div>
+              )}
+            </div>
+
+            {/* ★熟語設定パネル (新規追加) */}
+            <div className="rounded-2xl border bg-white p-4 shadow-sm space-y-3">
+              <div className="text-sm font-medium">熟語を設定 {roleHintText}</div>
+              
+              {selectedTokens.length === 0 ? (
+                <div className="text-sm text-gray-500">上の単語を複数選択してください。</div>
+              ) : (
+                <div className="space-y-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                        <div className="text-sm">選択: <span className="font-semibold">{selectedText}</span></div>
+                        <div className="text-xs text-gray-500">
+                            {selectedIdiomState ? "（熟語マーク済み）" : "（熟語マークなし）"}
+                        </div>
+                    </div>
+                    <div className="flex gap-2">
+                        <button
+                            onClick={setIdiomToSelected}
+                            className="rounded-xl border px-3 py-2 text-sm bg-green-50 text-green-700 border-green-200 hover:bg-green-100"
+                        >
+                            熟語としてマーク
+                        </button>
+                        <button
+                            onClick={removeIdiomFromSelected}
+                            className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
+                            disabled={!selectedIdiomState}
+                        >
+                            熟語マークを解除
+                        </button>
+                    </div>
+                    <div className="text-xs text-gray-500">
+                        ※熟語マークは、品詞やSVOCMとは独立して付与されます。
+                    </div>
                 </div>
               )}
             </div>
