@@ -90,12 +90,12 @@ type DetailGroup = {
   detail: Detail;
 };
 
-// ★追加：熟語グループ（訳を追加）
+// 熟語グループ（訳を追加）
 type IdiomGroup = {
   id: string;
   tokenIds: string[];
   label: "熟語";
-  ja?: string; // ★熟語ごとの訳
+  ja?: string; // 熟語ごとの訳
 };
 
 // Spanにdetail（品詞）を追加
@@ -103,7 +103,7 @@ type Span = {
   id: string;
   kind: SpanKind;
   tokenIds: string[];
-  detail?: Detail; // 括弧自体に付与する品詞（例：名詞節など）
+  detail?: Detail; // 括弧自体に付与する品詞
 };
 
 // --- Legacy Stores for Migration ---
@@ -126,7 +126,7 @@ type StoreV7 = {
   tokens: Token[];
   groups: Group[];        // 下の役割 (SVOCM)
   detailGroups: DetailGroup[]; // 上の詳細タグ (品詞)
-  idiomGroups: IdiomGroup[]; // ★追加：熟語
+  idiomGroups: IdiomGroup[]; // 熟語
   spans: Span[];          // 括弧
   updatedAt: number;
 };
@@ -1497,8 +1497,8 @@ export default function CloseReading() {
     for (let i = 0; i < doc.tokens.length; i++) {
       const t = doc.tokens[i];
       const g = tokenToGroup.get(t.id);
-      // ★熟語グループも考慮するが、表示単位としてはSVOCMグループを優先しつつ、熟語が重なる場合はどう扱うか...
-      // 今回は表示ロジックを変えず、熟語訳がある場合はそれを優先的に表示するために、idiomGroupIdを追加する
+      // 熟語グループも考慮するが、表示単位としてはSVOCMグループを優先
+      // 熟語訳がある場合はそれを優先的に表示するために、idiomGroupIdを追加する
       const ig = tokenToIdiomGroup.get(t.id);
 
       if (!g) {
@@ -2225,7 +2225,7 @@ export default function CloseReading() {
               <div className="text-sm font-medium">下線の下（SVOCMなど）を設定 {roleHintText}</div>
 
               {selectedTokens.length === 0 ? (
-                <div className="text-sm text-gray-500">上の単語をクリックしてしてください（2語なら Shift+クリック）。</div>
+                <div className="text-sm text-gray-500">上の単語をクリックしてください（2語なら Shift+クリック）。</div>
               ) : (
                 <div className="space-y-3">
                   <div className="flex flex-wrap items-center gap-2">
