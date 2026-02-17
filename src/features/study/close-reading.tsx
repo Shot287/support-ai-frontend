@@ -1,7 +1,7 @@
 // src/features/study/close-reading.tsx
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { loadUserDoc, saveUserDoc } from "@/lib/userDocStore";
 
 type ID = string;
@@ -711,6 +711,10 @@ export default function CloseReading() {
 
   const [jaCursor, setJaCursor] = useState(0);
   const jaInputRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // ★追加: 熟語の座標計算用
+  const [idiomPositions, setIdiomPositions] = useState<Record<string, { left: number; top: number }>>({});
+  const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setSelectedIds([]);
@@ -1562,8 +1566,6 @@ export default function CloseReading() {
     const targets: JaTarget[] = [];
     
     // ★追加: 熟語に含まれるトークンIDのセットを作成
-    // このセットに含まれるトークン(またはグループ)は、重複を避けるため
-    // 個別の訳入力欄を作成せずスキップする。
     const idiomTokenSet = new Set<string>();
     for (const idm of doc.idioms) {
       idm.tokenIds.forEach(id => idiomTokenSet.add(id));
@@ -1635,7 +1637,6 @@ export default function CloseReading() {
     // Sort by appearance
     targets.sort((a, b) => {
         if (a.sortIndex !== b.sortIndex) return a.sortIndex - b.sortIndex;
-        // 同一位置なら Idiom -> Group -> Token の順（適当）
         if (a.kind !== b.kind) return a.kind.localeCompare(b.kind);
         return 0;
     });
@@ -1721,6 +1722,70 @@ export default function CloseReading() {
         }
     }
   };
+
+  // ★追加: 熟語の座標計算用（DOM計測）
+  // 熟語全体の真ん中（X軸）と、一番下（Y軸）を計算する
+  
+  useLayoutEffect(() => {
+    if (!currentDoc) return;
+    
+    const calc = () => {
+      if (!containerRef.current) return;
+      const containerRect = containerRef.current.getBoundingClientRect();
+      const newPos: Record<string, { left: number; top: number }> = {};
+
+      currentDoc.idioms.forEach(idm => {
+        if (idm.tokenIds.length === 0) return;
+        
+        let minLeft = Infinity;
+        let maxRight = -Infinity;
+        let maxBottom = -Infinity;
+        let found = false;
+
+        const idmSet = new Set(idm.tokenIds);
+        const targetUnitStartIds: string[] = [];
+
+        displayUnits.forEach(u => {
+             if (u.tokenIds.some(t => idmSet.has(t))) {
+                 if (u.tokenIds.length > 0) {
+                     targetUnitStartIds.push(u.tokenIds[0]);
+                 }
+             }
+        });
+
+        targetUnitStartIds.forEach(uid => {
+            const el = document.getElementById(`unit-${uid}`);
+            if (el) {
+                const r = el.getBoundingClientRect();
+                if (r.left < minLeft) minLeft = r.left;
+                if (r.right > maxRight) maxRight = r.right;
+                if (r.bottom > maxBottom) maxBottom = r.bottom;
+                found = true;
+            }
+        });
+
+        if (found) {
+             const left = (minLeft + maxRight) / 2 - containerRect.left;
+             // 下線やラベルとの重なりを防ぐため、一番下のラインから少し下に配置
+             // maxBottomは SVOCMラベル(roleText)や 訳スロット(jaText) を含んだUnit全体の底辺。
+             // 訳スロット(jaText)は `invisible` で高さ確保されているため、maxBottomはその下端になる。
+             // そこから少し下(例えば + 14px)に表示する
+             const top = maxBottom - containerRect.top + 14; 
+             newPos[idm.id] = { left, top };
+        }
+      });
+      
+      setIdiomPositions(newPos);
+    };
+
+    // 初回とリサイズ時、あとデータ変更時に計算
+    const timer = setTimeout(calc, 0); // Wait for render
+    window.addEventListener("resize", calc);
+    return () => {
+        clearTimeout(timer);
+        window.removeEventListener("resize", calc);
+    };
+  }, [currentDoc, displayUnits]);
 
   return (
     <div className="grid gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
@@ -1941,7 +2006,24 @@ export default function CloseReading() {
               {currentDoc.tokens.length === 0 ? (
                 <div className="text-sm text-gray-500">まだ分解されていません。「単語に分解（タグ付け開始）」を押してください。</div>
               ) : (
-                <div className="flex flex-wrap gap-0 items-end">
+                <div ref={containerRef} className="flex flex-wrap gap-0 items-end relative">
+                  {/* ★修正: 熟語の訳を絶対配置で表示（DOM計算に基づく） */}
+                  {currentDoc.idioms.map((idm) => {
+                      const pos = idiomPositions[idm.id];
+                      if (!pos || !idm.ja) return null;
+                      return (
+                          <div
+                              key={idm.id}
+                              className="absolute -translate-x-1/2 whitespace-nowrap z-30 pointer-events-none"
+                              style={{ left: pos.left, top: pos.top }}
+                          >
+                               <div className="text-[10px] text-gray-600 bg-white/90 px-1 rounded shadow-sm border border-gray-100">
+                                   {idm.ja}
+                               </div>
+                          </div>
+                      );
+                  })}
+
                   {displayUnits.map((u, ui) => {
                     const roleText = roleShort(u.roleToShow);
                     const roleClass = classForRole(u.roleToShow === "NONE" ? "NONE" : u.roleToShow);
@@ -1951,8 +2033,15 @@ export default function CloseReading() {
                       return tok ? shouldUnderlineToken(tok.text) : false;
                     });
 
+                    // ★修正: DOM計測用にIDを付与
+                    const unitId = u.tokenIds.length > 0 ? `unit-${u.tokenIds[0]}` : undefined;
+
                     return (
-                      <div key={`${ui}-${u.tokenIds.join(",")}`} className="flex flex-col items-center mx-[2px]">
+                      <div 
+                        key={`${ui}-${u.tokenIds.join(",")}`} 
+                        id={unitId}
+                        className="flex flex-col items-center mx-[2px] relative"
+                      >
                         <div
                           className={[
                             "inline-flex items-end pb-1",
@@ -2025,7 +2114,7 @@ export default function CloseReading() {
                                 : "";
 
                             return (
-                              <div key={tid} className="flex flex-col items-center">
+                              <div key={tid} className="flex flex-col items-center relative">
                                 {/* 上部詳細タグエリア：ボーダーとラベル */}
                                 <div className={`relative w-full h-[18px] flex items-end justify-center ${topBorderStyle} ${leftBorderStyle} ${rightBorderStyle} box-border`}>
                                    {showLabel && (
@@ -2082,31 +2171,17 @@ export default function CloseReading() {
 
                         <div className="mt-1 text-[10px] text-gray-600 min-h-[12px] leading-none">{roleText}</div>
 
-                        {/* ★修正: 熟語の訳を優先表示し、重複を防ぐ */}
+                        {/* ★修正: 熟語に含まれる場合は通常の訳（グループ訳など）を表示せず、高さ確保のみ行う */}
                         <div className="mt-0.5 text-[10px] text-gray-500 min-h-[12px] max-w-[240px] text-center break-words">
                           {(() => {
-                             // まずトークンIDごとに「熟語の先頭か」をチェック
-                             // ただしdisplayUnitsは複数トークンを含む場合がある。
-                             // 基本方針: 
-                             // 1. このユニット(u)が熟語の一部である場合、
-                             //    熟語の先頭トークンを含んでいれば熟語の訳を表示。
-                             //    熟語の途中トークンであれば非表示(空文字)。
-                             // 2. 熟語でなければ、従来通り(u.groupId ? groupJa : tokenJa)を表示。
-
-                             // このユニットに含まれるトークンのうち、どれか1つでも熟語に含まれていれば「熟語モード」の表示ロジックへ
-                             const firstTokenId = u.tokenIds[0];
-                             const idm = idiomByTokenId.get(firstTokenId);
-                             
-                             if (idm) {
-                                // このユニットの先頭トークンが、熟語の先頭トークンと一致する場合のみ表示
-                                if (idm.tokenIds[0] === firstTokenId) {
-                                    return (idm.ja ?? "").trim();
-                                }
-                                // 熟語の途中なら何も表示しない（重複回避）
-                                return "";
+                             // このユニットのどれか一つでも熟語に含まれていれば、通常の訳は非表示（熟語訳に任せる）
+                             const isIncludedInIdiom = u.tokenIds.some(tid => idiomByTokenId.has(tid));
+                             if (isIncludedInIdiom) {
+                                 // 高さを確保するための空文字（invisible）
+                                 return <span className="invisible">.</span>;
                              }
 
-                             // 熟語でない場合は通常通り
+                             // 通常時
                              return u.groupId && (u.groupJa ?? "").trim()
                                 ? (u.groupJa ?? "").trim()
                                 : !u.groupId && (u.tokenJa ?? "").trim()
