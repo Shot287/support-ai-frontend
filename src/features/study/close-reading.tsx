@@ -1769,8 +1769,8 @@ export default function CloseReading() {
              // 下線やラベルとの重なりを防ぐため、一番下のラインから少し下に配置
              // maxBottomは SVOCMラベル(roleText)や 訳スロット(jaText) を含んだUnit全体の底辺。
              // 訳スロット(jaText)は `invisible` で高さ確保されているため、maxBottomはその下端になる。
-             // invisibleの高さ分(約14-16px)を引いて、そこに文字を表示させる
-             const top = maxBottom - containerRect.top - 14; 
+             // そこから少し下(例えば + 14px)に表示する
+             const top = maxBottom - containerRect.top + 5; 
              newPos[idm.id] = { left, top };
         }
       });
@@ -2017,8 +2017,7 @@ export default function CloseReading() {
                               className="absolute -translate-x-1/2 whitespace-nowrap z-30 pointer-events-none"
                               style={{ left: pos.left, top: pos.top }}
                           >
-                               {/* ★修正: スタイルを標準の訳に合わせる（白背景・影・枠線を削除し、グレー文字のみに） */}
-                               <div className="text-[10px] text-gray-500 text-center">
+                               <div className="text-[10px] text-gray-600 bg-white/90 px-1 rounded shadow-sm border border-gray-100">
                                    {idm.ja}
                                </div>
                           </div>
@@ -2193,6 +2192,245 @@ export default function CloseReading() {
                       </div>
                     );
                   })}
+                </div>
+              )}
+            </div>
+
+            {/* 1) 上の詳細タグ パネル */}
+            <div className="rounded-2xl border bg-white p-4 shadow-sm space-y-3">
+              <div className="text-sm font-medium">上の詳細タグ（品詞など）を設定 {roleHintText}</div>
+
+              {selectedTokens.length === 0 ? (
+                <div className="text-sm text-gray-500">上の単語をクリックして選択してください。</div>
+              ) : (
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="text-sm">
+                      選択: <span className="font-semibold">{selectedText}</span>
+                    </div>
+                    <div className="text-xs text-gray-500">
+                      {selectedSpanId
+                        ? "【括弧（節/句）を選択中】この状態でタグを押すと括弧に品詞がつきます。"
+                        : selectedDetailState === "MIXED"
+                        ? "現在（詳細タグ）: 混在"
+                        : selectedDetailState === "NONE"
+                        ? "現在（詳細タグ）: 未設定"
+                        : `現在（詳細タグ）: ${selectedDetailState}`}
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    {DETAIL_LABELS.map(({ detail, label }) => (
+                      <button
+                        key={detail}
+                        onClick={() => setDetailToSelected(detail)}
+                        className={`rounded-xl border px-3 py-2 text-sm hover:bg-gray-50 ${selectedSpanId ? 'ring-2 ring-blue-100 border-blue-300' : ''}`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="text-xs text-gray-500">
+                    ※複数選択してタグを押すと、それらを1つのまとまりとしてタグ付けします（例：a few → 1つの(形)）。
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* 2) 下（SVOCM）パネル */}
+            <div className="rounded-2xl border bg-white p-4 shadow-sm space-y-3">
+              <div className="text-sm font-medium">下線の下（SVOCMなど）を設定 {roleHintText}</div>
+
+              {selectedTokens.length === 0 ? (
+                <div className="text-sm text-gray-500">上の単語をクリックしてください（2語なら Shift+クリック）。</div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="text-sm">
+                      選択: <span className="font-semibold">{selectedText}</span>
+                    </div>
+                    <div className="text-xs text-gray-500">
+                      {selectedGroup
+                        ? `現在（同一まとまり）: ${selectedGroup.role}`
+                        : "現在:（複数まとまり/未まとまり混在。役割を押すと選択範囲で新しいまとまりを作成）"}
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    {ROLE_LABELS.map(({ role, label }) => (
+                      <button
+                        key={role}
+                        onClick={() => setRoleToSelected(role)}
+                        className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="text-xs text-gray-500">
+                    ※グループ化は基本「単語」だけ。複数選択のときだけ「,」「.」「&quot;」もグループに含められます（ただし記号だけのグループは作りません）。
+                  </div>
+                </div>
+              )}
+
+              <div className="pt-2 border-t text-xs text-gray-600 space-y-1">
+                <div>コツ：</div>
+                <ul className="list-disc pl-5 space-y-1">
+                  <li>まず動詞（V）を見つける → その前の名詞（代名詞）が主語（S）になりやすい</li>
+                  <li>他動詞なら O（目的語）が来ることが多い / 自動詞なら M（修飾）で終わりやすい</li>
+                  <li>and / but で並ぶときは、後半も同じ構造が繰り返されることが多い</li>
+                </ul>
+              </div>
+            </div>
+
+            {/* 3) 括弧パネル */}
+            <div className="rounded-2xl border bg-white p-4 shadow-sm space-y-3">
+              <div className="text-sm font-medium">括弧を付ける（従属節は[ ]、句は( )） {roleHintText}</div>
+
+              {selectedTokens.length === 0 ? (
+                <div className="text-sm text-gray-500">上の単語をクリックして範囲選択してください。</div>
+              ) : (
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="text-sm">
+                      選択: <span className="font-semibold">{selectedText}</span>
+                    </div>
+                    <div className="text-xs text-gray-500">※括弧は「交差（クロス）」する形だけ自動で解消します（ネストはOK）。</div>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      onClick={() => setSpanToSelected("CLAUSE")}
+                      className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
+                      title="従属節：[ ]"
+                    >
+                      従属節を [ ] で囲む
+                    </button>
+                    <button
+                      onClick={() => setSpanToSelected("PHRASE")}
+                      className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
+                      title="句：( )"
+                    >
+                      句を ( ) で囲む
+                    </button>
+                    <button
+                      onClick={removeSpansOverlappingSelection}
+                      className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
+                      title="選択範囲に被る括弧を外す"
+                    >
+                      選択範囲の括弧を外す
+                    </button>
+                  </div>
+
+                  <div className="text-xs text-gray-500">※飛び飛び選択は、最小〜最大の連続範囲に自動補正して括弧を付けます。</div>
+                </div>
+              )}
+            </div>
+
+            {/* ★追加 4) 熟語パネル */}
+            <div className="rounded-2xl border bg-white p-4 shadow-sm space-y-3">
+              <div className="text-sm font-medium">熟語（イディオム）を設定 {roleHintText}</div>
+              
+              {selectedTokens.length === 0 ? (
+                  <div className="text-sm text-gray-500">上の単語を複数選択してください。</div>
+              ) : (
+                  <div className="space-y-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="text-sm">
+                          選択: <span className="font-semibold">{selectedText}</span>
+                        </div>
+                        <div className="text-xs text-gray-500">
+                             {selectedIdiom ? "現在: 熟語設定済み" : "現在: 熟語設定なし"}
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap gap-2">
+                          <button
+                            onClick={setIdiomToSelected}
+                            className="rounded-xl border px-3 py-2 text-sm hover:bg-yellow-50 border-yellow-400 text-yellow-800"
+                            title="選択範囲を金色の線で囲みます"
+                          >
+                             選択範囲を熟語にする（金色の囲み）
+                          </button>
+                          
+                          <button
+                            onClick={clearIdiomFromSelected}
+                            className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
+                            title="選択範囲の熟語設定を解除"
+                            disabled={!selectedIdiom}
+                          >
+                             熟語解除
+                          </button>
+                      </div>
+                      <div className="text-xs text-gray-500">
+                         ※SVOCMの下線とは別に、金色の枠線で囲まれます。熟語単位で日本語訳を入力できるようになります。
+                      </div>
+                  </div>
+              )}
+            </div>
+
+            {/* 5) 日本語訳（矢印で切り替え：1つだけ表示） */}
+            <div className="rounded-2xl border bg-white p-4 shadow-sm space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-sm font-medium">日本語訳（矢印キーで次/前へ）</div>
+                <div className="flex items-center gap-2">
+                  <button
+                    className="text-xs rounded-lg border px-2 py-1 hover:bg-gray-50"
+                    onClick={() => moveJaCursor(-1)}
+                    disabled={jaTargets.length === 0}
+                    title="前（↑/← でも可）"
+                  >
+                    ← 前
+                  </button>
+                  <button
+                    className="text-xs rounded-lg border px-2 py-1 hover:bg-gray-50"
+                    onClick={() => moveJaCursor(+1)}
+                    disabled={jaTargets.length === 0}
+                    title="次（↓/→ でも可）"
+                  >
+                    次 →
+                  </button>
+                </div>
+              </div>
+
+              {jaTargets.length === 0 ? (
+                <div className="text-sm text-gray-500">訳入力の対象がありません。単語が分解されているか確認してください。</div>
+              ) : (
+                <div className="space-y-2">
+                  <div className="text-xs text-gray-600">
+                    {jaCursor + 1} / {jaTargets.length}{" "}
+                    {currentJaTarget?.kind === "group" ? (
+                      <span className="ml-2">
+                        role: <span className="font-semibold">{currentJaTarget.role}</span>
+                      </span>
+                    ) : currentJaTarget?.kind === "idiom" ? (
+                      <span className="ml-2 text-yellow-600 font-semibold">
+                        （熟語）
+                      </span>
+                    ) : (
+                      <span className="ml-2 text-gray-500">（単語）</span>
+                    )}
+                  </div>
+
+                  <div className="rounded-xl border p-3 bg-gray-50">
+                    <div className="text-sm">
+                      対象: <span className="font-semibold">{currentJaTarget?.text ?? ""}</span>
+                    </div>
+                    <div className="text-[11px] text-gray-500 mt-1">
+                      入力欄で ↑/↓/←/→ を押すと、次の入力欄へ切り替わります（場所を取りません）。
+                    </div>
+                  </div>
+
+                  <textarea
+                    ref={jaInputRef}
+                    className="w-full min-h-[72px] rounded-xl border p-3 text-sm outline-none focus:ring-2 focus:ring-gray-200"
+                    placeholder="ここに日本語訳を入力（短くてOK）"
+                    value={currentJaTarget?.ja ?? ""}
+                    onChange={(e) => onUpdateJaTarget(e.target.value)}
+                    onKeyDown={onJaKeyDown}
+                  />
                 </div>
               )}
             </div>
