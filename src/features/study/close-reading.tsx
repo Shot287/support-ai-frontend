@@ -1946,13 +1946,6 @@ export default function CloseReading() {
                     const roleText = roleShort(u.roleToShow);
                     const roleClass = classForRole(u.roleToShow === "NONE" ? "NONE" : u.roleToShow);
 
-                    const jaText =
-                      u.groupId && (u.groupJa ?? "").trim()
-                        ? (u.groupJa ?? "").trim()
-                        : !u.groupId && (u.tokenJa ?? "").trim()
-                        ? (u.tokenJa ?? "").trim()
-                        : "";
-
                     const unitHasUnderline = u.tokenIds.some((tid) => {
                       const tok = currentDoc.tokens[idToIndex.get(tid) ?? -1];
                       return tok ? shouldUnderlineToken(tok.text) : false;
@@ -2089,8 +2082,37 @@ export default function CloseReading() {
 
                         <div className="mt-1 text-[10px] text-gray-600 min-h-[12px] leading-none">{roleText}</div>
 
+                        {/* ★修正: 熟語の訳を優先表示し、重複を防ぐ */}
                         <div className="mt-0.5 text-[10px] text-gray-500 min-h-[12px] max-w-[240px] text-center break-words">
-                          {jaText ? jaText : ""}
+                          {(() => {
+                             // まずトークンIDごとに「熟語の先頭か」をチェック
+                             // ただしdisplayUnitsは複数トークンを含む場合がある。
+                             // 基本方針: 
+                             // 1. このユニット(u)が熟語の一部である場合、
+                             //    熟語の先頭トークンを含んでいれば熟語の訳を表示。
+                             //    熟語の途中トークンであれば非表示(空文字)。
+                             // 2. 熟語でなければ、従来通り(u.groupId ? groupJa : tokenJa)を表示。
+
+                             // このユニットに含まれるトークンのうち、どれか1つでも熟語に含まれていれば「熟語モード」の表示ロジックへ
+                             const firstTokenId = u.tokenIds[0];
+                             const idm = idiomByTokenId.get(firstTokenId);
+                             
+                             if (idm) {
+                                // このユニットの先頭トークンが、熟語の先頭トークンと一致する場合のみ表示
+                                if (idm.tokenIds[0] === firstTokenId) {
+                                    return (idm.ja ?? "").trim();
+                                }
+                                // 熟語の途中なら何も表示しない（重複回避）
+                                return "";
+                             }
+
+                             // 熟語でない場合は通常通り
+                             return u.groupId && (u.groupJa ?? "").trim()
+                                ? (u.groupJa ?? "").trim()
+                                : !u.groupId && (u.tokenJa ?? "").trim()
+                                ? (u.tokenJa ?? "").trim()
+                                : "";
+                          })()}
                         </div>
                       </div>
                     );
