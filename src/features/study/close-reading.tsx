@@ -1492,9 +1492,27 @@ export default function CloseReading() {
       // ★追加
       idiomGroupId: string | null;
       idiomJa: string;
+      isIdiomStart: boolean; // ★熟語の先頭ユニットかどうか
     }[] = [];
 
     const processed = new Set<string>();
+
+    // 熟語ごとの開始トークンIDを特定しておく（表示制御のため）
+    const idiomStartTokenIds = new Map<string, string>(); // idiomId -> startTokenId
+    for (const ig of doc.idiomGroups) {
+        if (ig.tokenIds.length === 0) continue;
+        // idToIndexを使って最小のトークンを探す
+        let minIdx = 1e9;
+        let startTid = "";
+        for(const tid of ig.tokenIds) {
+            const idx = idToIndex.get(tid) ?? 1e9;
+            if(idx < minIdx) {
+                minIdx = idx;
+                startTid = tid;
+            }
+        }
+        if(startTid) idiomStartTokenIds.set(ig.id, startTid);
+    }
 
     for (let i = 0; i < doc.tokens.length; i++) {
       const t = doc.tokens[i];
@@ -1504,6 +1522,11 @@ export default function CloseReading() {
       // (熟語があってもSVOCMの下線構造を壊さないため)
       
       const g = tokenToGroup.get(t.id);
+      let unitTokenIds: string[] = [];
+      let role: Role = "NONE";
+      let groupId: string | null = null;
+      let groupJa = "";
+      let tokenJa = "";
 
       // 1. SVOCMグループがある場合
       if (g) {
@@ -1519,42 +1542,44 @@ export default function CloseReading() {
           const start = Math.min(...idxs);
           const end = Math.max(...idxs);
 
-          const displayTokenIds = doc.tokens.slice(start, end + 1).map((x) => x.id);
-          
-          // 処理済みマーク
-          displayTokenIds.forEach(id => processed.add(id));
-
-          // このSVOCMグループが、熟語を含んでいるか（あるいは熟語の一部か）をチェック
-          // ここでは簡易的に「最初のトークンが属する熟語」の情報を付与して、日本語訳の優先度などに使う
-          const idiomInGroup = tokenToIdiomGroup.get(t.id);
-
-          units.push({
-            tokenIds: displayTokenIds,
-            roleToShow: g.role,
-            groupId: g.id,
-            groupJa: typeof g.ja === "string" ? g.ja : "",
-            tokenJa: "",
-            idiomGroupId: idiomInGroup ? idiomInGroup.id : null,
-            idiomJa: idiomInGroup ? (idiomInGroup.ja || "") : ""
-          });
+          unitTokenIds = doc.tokens.slice(start, end + 1).map((x) => x.id);
+          role = g.role;
+          groupId = g.id;
+          groupJa = g.ja ?? "";
 
           i = end;
-          continue;
+      } else {
+        // 2. 単語単体 (SVOCMなし)
+        unitTokenIds = [t.id];
+        tokenJa = t.ja ?? "";
       }
 
-      // 2. 単語単体 (SVOCMなし)
-      // ここでも熟語チェックは行う（SVOCMがない単語だけの熟語など）
-      processed.add(t.id);
-      const idiomInToken = tokenToIdiomGroup.get(t.id);
+      // 処理済みマーク
+      unitTokenIds.forEach(id => processed.add(id));
+
+      // このユニットが属する熟語を探す
+      // ユニット内の最初のトークンが熟語に含まれていれば、その熟語情報を採用
+      const firstTid = unitTokenIds[0];
+      const idiom = tokenToIdiomGroup.get(firstTid); 
+
+      // 熟語の開始判定: このユニットに「熟語の開始トークン」が含まれているか
+      let isIdiomStart = false;
+      if (idiom) {
+          const startTid = idiomStartTokenIds.get(idiom.id);
+          if (startTid && unitTokenIds.includes(startTid)) {
+              isIdiomStart = true;
+          }
+      }
 
       units.push({
-        tokenIds: [t.id],
-        roleToShow: "NONE",
-        groupId: null,
-        groupJa: "",
-        tokenJa: typeof t.ja === "string" ? t.ja : "",
-        idiomGroupId: idiomInToken ? idiomInToken.id : null,
-        idiomJa: idiomInToken ? (idiomInToken.ja || "") : ""
+        tokenIds: unitTokenIds,
+        roleToShow: role,
+        groupId,
+        groupJa,
+        tokenJa,
+        idiomGroupId: idiom ? idiom.id : null,
+        idiomJa: idiom ? (idiom.ja || "") : "",
+        isIdiomStart
       });
     }
 
@@ -2012,39 +2037,38 @@ export default function CloseReading() {
                     const roleText = roleShort(u.roleToShow);
                     const roleClass = classForRole(u.roleToShow === "NONE" ? "NONE" : u.roleToShow);
 
-                    // ★修正：熟語訳がある場合は優先して表示、なければグループ訳、なければトークン訳
-                    const jaText =
-                      u.idiomJa && u.idiomJa.trim()
-                        ? u.idiomJa.trim()
-                        : u.groupId && (u.groupJa ?? "").trim()
-                        ? (u.groupJa ?? "").trim()
-                        : !u.groupId && (u.tokenJa ?? "").trim()
-                        ? (u.tokenJa ?? "").trim()
-                        : "";
+                    // ★訳表示の決定
+                    const idiomId = u.idiomGroupId;
+                    const isIdiomStart = u.isIdiomStart;
+                    
+                    let displayJa = "";
+                    if (idiomId) {
+                        // 熟語に含まれる場合、先頭のユニットの下にのみ熟語訳を表示
+                        if (isIdiomStart) {
+                            displayJa = u.idiomJa;
+                        } else {
+                            displayJa = ""; // 続きの部分は空にする
+                        }
+                    } else {
+                        // 熟語でない場合は通常の訳を表示 (グループ訳優先)
+                        displayJa = u.groupId ? (u.groupJa ?? "") : (u.tokenJa ?? "");
+                    }
+                    displayJa = displayJa.trim();
 
                     const unitHasUnderline = u.tokenIds.some((tid) => {
                       const tok = currentDoc.tokens[idToIndex.get(tid) ?? -1];
                       return tok ? shouldUnderlineToken(tok.text) : false;
                     });
                     
-                    // ★熟語フラグ: このユニットのトークンが熟語グループに含まれているか
-                    const isIdiomPart = u.tokenIds.some(tid => idiomGroupByTokenId.has(tid));
+                    const svocmBorderStyle = unitHasUnderline ? "border-b border-gray-700" : "";
 
                     return (
                       <div key={`${ui}-${u.tokenIds.join(",")}`} className="flex flex-col items-center mx-[2px]">
                         <div
                           className={[
                             "inline-flex items-end pb-1",
-                            // ★熟語ラインの処理
-                            // SVOCMライン(border-b)はroleClassで指定される色、またはunitHasUnderlineで指定
-                            unitHasUnderline ? "border-b border-gray-700" : "", 
+                            svocmBorderStyle, 
                           ].join(" ")}
-                          style={{
-                              // ★熟語の場合は、SVOCMラインの下に金色の線を引く（box-shadowでシミュレート）
-                              // これによりSVOCMの色と熟語の色を両立
-                              boxShadow: isIdiomPart ? "0 3px 0 0 #eab308" : "none",
-                              marginBottom: isIdiomPart ? "3px" : "0px" // 下のマージンを確保
-                          }}
                         >
                           {u.tokenIds.map((tid) => {
                             const idx = idToIndex.get(tid);
@@ -2137,10 +2161,24 @@ export default function CloseReading() {
                         </div>
 
                         <div className="mt-1 text-[10px] text-gray-600 min-h-[12px] leading-none">{roleText}</div>
-
-                        <div className="mt-0.5 text-[10px] text-gray-500 min-h-[12px] max-w-[240px] text-center break-words">
-                          {jaText ? jaText : ""}
-                        </div>
+                        
+                        {/* ★熟語ラインと訳表示エリア */}
+                        {idiomId ? (
+                             <div className="w-full flex flex-col items-center">
+                                {/* 熟語ライン: 金色で表示 */}
+                                <div className="w-full h-[2px] bg-yellow-500 mt-1 opacity-80"></div>
+                                
+                                {/* 熟語訳: 先頭ユニットのみ表示 */}
+                                <div className="mt-0.5 text-[10px] text-gray-800 font-medium min-h-[12px] max-w-[240px] text-center break-words">
+                                    {displayJa}
+                                </div>
+                             </div>
+                        ) : (
+                             /* 通常の訳エリア */
+                             <div className="mt-0.5 text-[10px] text-gray-500 min-h-[12px] max-w-[240px] text-center break-words">
+                                {displayJa}
+                             </div>
+                        )}
                       </div>
                     );
                   })}
