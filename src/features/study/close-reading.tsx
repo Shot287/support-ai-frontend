@@ -1562,6 +1562,8 @@ export default function CloseReading() {
     const targets: JaTarget[] = [];
     
     // ★追加: 熟語に含まれるトークンIDのセットを作成
+    // このセットに含まれるトークン(またはグループ)は、重複を避けるため
+    // 個別の訳入力欄を作成せずスキップする。
     const idiomTokenSet = new Set<string>();
     for (const idm of doc.idioms) {
       idm.tokenIds.forEach(id => idiomTokenSet.add(id));
@@ -1633,6 +1635,7 @@ export default function CloseReading() {
     // Sort by appearance
     targets.sort((a, b) => {
         if (a.sortIndex !== b.sortIndex) return a.sortIndex - b.sortIndex;
+        // 同一位置なら Idiom -> Group -> Token の順（適当）
         if (a.kind !== b.kind) return a.kind.localeCompare(b.kind);
         return 0;
     });
@@ -1949,7 +1952,7 @@ export default function CloseReading() {
                     });
 
                     return (
-                      <div key={`${ui}-${u.tokenIds.join(",")}`} className="flex flex-col items-center mx-[2px] relative">
+                      <div key={`${ui}-${u.tokenIds.join(",")}`} className="flex flex-col items-center mx-[2px]">
                         <div
                           className={[
                             "inline-flex items-end pb-1",
@@ -2022,7 +2025,7 @@ export default function CloseReading() {
                                 : "";
 
                             return (
-                              <div key={tid} className="flex flex-col items-center relative">
+                              <div key={tid} className="flex flex-col items-center">
                                 {/* 上部詳細タグエリア：ボーダーとラベル */}
                                 <div className={`relative w-full h-[18px] flex items-end justify-center ${topBorderStyle} ${leftBorderStyle} ${rightBorderStyle} box-border`}>
                                    {showLabel && (
@@ -2059,29 +2062,6 @@ export default function CloseReading() {
                                     >
                                       <div className="text-sm leading-none">{token.text}</div>
                                     </button>
-
-                                    {/* ★修正: 熟語の訳をセンターピン(中央の単語)に直接ぶら下げる */}
-                                    {(() => {
-                                        if (!idm) return null;
-                                        // 熟語の最初のトークンの場合のみ表示
-                                        // 全体の中央に見えるようオフセットさせる
-                                        if (isIdiomStart && idm.ja) {
-                                            // 熟語の単語数に応じて、右方向へずらす
-                                            // 1単語あたり約30pxと仮定して、(単語数-1)*15px くらいずらすと中央付近に来る
-                                            const offsetPx = (idm.tokenIds.length - 1) * 15;
-                                            return (
-                                                <div 
-                                                  className="absolute top-[48px] whitespace-nowrap z-20 pointer-events-none"
-                                                  style={{ left: `calc(50% + ${offsetPx}px)`, transform: 'translateX(-50%)' }}
-                                                >
-                                                    <div className="text-[10px] text-gray-600 bg-white/90 px-1 rounded shadow-sm border border-gray-100">
-                                                        {idm.ja}
-                                                    </div>
-                                                </div>
-                                            );
-                                        }
-                                        return null;
-                                    })()}
                                   </div>
 
                                   {closes.map((item, i) => (
@@ -2102,17 +2082,31 @@ export default function CloseReading() {
 
                         <div className="mt-1 text-[10px] text-gray-600 min-h-[12px] leading-none">{roleText}</div>
 
-                        {/* ★修正: 熟語に含まれる場合は通常の訳（グループ訳など）を表示せず、高さ確保のみ行う */}
+                        {/* ★修正: 熟語の訳を優先表示し、重複を防ぐ */}
                         <div className="mt-0.5 text-[10px] text-gray-500 min-h-[12px] max-w-[240px] text-center break-words">
                           {(() => {
-                             // このユニットのどれか一つでも熟語に含まれていれば、通常の訳は非表示（熟語訳に任せる）
-                             const isIncludedInIdiom = u.tokenIds.some(tid => idiomByTokenId.has(tid));
-                             if (isIncludedInIdiom) {
-                                 // 高さを確保するための空文字（invisible）
-                                 return <span className="invisible">.</span>;
+                             // まずトークンIDごとに「熟語の先頭か」をチェック
+                             // ただしdisplayUnitsは複数トークンを含む場合がある。
+                             // 基本方針: 
+                             // 1. このユニット(u)が熟語の一部である場合、
+                             //    熟語の先頭トークンを含んでいれば熟語の訳を表示。
+                             //    熟語の途中トークンであれば非表示(空文字)。
+                             // 2. 熟語でなければ、従来通り(u.groupId ? groupJa : tokenJa)を表示。
+
+                             // このユニットに含まれるトークンのうち、どれか1つでも熟語に含まれていれば「熟語モード」の表示ロジックへ
+                             const firstTokenId = u.tokenIds[0];
+                             const idm = idiomByTokenId.get(firstTokenId);
+                             
+                             if (idm) {
+                                // このユニットの先頭トークンが、熟語の先頭トークンと一致する場合のみ表示
+                                if (idm.tokenIds[0] === firstTokenId) {
+                                    return (idm.ja ?? "").trim();
+                                }
+                                // 熟語の途中なら何も表示しない（重複回避）
+                                return "";
                              }
 
-                             // 通常時
+                             // 熟語でない場合は通常通り
                              return u.groupId && (u.groupJa ?? "").trim()
                                 ? (u.groupJa ?? "").trim()
                                 : !u.groupId && (u.tokenJa ?? "").trim()
