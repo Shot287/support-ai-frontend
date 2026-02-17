@@ -287,7 +287,7 @@ function classForRole(role: Role) {
     case "S":
     case "S（同）":
     case "(S)":
-      return "bg-blue-100 text-blue-800 border-blue-200";
+      return "bg-blue-100 text-blue-800 border-blue-300";
 
     case "V":
     case "V（現完）":
@@ -298,31 +298,31 @@ function classForRole(role: Role) {
     case "V（過分）":
     case "V（現分）":
     case "(V)":
-      return "bg-red-100 text-red-800 border-red-200";
+      return "bg-red-100 text-red-800 border-red-300";
 
     case "O":
     case "(O)":
-      return "bg-amber-100 text-amber-800 border-amber-200";
+      return "bg-amber-100 text-amber-800 border-amber-300";
 
     case "C":
     case "C（現分）":
     case "C（過分）":
     case "(C)":
-      return "bg-purple-100 text-purple-800 border-purple-200";
+      return "bg-purple-100 text-purple-800 border-purple-300";
 
     case "M":
     case "(M)":
     case "M（同）":
-      return "bg-emerald-100 text-emerald-800 border-emerald-200";
+      return "bg-emerald-100 text-emerald-800 border-emerald-300";
 
     case "SV":
     case "VO":
     case "VC":
     case "VOM":
-      return "bg-slate-100 text-slate-800 border-slate-200";
+      return "bg-slate-100 text-slate-800 border-slate-300";
 
     case "OTHER":
-      return "bg-gray-100 text-gray-800 border-gray-200";
+      return "bg-gray-100 text-gray-800 border-gray-300";
 
     case "NONE":
     default:
@@ -476,7 +476,7 @@ function migrateDoc(raw: any): StoreV7 {
           ? (g.tokenIds as unknown[]).filter(isString).filter((id) => tokenSet.has(id))
           : [];
         if (tokenIdsRaw.length === 0) return null;
-        const ja = typeof g.ja === "string" ? g.ja : ""; // ★追加: 熟語訳の移行
+        const ja = typeof g.ja === "string" ? g.ja : ""; 
         return {
           id: typeof g.id === "string" ? g.id : newId(),
           label,
@@ -521,7 +521,7 @@ function migrateDoc(raw: any): StoreV7 {
     const tokenSet = new Set(tokens.map((t) => t.id));
     const groups = normalizeGroups(raw.groups, tokenSet, idToIndex);
     const detailGroups = normalizeDetailGroups(raw.detailGroups, tokenSet, idToIndex);
-    const idiomGroups = normalizeIdiomGroups(raw.idiomGroups, tokenSet, idToIndex); // ★追加
+    const idiomGroups = normalizeIdiomGroups(raw.idiomGroups, tokenSet, idToIndex); 
     const spans = normalizeSpans(raw.spans, tokenSet, idToIndex);
     const updatedAt = typeof raw.updatedAt === "number" ? raw.updatedAt : Date.now();
     return { version: 7, inputText, tokens, groups, detailGroups, idiomGroups, spans, updatedAt };
@@ -540,7 +540,7 @@ function migrateDoc(raw: any): StoreV7 {
     const rawTokens = Array.isArray(raw.tokens) ? raw.tokens : [];
     const tokens: Token[] = [];
     const detailGroups: DetailGroup[] = [];
-     
+      
     // Extract tokens and convert details
     rawTokens.forEach((rt: any) => {
         if (!rt || typeof rt !== 'object') return;
@@ -575,7 +575,7 @@ function migrateDoc(raw: any): StoreV7 {
     } else {
        groups = normalizeGroups(raw.groups, tokenSet, idToIndex);
     }
-     
+      
     const spans = normalizeSpans(raw.spans, tokenSet, idToIndex);
     const inputText = typeof raw.inputText === "string" ? raw.inputText : "";
     const updatedAt = typeof raw.updatedAt === "number" ? raw.updatedAt : Date.now();
@@ -991,7 +991,7 @@ export default function CloseReading() {
 
   const selectedDetailState = useMemo(() => {
     if (selectedTokens.length === 0) return "";
-     
+      
     // Check all selected tokens' details
     const details = uniq(selectedTokens.map(t => {
         const dg = detailGroupByTokenId.get(t.id);
@@ -1004,7 +1004,7 @@ export default function CloseReading() {
 
   const selectedIdiomState = useMemo(() => {
     if (selectedTokens.length === 0) return false;
-    
+     
     // 選択範囲が何らかの熟語グループに含まれているかチェック
     const idiomIds = uniq(selectedTokens.map(t => {
         const ig = idiomGroupByTokenId.get(t.id);
@@ -1180,7 +1180,7 @@ export default function CloseReading() {
   // 詳細タグ（品詞）の設定：複数選択時は DetailGroup を作成して束ねる
   const setDetailToSelected = (detail: Detail) => {
     if (!currentDoc) return;
-    
+     
     // Span選択モードの場合：選択中のSpanに対してdetailを付与する
     if (selectedSpanId) {
         updateCurrentDoc((prev) => ({
@@ -1210,7 +1210,7 @@ export default function CloseReading() {
             // 残ったトークンがあれば、そのグループを維持（縮小）
             // ※「a few」の「few」だけ変えた場合、「a」は孤立したグループとして残る
             if (remaining.length > 0) {
-                 nextDetailGroups.push({
+                  nextDetailGroups.push({
                     ...dg,
                     tokenIds: normalizeTokenIds(remaining, idToIndex2)
                   });
@@ -1257,7 +1257,7 @@ export default function CloseReading() {
         for (const ig of prev.idiomGroups) {
             const remaining = ig.tokenIds.filter(tid => !set.has(tid));
             if (remaining.length > 0) {
-                 nextIdiomGroups.push({
+                  nextIdiomGroups.push({
                     ...ig,
                     tokenIds: normalizeTokenIds(remaining, idToIndex2)
                   });
@@ -1299,7 +1299,7 @@ export default function CloseReading() {
             // 選択範囲に含まれるトークンを除外
             const remaining = ig.tokenIds.filter(tid => !set.has(tid));
             if (remaining.length > 0) {
-                 nextIdiomGroups.push({
+                  nextIdiomGroups.push({
                     ...ig,
                     tokenIds: normalizeTokenIds(remaining, idToIndex2)
                   });
@@ -1494,57 +1494,20 @@ export default function CloseReading() {
       idiomJa: string;
     }[] = [];
 
-    // ★修正: 熟語に含まれるトークンは、熟語単位でまとめて表示する
     const processed = new Set<string>();
 
     for (let i = 0; i < doc.tokens.length; i++) {
       const t = doc.tokens[i];
       if (processed.has(t.id)) continue;
 
-      // 1. まず熟語グループをチェック
-      const ig = tokenToIdiomGroup.get(t.id);
-      if (ig) {
-          // 熟語の範囲をまとめて1つのユニットにする
-          // (SVOCMグループよりも優先して表示単位とする)
-          const orderedIdiomTokens = normalizeTokenIds(ig.tokenIds, idToIndex);
-          
-          // 表示用のトークンIDリスト
-          // ※飛び飛びの場合は間も含む必要があるが、ここでは簡易的に範囲全体とする
-          const idxs = orderedIdiomTokens.map(id => idToIndex.get(id)).filter((x): x is number => typeof x === "number");
-          const start = Math.min(...idxs);
-          const end = Math.max(...idxs);
-          
-          const displayTokenIds = doc.tokens.slice(start, end + 1).map(x => x.id);
-          
-          // この範囲に含まれるトークンを処理済みにする
-          displayTokenIds.forEach(id => processed.add(id));
-          
-          // 熟語ユニットを追加
-          // ※ roleToShowなどは、熟語全体としては持っていないので、必要に応じて調整
-          // ここでは、熟語内の最初のトークンが属するSVOCMグループのroleを表示するか、あるいは熟語であることを示すか...
-          // 要件は「熟語単位の日本語訳を付与」なので、表示上は熟語訳が優先されればOK
-          
-          units.push({
-            tokenIds: displayTokenIds,
-            roleToShow: "NONE", // 熟語全体としてのRoleは定義されていないためNONE、あるいは最初の語のRole?
-            groupId: null,
-            groupJa: "", // 熟語優先なので空に
-            tokenJa: "", // 熟語優先なので空に
-            idiomGroupId: ig.id,
-            idiomJa: ig.ja || ""
-          });
-          
-          // ループインデックスを進める必要はない（processedチェックでスキップされるため）
-          // ただし、iをendまで進めておくと効率的
-          i = end; 
-          continue;
-      }
-
-      // 2. 次にSVOCMグループをチェック
+      // ★ロジック変更: SVOCMグループを最優先でユニット化する
+      // (熟語があってもSVOCMの下線構造を壊さないため)
+      
       const g = tokenToGroup.get(t.id);
+
+      // 1. SVOCMグループがある場合
       if (g) {
           if (started.has(g.id)) {
-              // 既に開始済みのグループ（通常ここには来ないはずだが念のため）
               continue; 
           }
           started.add(g.id);
@@ -1561,30 +1524,37 @@ export default function CloseReading() {
           // 処理済みマーク
           displayTokenIds.forEach(id => processed.add(id));
 
+          // このSVOCMグループが、熟語を含んでいるか（あるいは熟語の一部か）をチェック
+          // ここでは簡易的に「最初のトークンが属する熟語」の情報を付与して、日本語訳の優先度などに使う
+          const idiomInGroup = tokenToIdiomGroup.get(t.id);
+
           units.push({
             tokenIds: displayTokenIds,
             roleToShow: g.role,
             groupId: g.id,
             groupJa: typeof g.ja === "string" ? g.ja : "",
             tokenJa: "",
-            idiomGroupId: null,
-            idiomJa: ""
+            idiomGroupId: idiomInGroup ? idiomInGroup.id : null,
+            idiomJa: idiomInGroup ? (idiomInGroup.ja || "") : ""
           });
 
           i = end;
           continue;
       }
 
-      // 3. 最後に単語単体
+      // 2. 単語単体 (SVOCMなし)
+      // ここでも熟語チェックは行う（SVOCMがない単語だけの熟語など）
       processed.add(t.id);
+      const idiomInToken = tokenToIdiomGroup.get(t.id);
+
       units.push({
         tokenIds: [t.id],
         roleToShow: "NONE",
         groupId: null,
         groupJa: "",
         tokenJa: typeof t.ja === "string" ? t.ja : "",
-        idiomGroupId: null,
-        idiomJa: ""
+        idiomGroupId: idiomInToken ? idiomInToken.id : null,
+        idiomJa: idiomInToken ? (idiomInToken.ja || "") : ""
       });
     }
 
@@ -1647,11 +1617,8 @@ export default function CloseReading() {
     if (!doc) return [];
     
     const targets: JaTarget[] = [];
-    // 熟語に含まれるトークンIDを記録
-    const idiomCoveredTokenIds = new Set<string>();
-
+    
     // 1. まず熟語グループをターゲットに追加 (優先度高)
-    // 熟語はSVOCMグループを跨ぐ可能性もあるが、今回は簡易的にリストアップ
     const sortedIdiomGroups = [...doc.idiomGroups].sort((a, b) => {
         const amin = Math.min(...a.tokenIds.map(id => idToIndex.get(id) ?? 1e9));
         const bmin = Math.min(...b.tokenIds.map(id => idToIndex.get(id) ?? 1e9));
@@ -1670,19 +1637,11 @@ export default function CloseReading() {
             text: joinTokensForDisplay(words),
             ja: (ig.ja ?? "").trim()
         });
-        
-        // 熟語に含まれるトークンを記録
-        ig.tokenIds.forEach(id => idiomCoveredTokenIds.add(id));
     }
 
-    // 2. 表示ユニットベースでグループと単語を追加 (ただし熟語に含まれる場合はスキップ)
+    // 2. 表示ユニットベースでグループと単語を追加
+    // (熟語があっても、SVOCMや単語のターゲットも編集できるように全てリストアップする方針とする)
     for (const u of displayUnits) {
-      // 熟語グループに含まれているトークンを持つユニットはスキップ
-      // (熟語を優先してSVOCM単位の日本語訳をなくす要件に対応)
-      if (u.tokenIds.some(id => idiomCoveredTokenIds.has(id))) {
-          continue;
-      }
-
       if (u.groupId) {
         const words = u.tokenIds
           .map((id) => doc.tokens[idToIndex.get(id) ?? -1]?.text)
@@ -1799,12 +1758,12 @@ export default function CloseReading() {
     
     // 1. 選択範囲と一致する熟語を探す
     if (selectedIdiomGroup) {
-         const idx = jaTargets.findIndex(t => t.kind === 'idiom' && t.id === `i:${selectedIdiomGroup.id}`);
-         if (idx >= 0) {
-             setJaCursor(idx);
-             focusJaInputSoon();
-             return;
-         }
+          const idx = jaTargets.findIndex(t => t.kind === 'idiom' && t.id === `i:${selectedIdiomGroup.id}`);
+          if (idx >= 0) {
+              setJaCursor(idx);
+              focusJaInputSoon();
+              return;
+          }
     }
 
     // 2. 選択範囲と一致するグループを探す
@@ -2067,17 +2026,25 @@ export default function CloseReading() {
                       const tok = currentDoc.tokens[idToIndex.get(tid) ?? -1];
                       return tok ? shouldUnderlineToken(tok.text) : false;
                     });
+                    
+                    // ★熟語フラグ: このユニットのトークンが熟語グループに含まれているか
+                    const isIdiomPart = u.tokenIds.some(tid => idiomGroupByTokenId.has(tid));
 
                     return (
                       <div key={`${ui}-${u.tokenIds.join(",")}`} className="flex flex-col items-center mx-[2px]">
                         <div
                           className={[
                             "inline-flex items-end pb-1",
-                            // ★熟語ライン (単語の下に金色の強調表示)
-                            u.tokenIds.some(tid => idiomGroupByTokenId.has(tid))
-                                ? "border-b-2 border-yellow-500" // 金色（黄色）の太めボーダー
-                                : unitHasUnderline ? "border-b border-gray-700" : "", // 通常の下線
+                            // ★熟語ラインの処理
+                            // SVOCMライン(border-b)はroleClassで指定される色、またはunitHasUnderlineで指定
+                            unitHasUnderline ? "border-b border-gray-700" : "", 
                           ].join(" ")}
+                          style={{
+                              // ★熟語の場合は、SVOCMラインの下に金色の線を引く（box-shadowでシミュレート）
+                              // これによりSVOCMの色と熟語の色を両立
+                              boxShadow: isIdiomPart ? "0 3px 0 0 #eab308" : "none",
+                              marginBottom: isIdiomPart ? "3px" : "0px" // 下のマージンを確保
+                          }}
                         >
                           {u.tokenIds.map((tid) => {
                             const idx = idToIndex.get(tid);
@@ -2090,20 +2057,13 @@ export default function CloseReading() {
                             const dg = detailGroupByTokenId.get(tid);
                             const topDetailLabel = dg ? detailShort(dg.detail) : "";
                             
-                            // ★Idiom Group Visualization
-                            const ig = idiomGroupByTokenId.get(tid);
-                            
                             let isGroupStart = false;
                             let isGroupEnd = false;
-                            let isGroupMiddle = false;
                             
                             if (dg && dg.tokenIds.length > 1) {
                                 const pos = dg.tokenIds.indexOf(tid);
                                 isGroupStart = pos === 0;
                                 isGroupEnd = pos === dg.tokenIds.length - 1;
-                                isGroupMiddle = !isGroupStart && !isGroupEnd;
-                            } else if (dg) {
-                                // Single item group -> behaves like normal single word tag
                             }
 
                             // ブラケット風のボーダー
@@ -2128,7 +2088,7 @@ export default function CloseReading() {
                                 <div className={`relative w-full h-[18px] flex items-end justify-center ${topBorderStyle} ${leftBorderStyle} ${rightBorderStyle} box-border`}>
                                    {showLabel && (
                                      <div className="absolute bottom-[2px] left-0 whitespace-nowrap text-[10px] text-gray-700 leading-none">
-                                        {topDetailLabel}
+                                         {topDetailLabel}
                                      </div>
                                    )}
                                 </div>
@@ -2392,8 +2352,8 @@ export default function CloseReading() {
                         role: <span className="font-semibold">{currentJaTarget.role}</span>
                       </span>
                     ) : currentJaTarget?.kind === "idiom" ? (
-                       <span className="ml-2">
-                        <span className="font-semibold text-yellow-600">（熟語）</span>
+                        <span className="ml-2">
+                         <span className="font-semibold text-yellow-600">（熟語）</span>
                       </span>
                     ) : (
                       <span className="ml-2 text-gray-500">（単語）</span>
