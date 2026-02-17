@@ -90,12 +90,12 @@ type DetailGroup = {
   detail: Detail;
 };
 
-// ★追加：熟語グループ（訳を追加）
+// 熟語グループ
 type IdiomGroup = {
   id: string;
   tokenIds: string[];
   label: "熟語";
-  ja?: string; // ★熟語ごとの訳
+  ja?: string; // 熟語ごとの訳
 };
 
 // Spanにdetail（品詞）を追加
@@ -103,7 +103,7 @@ type Span = {
   id: string;
   kind: SpanKind;
   tokenIds: string[];
-  detail?: Detail; // 括弧自体に付与する品詞（例：名詞節など）
+  detail?: Detail;
 };
 
 // --- Legacy Stores for Migration ---
@@ -126,7 +126,7 @@ type StoreV7 = {
   tokens: Token[];
   groups: Group[];        // 下の役割 (SVOCM)
   detailGroups: DetailGroup[]; // 上の詳細タグ (品詞)
-  idiomGroups: IdiomGroup[]; // ★追加：熟語
+  idiomGroups: IdiomGroup[]; // 熟語
   spans: Span[];          // 括弧
   updatedAt: number;
 };
@@ -471,12 +471,12 @@ function migrateDoc(raw: any): StoreV7 {
     (Array.isArray(iGroupsIn) ? iGroupsIn : [])
       .map((g: any) => {
         if (!g || typeof g !== "object") return null;
-        const label = g.label === "熟語" ? "熟語" : "熟語"; // 現状は熟語のみ
+        const label = g.label === "熟語" ? "熟語" : "熟語";
         const tokenIdsRaw: string[] = Array.isArray(g.tokenIds)
           ? (g.tokenIds as unknown[]).filter(isString).filter((id) => tokenSet.has(id))
           : [];
         if (tokenIdsRaw.length === 0) return null;
-        const ja = typeof g.ja === "string" ? g.ja : ""; // ★追加: 熟語訳の移行
+        const ja = typeof g.ja === "string" ? g.ja : "";
         return {
           id: typeof g.id === "string" ? g.id : newId(),
           label,
@@ -521,7 +521,7 @@ function migrateDoc(raw: any): StoreV7 {
     const tokenSet = new Set(tokens.map((t) => t.id));
     const groups = normalizeGroups(raw.groups, tokenSet, idToIndex);
     const detailGroups = normalizeDetailGroups(raw.detailGroups, tokenSet, idToIndex);
-    const idiomGroups = normalizeIdiomGroups(raw.idiomGroups, tokenSet, idToIndex); // ★追加
+    const idiomGroups = normalizeIdiomGroups(raw.idiomGroups, tokenSet, idToIndex);
     const spans = normalizeSpans(raw.spans, tokenSet, idToIndex);
     const updatedAt = typeof raw.updatedAt === "number" ? raw.updatedAt : Date.now();
     return { version: 7, inputText, tokens, groups, detailGroups, idiomGroups, spans, updatedAt };
@@ -536,12 +536,10 @@ function migrateDoc(raw: any): StoreV7 {
     raw.version === 2 ||
     raw.version === 1
   ) {
-    // Treat V1-V6 roughly the same for token extraction, but V6 has detail
     const rawTokens = Array.isArray(raw.tokens) ? raw.tokens : [];
     const tokens: Token[] = [];
     const detailGroups: DetailGroup[] = [];
      
-    // Extract tokens and convert details
     rawTokens.forEach((rt: any) => {
         if (!rt || typeof rt !== 'object') return;
         const tId = typeof rt.id === 'string' ? rt.id : newId();
@@ -564,7 +562,6 @@ function migrateDoc(raw: any): StoreV7 {
     const idToIndex = new Map(tokens.map((t, i) => [t.id, i]));
     const tokenSet = new Set(tokens.map((t) => t.id));
 
-    // For V1, we need to create groups from roles
     let groups: Group[] = [];
     if (raw.version === 1) {
        rawTokens.forEach((rt: any) => {
@@ -983,7 +980,7 @@ export default function CloseReading() {
   const selectedIdiomGroup = useMemo(() => {
     if (!currentDoc) return null;
     if (selectedIds.length === 0) return null;
-    // 選択範囲が含まれる熟語グループを探す
+    // 選択範囲が含まれる熟語グループを探す（1つだけヒットすることを想定）
     const idiomIds = uniq(selectedIds.map((id) => idiomGroupByTokenId.get(id)?.id ?? "").filter((x) => x));
     if (idiomIds.length !== 1) return null;
     return currentDoc.idiomGroups.find((g) => g.id === idiomIds[0]) ?? null;
@@ -1497,8 +1494,8 @@ export default function CloseReading() {
     for (let i = 0; i < doc.tokens.length; i++) {
       const t = doc.tokens[i];
       const g = tokenToGroup.get(t.id);
-      // ★熟語グループも考慮するが、表示単位としてはSVOCMグループを優先しつつ、熟語が重なる場合はどう扱うか...
-      // 今回は表示ロジックを変えず、熟語訳がある場合はそれを優先的に表示するために、idiomGroupIdを追加する
+      // 熟語グループも考慮するが、表示単位としてはSVOCMグループを優先
+      // 熟語訳がある場合はそれを優先的に表示するために、idiomGroupIdを追加する
       const ig = tokenToIdiomGroup.get(t.id);
 
       if (!g) {
@@ -1602,7 +1599,8 @@ export default function CloseReading() {
     if (!doc) return [];
     
     const targets: JaTarget[] = [];
-    const processedTokenIds = new Set<string>();
+    // 熟語に含まれるトークンIDを記録
+    const idiomCoveredTokenIds = new Set<string>();
 
     // 1. まず熟語グループをターゲットに追加 (優先度高)
     // 熟語はSVOCMグループを跨ぐ可能性もあるが、今回は簡易的にリストアップ
@@ -1624,18 +1622,18 @@ export default function CloseReading() {
             text: joinTokensForDisplay(words),
             ja: (ig.ja ?? "").trim()
         });
-        // 熟語に含まれる単語は、後続の個別単語ターゲットとしては出さないようにする？
-        // 要件「熟語の選択範囲を優先」 -> 熟語がある箇所では熟語訳を入力させたい。
-        // SVOCMグループの訳入力も維持したい -> SVOCMターゲットも出す必要がある。
-        // ここではprocessedには追加せず、全てのレイヤーで入力可能にする（カーソル移動で切り替え）のが自然かも知れないが、
-        // 「優先して」とのことなので、ターゲット順序を工夫する。
-        // 熟語 -> グループ -> 単語 の順で並べる、あるいは場所順に並べて、同じ場所に重なる場合は熟語を先にする。
+        
+        // 熟語に含まれるトークンを記録
+        ig.tokenIds.forEach(id => idiomCoveredTokenIds.add(id));
     }
 
-    // 表示ユニットベースでグループと単語を追加
+    // 2. 表示ユニットベースでグループと単語を追加 (ただし熟語に含まれる場合はスキップ)
     for (const u of displayUnits) {
-      // 熟語グループが既に追加されている場合、その熟語と全く同じ範囲のグループ/単語はどうするか？
-      // ユーザーは矢印キーで移動するので、全てあっても良い。
+      // 熟語グループに含まれているトークンを持つユニットはスキップ
+      // (熟語を優先してSVOCM単位の日本語訳をなくす要件に対応)
+      if (u.tokenIds.some(id => idiomCoveredTokenIds.has(id))) {
+          continue;
+      }
 
       if (u.groupId) {
         const words = u.tokenIds
