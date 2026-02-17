@@ -960,6 +960,19 @@ export default function CloseReading() {
     return m;
   }, [currentDoc?.idioms]);
 
+  // ★追加: 熟語の「センター」となるトークンIDを計算する
+  const idiomCenterTokenIds = useMemo(() => {
+      const map = new Map<string, boolean>(); // tokenId -> isCenter
+      for (const idm of currentDoc?.idioms ?? []) {
+          if (idm.tokenIds.length === 0) continue;
+          // 中央のインデックス（偶数個なら左寄りの中央）
+          const centerIndex = Math.floor((idm.tokenIds.length - 1) / 2);
+          const centerTokenId = idm.tokenIds[centerIndex];
+          map.set(centerTokenId, true);
+      }
+      return map;
+  }, [currentDoc?.idioms]);
+
   const selectedTokens = useMemo(() => {
     const set = new Set(selectedIds);
     return (currentDoc?.tokens ?? []).filter((t) => set.has(t.id));
@@ -1562,8 +1575,6 @@ export default function CloseReading() {
     const targets: JaTarget[] = [];
     
     // ★追加: 熟語に含まれるトークンIDのセットを作成
-    // このセットに含まれるトークン(またはグループ)は、重複を避けるため
-    // 個別の訳入力欄を作成せずスキップする。
     const idiomTokenSet = new Set<string>();
     for (const idm of doc.idioms) {
       idm.tokenIds.forEach(id => idiomTokenSet.add(id));
@@ -1635,7 +1646,6 @@ export default function CloseReading() {
     // Sort by appearance
     targets.sort((a, b) => {
         if (a.sortIndex !== b.sortIndex) return a.sortIndex - b.sortIndex;
-        // 同一位置なら Idiom -> Group -> Token の順（適当）
         if (a.kind !== b.kind) return a.kind.localeCompare(b.kind);
         return 0;
     });
@@ -1952,7 +1962,7 @@ export default function CloseReading() {
                     });
 
                     return (
-                      <div key={`${ui}-${u.tokenIds.join(",")}`} className="flex flex-col items-center mx-[2px]">
+                      <div key={`${ui}-${u.tokenIds.join(",")}`} className="flex flex-col items-center mx-[2px] relative">
                         <div
                           className={[
                             "inline-flex items-end pb-1",
@@ -2025,7 +2035,7 @@ export default function CloseReading() {
                                 : "";
 
                             return (
-                              <div key={tid} className="flex flex-col items-center">
+                              <div key={tid} className="flex flex-col items-center relative">
                                 {/* 上部詳細タグエリア：ボーダーとラベル */}
                                 <div className={`relative w-full h-[18px] flex items-end justify-center ${topBorderStyle} ${leftBorderStyle} ${rightBorderStyle} box-border`}>
                                    {showLabel && (
@@ -2082,28 +2092,27 @@ export default function CloseReading() {
 
                         <div className="mt-1 text-[10px] text-gray-600 min-h-[12px] leading-none">{roleText}</div>
 
-                        {/* ★修正: 熟語の訳を優先表示し、重複を防ぐ */}
-                        <div className="mt-0.5 text-[10px] text-gray-500 min-h-[12px] max-w-[240px] text-center break-words">
+                        {/* ★修正: 熟語の訳を中央寄せで表示し、重複を防ぐ */}
+                        <div className="mt-0.5 text-[10px] text-gray-500 min-h-[12px] max-w-[240px] text-center break-words relative w-full flex justify-center">
                           {(() => {
-                             // まずトークンIDごとに「熟語の先頭か」をチェック
-                             // ただしdisplayUnitsは複数トークンを含む場合がある。
-                             // 基本方針: 
-                             // 1. このユニット(u)が熟語の一部である場合、
-                             //    熟語の先頭トークンを含んでいれば熟語の訳を表示。
-                             //    熟語の途中トークンであれば非表示(空文字)。
-                             // 2. 熟語でなければ、従来通り(u.groupId ? groupJa : tokenJa)を表示。
-
-                             // このユニットに含まれるトークンのうち、どれか1つでも熟語に含まれていれば「熟語モード」の表示ロジックへ
+                             // このユニットの先頭トークンが熟語の一部かどうか確認
                              const firstTokenId = u.tokenIds[0];
                              const idm = idiomByTokenId.get(firstTokenId);
                              
                              if (idm) {
-                                // このユニットの先頭トークンが、熟語の先頭トークンと一致する場合のみ表示
-                                if (idm.tokenIds[0] === firstTokenId) {
-                                    return (idm.ja ?? "").trim();
+                                // ★修正ポイント: 熟語の「センター」トークンを含んでいる場合のみ表示
+                                const isCenter = u.tokenIds.some(tid => idiomCenterTokenIds.get(tid));
+                                
+                                if (isCenter) {
+                                    // 中央寄せのための絶対配置
+                                    return (
+                                        <div className="absolute left-1/2 -translate-x-1/2 whitespace-nowrap bg-white/80 px-1 z-20">
+                                            {(idm.ja ?? "").trim()}
+                                        </div>
+                                    );
                                 }
-                                // 熟語の途中なら何も表示しない（重複回避）
-                                return "";
+                                // 熟語の途中（センター以外）なら何も表示しない
+                                return <span className="invisible">.</span>; // 高さ確保のためのダミー
                              }
 
                              // 熟語でない場合は通常通り
