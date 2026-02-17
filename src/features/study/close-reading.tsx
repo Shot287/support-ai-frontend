@@ -1906,7 +1906,10 @@ export default function CloseReading() {
                         <div
                           className={[
                             "inline-flex items-end pb-1",
-                            unitHasUnderline ? "border-b border-gray-700" : "",
+                            // ★熟語ライン (単語の下に金色の強調表示)
+                            u.tokenIds.some(tid => idiomGroupByTokenId.has(tid))
+                                ? "border-b-2 border-yellow-500" // 金色（黄色）の太めボーダー
+                                : unitHasUnderline ? "border-b border-gray-700" : "", // 通常の下線
                           ].join(" ")}
                         >
                           {u.tokenIds.map((tid) => {
@@ -1919,10 +1922,6 @@ export default function CloseReading() {
                             // ★Detail Group Visualization
                             const dg = detailGroupByTokenId.get(tid);
                             const topDetailLabel = dg ? detailShort(dg.detail) : "";
-                            
-                            // ★Idiom Group Visualization
-                            const ig = idiomGroupByTokenId.get(tid);
-                            const isIdiomStart = ig ? ig.tokenIds.indexOf(tid) === 0 : false;
                             
                             let isGroupStart = false;
                             let isGroupEnd = false;
@@ -1961,17 +1960,6 @@ export default function CloseReading() {
                                      <div className="absolute bottom-[2px] left-0 whitespace-nowrap text-[10px] text-gray-700 leading-none">
                                         {topDetailLabel}
                                      </div>
-                                   )}
-                                   
-                                   {/* ★熟語ラベル (上部詳細タグの上に表示) */}
-                                   {isIdiomStart && (
-                                       <div className="absolute -top-[14px] left-0 whitespace-nowrap text-[9px] text-green-700 font-bold leading-none bg-green-50 px-1 rounded border border-green-200 z-10">
-                                           (熟語)
-                                       </div>
-                                   )}
-                                   {/* ★熟語ライン (単語の下、下線の上あたりに表示) */}
-                                   {ig && (
-                                       <div className="absolute bottom-[-2px] left-0 w-full h-[2px] bg-green-300 z-0 pointer-events-none opacity-50"></div>
                                    )}
                                 </div>
 
@@ -2089,7 +2077,7 @@ export default function CloseReading() {
                     <div className="flex gap-2">
                         <button
                             onClick={setIdiomToSelected}
-                            className="rounded-xl border px-3 py-2 text-sm bg-green-50 text-green-700 border-green-200 hover:bg-green-100"
+                            className="rounded-xl border px-3 py-2 text-sm bg-yellow-50 text-yellow-700 border-yellow-200 hover:bg-yellow-100"
                         >
                             熟語としてマーク
                         </button>
