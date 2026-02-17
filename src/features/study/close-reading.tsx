@@ -2072,6 +2072,23 @@ export default function CloseReading() {
                                     >
                                       <div className="text-sm leading-none">{token.text}</div>
                                     </button>
+
+                                    {/* ★修正: 熟語の訳をセンターピン(中央の単語)に直接ぶら下げる */}
+                                    {(() => {
+                                        if (!idm) return null;
+                                        // このトークンが熟語の「センター」か判定
+                                        const isCenter = idiomCenterTokenIds.get(tid);
+                                        if (isCenter && idm.ja) {
+                                            return (
+                                                <div className="absolute top-[32px] left-1/2 -translate-x-1/2 whitespace-nowrap z-20 pointer-events-none">
+                                                    <div className="text-[10px] text-gray-600 bg-white/90 px-1 rounded shadow-sm border border-gray-100">
+                                                        {idm.ja}
+                                                    </div>
+                                                </div>
+                                            );
+                                        }
+                                        return null;
+                                    })()}
                                   </div>
 
                                   {closes.map((item, i) => (
@@ -2092,30 +2109,17 @@ export default function CloseReading() {
 
                         <div className="mt-1 text-[10px] text-gray-600 min-h-[12px] leading-none">{roleText}</div>
 
-                        {/* ★修正: 熟語の訳を中央寄せで表示し、重複を防ぐ */}
-                        <div className="mt-0.5 text-[10px] text-gray-500 min-h-[12px] max-w-[240px] text-center break-words relative w-full flex justify-center">
+                        {/* ★修正: 熟語に含まれる場合は通常の訳（グループ訳など）を表示せず、高さ確保のみ行う */}
+                        <div className="mt-0.5 text-[10px] text-gray-500 min-h-[12px] max-w-[240px] text-center break-words">
                           {(() => {
-                             // このユニットの先頭トークンが熟語の一部かどうか確認
-                             const firstTokenId = u.tokenIds[0];
-                             const idm = idiomByTokenId.get(firstTokenId);
-                             
-                             if (idm) {
-                                // ★修正ポイント: 熟語の「センター」トークンを含んでいる場合のみ表示
-                                const isCenter = u.tokenIds.some(tid => idiomCenterTokenIds.get(tid));
-                                
-                                if (isCenter) {
-                                    // 中央寄せのための絶対配置
-                                    return (
-                                        <div className="absolute left-1/2 -translate-x-1/2 whitespace-nowrap bg-white/80 px-1 z-20">
-                                            {(idm.ja ?? "").trim()}
-                                        </div>
-                                    );
-                                }
-                                // 熟語の途中（センター以外）なら何も表示しない
-                                return <span className="invisible">.</span>; // 高さ確保のためのダミー
+                             // このユニットのどれか一つでも熟語に含まれていれば、通常の訳は非表示（熟語訳に任せる）
+                             const isIncludedInIdiom = u.tokenIds.some(tid => idiomByTokenId.has(tid));
+                             if (isIncludedInIdiom) {
+                                 // 高さを確保するための空文字（invisible）
+                                 return <span className="invisible">.</span>;
                              }
 
-                             // 熟語でない場合は通常通り
+                             // 通常時
                              return u.groupId && (u.groupJa ?? "").trim()
                                 ? (u.groupJa ?? "").trim()
                                 : !u.groupId && (u.tokenJa ?? "").trim()
