@@ -1770,7 +1770,7 @@ export default function CloseReading() {
              // maxBottomは SVOCMラベル(roleText)や 訳スロット(jaText) を含んだUnit全体の底辺。
              // 訳スロット(jaText)は `invisible` で高さ確保されているため、maxBottomはその下端になる。
              // そこから少し下(例えば + 14px)に表示する
-             const top = maxBottom - containerRect.top + 14; 
+             const top = maxBottom - containerRect.top + 5; 
              newPos[idm.id] = { left, top };
         }
       });
