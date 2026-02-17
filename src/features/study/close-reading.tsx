@@ -1769,8 +1769,8 @@ export default function CloseReading() {
              // 下線やラベルとの重なりを防ぐため、一番下のラインから少し下に配置
              // maxBottomは SVOCMラベル(roleText)や 訳スロット(jaText) を含んだUnit全体の底辺。
              // 訳スロット(jaText)は `invisible` で高さ確保されているため、maxBottomはその下端になる。
-             // そこから少し下(例えば + 14px)に表示する
-             const top = maxBottom - containerRect.top + 5; 
+             // ★修正: 他のSVOCMと同じ高さにするため、確保されたスペース内（底辺から高さ分戻った位置）に配置
+             const top = maxBottom - containerRect.top - 15; 
              newPos[idm.id] = { left, top };
         }
       });
@@ -2014,10 +2014,11 @@ export default function CloseReading() {
                       return (
                           <div
                               key={idm.id}
-                              className="absolute -translate-x-1/2 whitespace-nowrap z-30 pointer-events-none"
+                              // ★修正：スタイルを通常の訳と揃えるため bg-white 等を削除、max-wを設定
+                              className="absolute -translate-x-1/2 z-30 pointer-events-none w-max max-w-[240px] flex justify-center"
                               style={{ left: pos.left, top: pos.top }}
                           >
-                               <div className="text-[10px] text-gray-600 bg-white/90 px-1 rounded shadow-sm border border-gray-100">
+                               <div className="text-[10px] text-gray-500 text-center break-words leading-none">
                                    {idm.ja}
                                </div>
                           </div>
@@ -2119,7 +2120,7 @@ export default function CloseReading() {
                                 <div className={`relative w-full h-[18px] flex items-end justify-center ${topBorderStyle} ${leftBorderStyle} ${rightBorderStyle} box-border`}>
                                    {showLabel && (
                                      <div className="absolute bottom-[2px] left-0 whitespace-nowrap text-[10px] text-gray-700 leading-none">
-                                        {topDetailLabel}
+                                         {topDetailLabel}
                                      </div>
                                    )}
                                 </div>
@@ -2183,10 +2184,10 @@ export default function CloseReading() {
 
                              // 通常時
                              return u.groupId && (u.groupJa ?? "").trim()
-                                ? (u.groupJa ?? "").trim()
-                                : !u.groupId && (u.tokenJa ?? "").trim()
-                                ? (u.tokenJa ?? "").trim()
-                                : "";
+                               ? (u.groupJa ?? "").trim()
+                               : !u.groupId && (u.tokenJa ?? "").trim()
+                               ? (u.tokenJa ?? "").trim()
+                               : "";
                           })()}
                         </div>
                       </div>
@@ -2342,7 +2343,7 @@ export default function CloseReading() {
                           選択: <span className="font-semibold">{selectedText}</span>
                         </div>
                         <div className="text-xs text-gray-500">
-                             {selectedIdiom ? "現在: 熟語設定済み" : "現在: 熟語設定なし"}
+                            {selectedIdiom ? "現在: 熟語設定済み" : "現在: 熟語設定なし"}
                         </div>
                       </div>
 
@@ -2352,7 +2353,7 @@ export default function CloseReading() {
                             className="rounded-xl border px-3 py-2 text-sm hover:bg-yellow-50 border-yellow-400 text-yellow-800"
                             title="選択範囲を金色の線で囲みます"
                           >
-                             選択範囲を熟語にする（金色の囲み）
+                            選択範囲を熟語にする（金色の囲み）
                           </button>
                           
                           <button
@@ -2361,11 +2362,11 @@ export default function CloseReading() {
                             title="選択範囲の熟語設定を解除"
                             disabled={!selectedIdiom}
                           >
-                             熟語解除
+                            熟語解除
                           </button>
                       </div>
                       <div className="text-xs text-gray-500">
-                         ※SVOCMの下線とは別に、金色の枠線で囲まれます。熟語単位で日本語訳を入力できるようになります。
+                          ※SVOCMの下線とは別に、金色の枠線で囲まれます。熟語単位で日本語訳を入力できるようになります。
                       </div>
                   </div>
               )}
