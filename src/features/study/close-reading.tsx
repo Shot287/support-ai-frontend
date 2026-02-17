@@ -1561,10 +1561,25 @@ export default function CloseReading() {
 
     const targets: JaTarget[] = [];
     
+    // ★追加: 熟語に含まれるトークンIDのセットを作成
+    // このセットに含まれるトークン(またはグループ)は、重複を避けるため
+    // 個別の訳入力欄を作成せずスキップする。
+    const idiomTokenSet = new Set<string>();
+    for (const idm of doc.idioms) {
+      idm.tokenIds.forEach(id => idiomTokenSet.add(id));
+    }
+    
     // 1. SVOCM Groups & Tokens
     for (const u of displayUnits) {
       // ソート用のインデックス（ユニットの開始位置）
       const minIndex = u.tokenIds.length > 0 ? idToIndex.get(u.tokenIds[0]) ?? -1 : -1;
+      
+      // ★追加: 熟語に含まれているトークンを持つユニットはスキップ
+      // (一部でも含まれていれば熟語優先とする)
+      const isIncludedInIdiom = u.tokenIds.some(id => idiomTokenSet.has(id));
+      if (isIncludedInIdiom) {
+          continue;
+      }
       
       if (u.groupId) {
         const words = u.tokenIds
@@ -1979,7 +1994,7 @@ export default function CloseReading() {
                             // ラベルはグループの先頭（シングルならその単語）にのみ表示
                             const showLabel = dg ? (dg.tokenIds.length > 1 ? isGroupStart : true) : false;
 
-                            // ★Idiom Visualization
+                            // ★Idiom Visualization (金色の枠)
                             const idm = idiomByTokenId.get(tid);
                             let isIdiomStart = false;
                             let isIdiomEnd = false;
@@ -1998,7 +2013,6 @@ export default function CloseReading() {
                             }
                             
                             // 熟語のスタイル（SVOCMや詳細タグと干渉しないよう絶対配置で重ねる）
-                            // 複数選択された単語を囲む金色の四角
                             const idiomStyle = (() => {
                                 if (!idm) return null;
                                 const base = "absolute inset-0 pointer-events-none border-yellow-500 box-border z-10";
