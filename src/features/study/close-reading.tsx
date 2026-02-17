@@ -103,7 +103,7 @@ type Span = {
   id: string;
   kind: SpanKind;
   tokenIds: string[];
-  detail?: Detail; // 括弧自体に付与する品詞
+  detail?: Detail; // 括弧自体に付与する品詞（例：名詞節など）
 };
 
 // --- Legacy Stores for Migration ---
@@ -126,7 +126,7 @@ type StoreV7 = {
   tokens: Token[];
   groups: Group[];        // 下の役割 (SVOCM)
   detailGroups: DetailGroup[]; // 上の詳細タグ (品詞)
-  idiomGroups: IdiomGroup[]; // 熟語
+  idiomGroups: IdiomGroup[]; // ★追加：熟語
   spans: Span[];          // 括弧
   updatedAt: number;
 };
@@ -1602,7 +1602,7 @@ export default function CloseReading() {
     if (!doc) return [];
     
     const targets: JaTarget[] = [];
-    const processedTokenIds = new Set<string>();
+    const processedTokenIds = new Set<string>(); // 既にターゲットとして処理された（熟語に含まれる）トークンID
 
     // 1. まず熟語グループをターゲットに追加 (優先度高)
     // 熟語はSVOCMグループを跨ぐ可能性もあるが、今回は簡易的にリストアップ
@@ -2225,7 +2225,7 @@ export default function CloseReading() {
               <div className="text-sm font-medium">下線の下（SVOCMなど）を設定 {roleHintText}</div>
 
               {selectedTokens.length === 0 ? (
-                <div className="text-sm text-gray-500">上の単語をクリックしてください（2語なら Shift+クリック）。</div>
+                <div className="text-sm text-gray-500">上の単語をクリックしてしてください（2語なら Shift+クリック）。</div>
               ) : (
                 <div className="space-y-3">
                   <div className="flex flex-wrap items-center gap-2">
