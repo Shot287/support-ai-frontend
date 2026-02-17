@@ -960,19 +960,6 @@ export default function CloseReading() {
     return m;
   }, [currentDoc?.idioms]);
 
-  // ★追加: 熟語の「センター」となるトークンIDを計算する
-  const idiomCenterTokenIds = useMemo(() => {
-      const map = new Map<string, boolean>(); // tokenId -> isCenter
-      for (const idm of currentDoc?.idioms ?? []) {
-          if (idm.tokenIds.length === 0) continue;
-          // 中央のインデックス（偶数個なら左寄りの中央）
-          const centerIndex = Math.floor((idm.tokenIds.length - 1) / 2);
-          const centerTokenId = idm.tokenIds[centerIndex];
-          map.set(centerTokenId, true);
-      }
-      return map;
-  }, [currentDoc?.idioms]);
-
   const selectedTokens = useMemo(() => {
     const set = new Set(selectedIds);
     return (currentDoc?.tokens ?? []).filter((t) => set.has(t.id));
@@ -2076,11 +2063,17 @@ export default function CloseReading() {
                                     {/* ★修正: 熟語の訳をセンターピン(中央の単語)に直接ぶら下げる */}
                                     {(() => {
                                         if (!idm) return null;
-                                        // このトークンが熟語の「センター」か判定
-                                        const isCenter = idiomCenterTokenIds.get(tid);
-                                        if (isCenter && idm.ja) {
+                                        // 熟語の最初のトークンの場合のみ表示
+                                        // 全体の中央に見えるようオフセットさせる
+                                        if (isIdiomStart && idm.ja) {
+                                            // 熟語の単語数に応じて、右方向へずらす
+                                            // 1単語あたり約30pxと仮定して、(単語数-1)*15px くらいずらすと中央付近に来る
+                                            const offsetPx = (idm.tokenIds.length - 1) * 15;
                                             return (
-                                                <div className="absolute top-[32px] left-1/2 -translate-x-1/2 whitespace-nowrap z-20 pointer-events-none">
+                                                <div 
+                                                  className="absolute top-[48px] whitespace-nowrap z-20 pointer-events-none"
+                                                  style={{ left: `calc(50% + ${offsetPx}px)`, transform: 'translateX(-50%)' }}
+                                                >
                                                     <div className="text-[10px] text-gray-600 bg-white/90 px-1 rounded shadow-sm border border-gray-100">
                                                         {idm.ja}
                                                     </div>
