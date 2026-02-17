@@ -90,11 +90,12 @@ type DetailGroup = {
   detail: Detail;
 };
 
-// ★追加：熟語グループ
+// ★追加：熟語グループ（訳を追加）
 type IdiomGroup = {
   id: string;
   tokenIds: string[];
-  label: "熟語"; // 将来的な拡張のため型定義
+  label: "熟語";
+  ja?: string; // ★熟語ごとの訳
 };
 
 // Spanにdetail（品詞）を追加
@@ -237,7 +238,7 @@ function defaultDocV7(): StoreV7 {
     tokens: [],
     groups: [],
     detailGroups: [],
-    idiomGroups: [], // ★追加
+    idiomGroups: [], 
     spans: [],
     updatedAt: Date.now(),
   };
@@ -475,10 +476,12 @@ function migrateDoc(raw: any): StoreV7 {
           ? (g.tokenIds as unknown[]).filter(isString).filter((id) => tokenSet.has(id))
           : [];
         if (tokenIdsRaw.length === 0) return null;
+        const ja = typeof g.ja === "string" ? g.ja : ""; // ★追加: 熟語訳の移行
         return {
           id: typeof g.id === "string" ? g.id : newId(),
           label,
           tokenIds: normalizeTokenIds(uniqueStringsPreserveOrder(tokenIdsRaw), idToIndex),
+          ja,
         } satisfies IdiomGroup;
       })
       .filter(Boolean) as IdiomGroup[];
@@ -525,7 +528,6 @@ function migrateDoc(raw: any): StoreV7 {
   }
 
   // Migration from V6 or lower -> V7
-  // V6 had `token.detail`. We need to convert these to `DetailGroup`.
   if (
     raw.version === 6 ||
     raw.version === 5 ||
@@ -704,7 +706,7 @@ export default function CloseReading() {
   const currentFileName = currentFileId ? nodes[currentFileId]?.name ?? "" : "";
 
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  // ★追加：括弧そのものを選択している場合のID
+  // 括弧そのものを選択している場合のID
   const [selectedSpanId, setSelectedSpanId] = useState<string | null>(null);
 
   const anchorIndexRef = useRef<number | null>(null);
@@ -953,7 +955,7 @@ export default function CloseReading() {
     return m;
   }, [currentDoc?.detailGroups]);
 
-  // ★追加：IdiomGroup lookup
+  // ★IdiomGroup lookup
   const idiomGroupByTokenId = useMemo(() => {
     const m = new Map<string, IdiomGroup>();
     for (const ig of currentDoc?.idiomGroups ?? []) for (const tid of ig.tokenIds) m.set(tid, ig);
@@ -977,6 +979,15 @@ export default function CloseReading() {
     if (groupIds.length !== 1) return null;
     return currentDoc.groups.find((g) => g.id === groupIds[0]) ?? null;
   }, [currentDoc, selectedIds, groupByTokenId]);
+
+  const selectedIdiomGroup = useMemo(() => {
+    if (!currentDoc) return null;
+    if (selectedIds.length === 0) return null;
+    // 選択範囲が含まれる熟語グループを探す
+    const idiomIds = uniq(selectedIds.map((id) => idiomGroupByTokenId.get(id)?.id ?? "").filter((x) => x));
+    if (idiomIds.length !== 1) return null;
+    return currentDoc.idiomGroups.find((g) => g.id === idiomIds[0]) ?? null;
+  }, [currentDoc, selectedIds, idiomGroupByTokenId]);
 
   const selectedDetailState = useMemo(() => {
     if (selectedTokens.length === 0) return "";
@@ -1228,7 +1239,7 @@ export default function CloseReading() {
     setSelectedIds(coerced);
   };
 
-  // ★追加：熟語マークの付与
+  // ★熟語マークの付与
   const setIdiomToSelected = () => {
     if (!currentDoc) return;
     if (selectedIds.length === 0) return;
@@ -1257,7 +1268,8 @@ export default function CloseReading() {
         nextIdiomGroups.push({
             id: newId(),
             tokenIds: normalizeTokenIds(coerced, idToIndex2),
-            label: "熟語"
+            label: "熟語",
+            ja: "" // 初期値
         });
 
         // ソート
@@ -1388,6 +1400,16 @@ export default function CloseReading() {
     }));
   };
 
+  // ★追加：熟語訳の更新
+  const setJaToIdiomGroup = (idiomId: string, ja: string) => {
+    if (!currentDoc) return;
+    updateCurrentDoc((prev) => ({
+      ...prev,
+      idiomGroups: prev.idiomGroups.map((g) => (g.id === idiomId ? { ...g, ja } : g)),
+      updatedAt: Date.now(),
+    }));
+  };
+
   const setJaToToken = (tokenId: string, ja: string) => {
     if (!currentDoc) return;
     updateCurrentDoc((prev) => ({
@@ -1456,6 +1478,10 @@ export default function CloseReading() {
     const tokenToGroup = new Map<string, Group>();
     for (const g of doc.groups) for (const tid of g.tokenIds) tokenToGroup.set(tid, g);
 
+    // ★追加: 熟語グループのマッピング
+    const tokenToIdiomGroup = new Map<string, IdiomGroup>();
+    for (const ig of doc.idiomGroups) for (const tid of ig.tokenIds) tokenToIdiomGroup.set(tid, ig);
+
     const started = new Set<string>();
     const units: {
       tokenIds: string[];
@@ -1463,11 +1489,17 @@ export default function CloseReading() {
       groupId: string | null;
       groupJa: string;
       tokenJa: string;
+      // ★追加
+      idiomGroupId: string | null;
+      idiomJa: string;
     }[] = [];
 
     for (let i = 0; i < doc.tokens.length; i++) {
       const t = doc.tokens[i];
       const g = tokenToGroup.get(t.id);
+      // ★熟語グループも考慮するが、表示単位としてはSVOCMグループを優先しつつ、熟語が重なる場合はどう扱うか...
+      // 今回は表示ロジックを変えず、熟語訳がある場合はそれを優先的に表示するために、idiomGroupIdを追加する
+      const ig = tokenToIdiomGroup.get(t.id);
 
       if (!g) {
         units.push({
@@ -1476,6 +1508,8 @@ export default function CloseReading() {
           groupId: null,
           groupJa: "",
           tokenJa: typeof t.ja === "string" ? t.ja : "",
+          idiomGroupId: ig ? ig.id : null,
+          idiomJa: ig?.ja || ""
         });
         continue;
       }
@@ -1491,6 +1525,10 @@ export default function CloseReading() {
       const end = Math.max(...idxs);
 
       const displayTokenIds = doc.tokens.slice(start, end + 1).map((x) => x.id);
+      
+      // グループ内の最初のトークンの熟語情報を代表として取得（簡易実装）
+      const firstTokenId = displayTokenIds[0];
+      const groupIg = tokenToIdiomGroup.get(firstTokenId);
 
       units.push({
         tokenIds: displayTokenIds,
@@ -1498,6 +1536,8 @@ export default function CloseReading() {
         groupId: g.id,
         groupJa: typeof g.ja === "string" ? g.ja : "",
         tokenJa: "",
+        idiomGroupId: groupIg ? groupIg.id : null,
+        idiomJa: groupIg?.ja || ""
       });
 
       i = end;
@@ -1553,15 +1593,50 @@ export default function CloseReading() {
   }, [currentDoc, idToIndex]);
 
   type JaTarget =
+    | { kind: "idiom"; id: string; tokenIds: string[]; text: string; ja: string } // ★追加
     | { kind: "group"; id: string; role: Role; tokenIds: string[]; text: string; ja: string }
     | { kind: "token"; id: string; tokenId: string; text: string; ja: string };
 
   const jaTargets = useMemo<JaTarget[]>(() => {
     const doc = currentDoc;
     if (!doc) return [];
-
+    
     const targets: JaTarget[] = [];
+    const processedTokenIds = new Set<string>();
+
+    // 1. まず熟語グループをターゲットに追加 (優先度高)
+    // 熟語はSVOCMグループを跨ぐ可能性もあるが、今回は簡易的にリストアップ
+    const sortedIdiomGroups = [...doc.idiomGroups].sort((a, b) => {
+        const amin = Math.min(...a.tokenIds.map(id => idToIndex.get(id) ?? 1e9));
+        const bmin = Math.min(...b.tokenIds.map(id => idToIndex.get(id) ?? 1e9));
+        return amin - bmin;
+    });
+
+    for(const ig of sortedIdiomGroups) {
+        const words = ig.tokenIds
+            .map(id => doc.tokens[idToIndex.get(id) ?? -1]?.text)
+            .filter((x): x is string => typeof x === "string");
+        
+        targets.push({
+            kind: "idiom",
+            id: `i:${ig.id}`,
+            tokenIds: ig.tokenIds,
+            text: joinTokensForDisplay(words),
+            ja: (ig.ja ?? "").trim()
+        });
+        // 熟語に含まれる単語は、後続の個別単語ターゲットとしては出さないようにする？
+        // 要件「熟語の選択範囲を優先」 -> 熟語がある箇所では熟語訳を入力させたい。
+        // SVOCMグループの訳入力も維持したい -> SVOCMターゲットも出す必要がある。
+        // ここではprocessedには追加せず、全てのレイヤーで入力可能にする（カーソル移動で切り替え）のが自然かも知れないが、
+        // 「優先して」とのことなので、ターゲット順序を工夫する。
+        // 熟語 -> グループ -> 単語 の順で並べる、あるいは場所順に並べて、同じ場所に重なる場合は熟語を先にする。
+    }
+
+    // 表示ユニットベースでグループと単語を追加
     for (const u of displayUnits) {
+      // 熟語グループが既に追加されている場合、その熟語と全く同じ範囲のグループ/単語はどうするか？
+      // ユーザーは矢印キーで移動するので、全てあっても良い。
+
       if (u.groupId) {
         const words = u.tokenIds
           .map((id) => doc.tokens[idToIndex.get(id) ?? -1]?.text)
@@ -1593,6 +1668,28 @@ export default function CloseReading() {
         });
       }
     }
+    
+    // ターゲットを文書上の出現順にソートし直す
+    targets.sort((a, b) => {
+        // 代表位置（最初のトークンのインデックス）で比較
+        const getFirstId = (t: JaTarget) => {
+            if (t.kind === 'token') return t.tokenId;
+            return t.tokenIds[0];
+        };
+
+        const aId = getFirstId(a);
+        const bId = getFirstId(b);
+
+        const aIndex = aId ? (idToIndex.get(aId) ?? 0) : 0;
+        const bIndex = bId ? (idToIndex.get(bId) ?? 0) : 0;
+        
+        if (aIndex !== bIndex) return aIndex - bIndex;
+        
+        // 同じ位置の場合の優先順位: 熟語 > グループ > 単語
+        const rank = (k: string) => k === 'idiom' ? 0 : k === 'group' ? 1 : 2;
+        return rank(a.kind) - rank(b.kind);
+    });
+
     return targets;
   }, [currentDoc, displayUnits, idToIndex]);
 
@@ -1639,16 +1736,33 @@ export default function CloseReading() {
 
   const onUpdateJaTarget = (value: string) => {
     if (!currentJaTarget) return;
-    if (currentJaTarget.kind === "group") setJaToGroup(currentJaTarget.id.slice(2), value);
-    else setJaToToken(currentJaTarget.tokenId, value);
+    if (currentJaTarget.kind === "group") {
+        setJaToGroup(currentJaTarget.id.slice(2), value);
+    } else if (currentJaTarget.kind === "idiom") {
+        setJaToIdiomGroup(currentJaTarget.id.slice(2), value);
+    } else {
+        setJaToToken(currentJaTarget.tokenId, value);
+    }
   };
 
   const jumpCursorToSelected = () => {
     if (jaTargets.length === 0) return;
+    
+    // 優先順位: 選択範囲と一致する熟語 > 選択範囲と一致するグループ > 選択された単語
+    
+    // 1. 選択範囲と一致する熟語を探す
+    if (selectedIdiomGroup) {
+         const idx = jaTargets.findIndex(t => t.kind === 'idiom' && t.id === `i:${selectedIdiomGroup.id}`);
+         if (idx >= 0) {
+             setJaCursor(idx);
+             focusJaInputSoon();
+             return;
+         }
+    }
 
-    if (selectedIds.length === 1) {
-      const tid = selectedIds[0];
-      const idx = jaTargets.findIndex((t) => t.kind === "token" && t.tokenId === tid);
+    // 2. 選択範囲と一致するグループを探す
+    if (selectedGroup) {
+      const idx = jaTargets.findIndex((t) => t.kind === "group" && t.id === `g:${selectedGroup.id}`);
       if (idx >= 0) {
         setJaCursor(idx);
         focusJaInputSoon();
@@ -1656,11 +1770,14 @@ export default function CloseReading() {
       }
     }
 
-    if (selectedGroup) {
-      const idx = jaTargets.findIndex((t) => t.kind === "group" && t.id === `g:${selectedGroup.id}`);
+    // 3. 単語を探す
+    if (selectedIds.length === 1) {
+      const tid = selectedIds[0];
+      const idx = jaTargets.findIndex((t) => t.kind === "token" && t.tokenId === tid);
       if (idx >= 0) {
         setJaCursor(idx);
         focusJaInputSoon();
+        return;
       }
     }
   };
@@ -1889,8 +2006,11 @@ export default function CloseReading() {
                     const roleText = roleShort(u.roleToShow);
                     const roleClass = classForRole(u.roleToShow === "NONE" ? "NONE" : u.roleToShow);
 
+                    // ★修正：熟語訳がある場合は優先して表示、なければグループ訳、なければトークン訳
                     const jaText =
-                      u.groupId && (u.groupJa ?? "").trim()
+                      u.idiomJa && u.idiomJa.trim()
+                        ? u.idiomJa.trim()
+                        : u.groupId && (u.groupJa ?? "").trim()
                         ? (u.groupJa ?? "").trim()
                         : !u.groupId && (u.tokenJa ?? "").trim()
                         ? (u.tokenJa ?? "").trim()
@@ -1922,6 +2042,10 @@ export default function CloseReading() {
                             // ★Detail Group Visualization
                             const dg = detailGroupByTokenId.get(tid);
                             const topDetailLabel = dg ? detailShort(dg.detail) : "";
+                            
+                            // ★Idiom Group Visualization
+                            const ig = idiomGroupByTokenId.get(tid);
+                            const isIdiomStart = ig ? ig.tokenIds.indexOf(tid) === 0 : false;
                             
                             let isGroupStart = false;
                             let isGroupEnd = false;
@@ -2220,6 +2344,10 @@ export default function CloseReading() {
                     {currentJaTarget?.kind === "group" ? (
                       <span className="ml-2">
                         role: <span className="font-semibold">{currentJaTarget.role}</span>
+                      </span>
+                    ) : currentJaTarget?.kind === "idiom" ? (
+                       <span className="ml-2">
+                        <span className="font-semibold text-yellow-600">（熟語）</span>
                       </span>
                     ) : (
                       <span className="ml-2 text-gray-500">（単語）</span>
