@@ -191,9 +191,9 @@ const DETAIL_LABELS: { detail: Detail; label: string }[] = [
   { detail: "副", label: "副（副詞）" },
   { detail: "名", label: "名（名詞）" },
   { detail: "代", label: "代（代名詞）" },
-  { detail: "関代", label: "関代（関係代名詞）" }, // ★変更
-  { detail: "関副", label: "関副（関係副詞）" },     // ★変更
-  { detail: "複関代", label: "複関代（複合関係代名詞）" }, // ★変更
+  { detail: "関代", label: "関代（関係代名詞）" }, 
+  { detail: "関副", label: "関副（関係副詞）" },     
+  { detail: "複関代", label: "複関代（複合関係代名詞）" }, 
   { detail: "動", label: "動（動詞）" },
   { detail: "動名", label: "動名（動名詞）" },
   { detail: "不定", label: "不定（不定詞）" },
@@ -2172,7 +2172,7 @@ export default function CloseReading() {
                     句を ( ) で囲む
                   </button>
                   <button
-                    onClick={() => removeSpansOverlappingSelection}
+                    onClick={removeSpansOverlappingSelection}
                     className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
                     title="選択範囲に被る括弧を外す"
                   >
