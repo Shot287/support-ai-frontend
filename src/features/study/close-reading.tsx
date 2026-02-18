@@ -100,12 +100,13 @@ type Idiom = {
   ja?: string;
 };
 
-// ★修正：Spanにdetail（品詞）を追加
+// ★修正：Spanにdetail（品詞）とrole（SVOCM）を追加
 type Span = {
   id: string;
   kind: SpanKind;
   tokenIds: string[];
   detail?: Detail; // 括弧自体に付与する品詞（例：名詞節など）
+  role?: Role;     // ★追加: 括弧自体に付与するSVOCM（例：[名詞節]Sなど）
 };
 
 // パネルIDの定義（並び替え用）
@@ -191,9 +192,9 @@ const DETAIL_LABELS: { detail: Detail; label: string }[] = [
   { detail: "副", label: "副（副詞）" },
   { detail: "名", label: "名（名詞）" },
   { detail: "代", label: "代（代名詞）" },
-  { detail: "関代", label: "関代（関係代名詞）" }, 
-  { detail: "関副", label: "関副（関係副詞）" },     
-  { detail: "複関代", label: "複関代（複合関係代名詞）" }, 
+  { detail: "関代", label: "関代（関係代名詞）" }, // ★変更
+  { detail: "関副", label: "関副（関係副詞）" },     // ★変更
+  { detail: "複関代", label: "複関代（複合関係代名詞）" }, // ★変更
   { detail: "動", label: "動（動詞）" },
   { detail: "動名", label: "動名（動名詞）" },
   { detail: "不定", label: "不定（不定詞）" },
@@ -535,12 +536,15 @@ function migrateDoc(raw: any): StoreV7 {
         // ★修正: 古いラベルが含まれている可能性があるので変換を通す
         const rawDetail = typeof s.detail === "string" ? s.detail : undefined;
         const detail = rawDetail ? normalizeDetailString(rawDetail) : undefined;
+        // ★追加: roleの復元
+        const role = typeof s.role === "string" ? (s.role as Role) : undefined;
 
         return {
           id: typeof s.id === "string" ? s.id : newId(),
           kind,
           tokenIds: normalizeTokenIds(tokenIdsRaw, idToIndex),
           detail: detail === "NONE" ? undefined : detail,
+          role: role === "NONE" ? undefined : role,
         } satisfies Span;
       })
       .filter(Boolean) as Span[];
@@ -1166,6 +1170,20 @@ export default function CloseReading() {
   // SVOCM roles
   const setRoleToSelected = (role: Role) => {
     if (!currentDoc) return;
+    
+    // ★Span選択モードの場合：選択中のSpanに対してroleを付与する
+    if (selectedSpanId) {
+        updateCurrentDoc((prev) => ({
+            ...prev,
+            spans: prev.spans.map(s => {
+                if (s.id !== selectedSpanId) return s;
+                return { ...s, role: role === "NONE" ? undefined : role };
+            }),
+            updatedAt: Date.now()
+        }));
+        return;
+    }
+
     if (selectedIds.length === 0) return;
 
     const coerced0 = coerceToContiguousSelection(selectedIds, idToIndex, currentDoc.tokens);
@@ -1373,7 +1391,8 @@ export default function CloseReading() {
             ),
             idToIndex2
           ),
-          detail: s.detail // 既存のdetailを維持
+          detail: s.detail, // 既存のdetailを維持
+          role: s.role      // ★追加: 既存のroleを維持
         };
         if (s2.tokenIds.length === 0) continue;
 
@@ -1585,8 +1604,10 @@ export default function CloseReading() {
       .forEach(({ s }) => {
         const open = spanMarkers(s.kind).open;
         
-        // ★修正: detailがある場合は括弧と一緒に表示
-        const label = s.detail ? `${open}${s.detail}` : open;
+        // ★修正: detailやroleがある場合は括弧と一緒に表示
+        let label = open;
+        if (s.detail) label += `(${s.detail})`;
+        if (s.role) label += `<${s.role}>`;
 
         const first = s.tokenIds[0];
         if (!first) return;
@@ -2104,6 +2125,8 @@ export default function CloseReading() {
                   <div className="text-xs text-gray-500">
                     {selectedGroup
                       ? `現在（同一まとまり）: ${selectedGroup.role}`
+                      : selectedSpanId
+                      ? "【括弧（節/句）を選択中】この状態でタグを押すと括弧にSVOCMがつきます。"
                       : "現在:（複数まとまり/未まとまり混在。役割を押すと選択範囲で新しいまとまりを作成）"}
                   </div>
                 </div>
@@ -2113,7 +2136,7 @@ export default function CloseReading() {
                     <button
                       key={role}
                       onClick={() => setRoleToSelected(role)}
-                      className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
+                      className={`rounded-xl border px-3 py-2 text-sm hover:bg-gray-50 ${selectedSpanId ? 'ring-2 ring-blue-100 border-blue-300' : ''}`}
                     >
                       {label}
                     </button>
