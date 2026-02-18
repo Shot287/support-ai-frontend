@@ -52,6 +52,7 @@ type Detail =
   | "形"
   | "副"
   | "前"
+  | "群前"   // ★追加: 群前置詞
   | "冠"
   | "代"
   | "複関代" // 複合関係代名詞
@@ -106,7 +107,7 @@ type Span = {
   kind: SpanKind;
   tokenIds: string[];
   detail?: Detail; // 括弧自体に付与する品詞（例：名詞節など）
-  role?: Role;     // ★追加: 括弧自体に付与するSVOCM（例：[名詞節]Sなど）
+  role?: Role;     // 括弧自体に付与するSVOCM（例：[名詞節]Sなど）
 };
 
 // パネルIDの定義（並び替え用）
@@ -192,9 +193,9 @@ const DETAIL_LABELS: { detail: Detail; label: string }[] = [
   { detail: "副", label: "副（副詞）" },
   { detail: "名", label: "名（名詞）" },
   { detail: "代", label: "代（代名詞）" },
-  { detail: "関代", label: "関代（関係代名詞）" }, // ★変更
-  { detail: "関副", label: "関副（関係副詞）" },     // ★変更
-  { detail: "複関代", label: "複関代（複合関係代名詞）" }, // ★変更
+  { detail: "関代", label: "関代（関係代名詞）" }, 
+  { detail: "関副", label: "関副（関係副詞）" },     
+  { detail: "複関代", label: "複関代（複合関係代名詞）" }, 
   { detail: "動", label: "動（動詞）" },
   { detail: "動名", label: "動名（動名詞）" },
   { detail: "不定", label: "不定（不定詞）" },
@@ -202,6 +203,7 @@ const DETAIL_LABELS: { detail: Detail; label: string }[] = [
   { detail: "他", label: "他（他動詞）" },
   { detail: "数", label: "数（数詞）" },
   { detail: "前", label: "前（前置詞）" },
+  { detail: "群前", label: "群前（群前置詞）" }, // ★追加
   { detail: "冠", label: "冠（冠詞）" },
   { detail: "助", label: "助（助動詞）" },
   { detail: "接", label: "接（接続詞）" },
@@ -421,7 +423,7 @@ function normalizeDetailString(d: string): Detail {
     case "名": case "動": case "動名": case "不定": case "形": case "副":
     case "前": case "冠": case "代": case "助": case "接": case "従":
     case "等": case "自": case "他": case "数": case "<自>": case "<他>":
-    case "複関代": case "関副": case "関代":
+    case "複関代": case "関副": case "関代": case "群前": // ★追加
       return d as Detail;
     default:
       return "NONE";
