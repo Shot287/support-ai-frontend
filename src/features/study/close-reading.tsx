@@ -1172,7 +1172,7 @@ export default function CloseReading() {
   // ★詳細タグ（品詞）の設定
   const setDetailToSelected = (detail: Detail) => {
     if (!currentDoc) return;
-    
+      
     // ★Span選択モードの場合：選択中のSpanに対してdetailを付与する
     if (selectedSpanId) {
         updateCurrentDoc((prev) => ({
@@ -1566,13 +1566,13 @@ export default function CloseReading() {
     if (!doc) return [];
 
     const targets: JaTarget[] = [];
-    
+      
     // ★追加: 熟語に含まれるトークンIDのセットを作成
     const idiomTokenSet = new Set<string>();
     for (const idm of doc.idioms) {
       idm.tokenIds.forEach(id => idiomTokenSet.add(id));
     }
-    
+      
     // 1. SVOCM Groups & Tokens
     for (const u of displayUnits) {
       // ソート用のインデックス（ユニットの開始位置）
@@ -1727,10 +1727,10 @@ export default function CloseReading() {
 
   // ★追加: 熟語の座標計算用（DOM計測）
   // 熟語全体の真ん中（X軸）と、一番下（Y軸）を計算する
-  
+   
   useLayoutEffect(() => {
     if (!currentDoc) return;
-    
+     
     const calc = () => {
       if (!containerRef.current) return;
       const containerRect = containerRef.current.getBoundingClientRect();
@@ -1788,6 +1788,176 @@ export default function CloseReading() {
         window.removeEventListener("resize", calc);
     };
   }, [currentDoc, displayUnits]);
+
+  // ★レンダリングヘルパー関数（再利用のため抽出）
+  const renderUnit = (u: typeof displayUnits[0], ui: number) => {
+    if (!currentDoc) return null;
+    const roleText = roleShort(u.roleToShow);
+    const roleClass = classForRole(u.roleToShow === "NONE" ? "NONE" : u.roleToShow);
+
+    const unitHasUnderline = u.tokenIds.some((tid) => {
+      const tok = currentDoc.tokens[idToIndex.get(tid) ?? -1];
+      return tok ? shouldUnderlineToken(tok.text) : false;
+    });
+
+    const unitId = u.tokenIds.length > 0 ? `unit-${u.tokenIds[0]}` : undefined;
+
+    return (
+      <div 
+        key={`${ui}-${u.tokenIds.join(",")}`} 
+        id={unitId}
+        className="flex flex-col items-center mx-[2px] relative"
+      >
+        <div
+          className={[
+            "inline-flex items-end pb-1",
+            unitHasUnderline ? "border-b border-gray-700" : "",
+          ].join(" ")}
+        >
+          {u.tokenIds.map((tid) => {
+            const idx = idToIndex.get(tid);
+            const token = idx !== undefined ? currentDoc.tokens[idx] : null;
+            if (!token || idx === undefined) return null;
+
+            const selected = selectedIds.includes(tid);
+            
+            // ★Detail Group Visualization
+            const dg = detailGroupByTokenId.get(tid);
+            const topDetailLabel = dg ? detailShort(dg.detail) : "";
+            
+            let isGroupStart = false;
+            let isGroupEnd = false;
+            
+            if (dg && dg.tokenIds.length > 1) {
+                const pos = dg.tokenIds.indexOf(tid);
+                isGroupStart = pos === 0;
+                isGroupEnd = pos === dg.tokenIds.length - 1;
+            }
+
+            // ブラケット風のボーダー
+            const topBorderStyle = dg && dg.tokenIds.length > 1 ? "border-gray-400 border-t" : "";
+            const leftBorderStyle = isGroupStart ? "border-gray-400 border-l rounded-tl" : "";
+            const rightBorderStyle = isGroupEnd ? "border-gray-400 border-r rounded-tr" : "";
+            
+            // ラベルはグループの先頭（シングルならその単語）にのみ表示
+            const showLabel = dg ? (dg.tokenIds.length > 1 ? isGroupStart : true) : false;
+
+            // ★Idiom Visualization (金色の枠)
+            const idm = idiomByTokenId.get(tid);
+            let isIdiomStart = false;
+            let isIdiomEnd = false;
+            let isIdiomMiddle = false;
+            let isIdiomSingle = false;
+
+            if (idm) {
+                const pos = idm.tokenIds.indexOf(tid);
+                if (idm.tokenIds.length === 1) {
+                    isIdiomSingle = true;
+                } else {
+                    if (pos === 0) isIdiomStart = true;
+                    else if (pos === idm.tokenIds.length - 1) isIdiomEnd = true;
+                    else isIdiomMiddle = true;
+                }
+            }
+            
+            // 熟語のスタイル（SVOCMや詳細タグと干渉しないよう絶対配置で重ねる）
+            const idiomStyle = (() => {
+                if (!idm) return null;
+                const base = "absolute inset-0 pointer-events-none border-yellow-500 box-border z-10";
+                if (isIdiomSingle) return `${base} border-2 rounded`;
+                if (isIdiomStart) return `${base} border-l-2 border-y-2 border-r-0 rounded-l`;
+                if (isIdiomEnd) return `${base} border-r-2 border-y-2 border-l-0 rounded-r`;
+                if (isIdiomMiddle) return `${base} border-y-2 border-x-0`;
+                return null;
+            })();
+
+            const opens = spanMarksByTokenId.starts.get(tid) ?? [];
+            const closes = spanMarksByTokenId.ends.get(tid) ?? [];
+
+            const fade =
+              !shouldUnderlineToken(token.text) && !isSpecialPunct(token.text)
+                ? "opacity-80"
+                : "";
+
+            return (
+              <div key={tid} className="flex flex-col items-center relative">
+                {/* 上部詳細タグエリア：ボーダーとラベル */}
+                <div className={`relative w-full h-[18px] flex items-end justify-center ${topBorderStyle} ${leftBorderStyle} ${rightBorderStyle} box-border`}>
+                   {showLabel && (
+                     <div className="absolute bottom-[2px] left-0 whitespace-nowrap text-[10px] text-gray-700 leading-none">
+                          {topDetailLabel}
+                     </div>
+                   )}
+                </div>
+
+                <div className="flex items-center gap-[0px] px-[1px]">
+                  {opens.map((item, i) => (
+                    <button
+                        key={`o-${tid}-${i}`}
+                        onClick={(e) => onSpanClick(item.span, e)}
+                        className={`text-xs select-none cursor-pointer ${item.span.id === selectedSpanId ? 'text-blue-600 font-bold' : 'text-gray-700 hover:text-blue-500'}`}
+                        title="クリックでこの範囲を選択（品詞付与可）"
+                      >
+                        {item.char}
+                      </button>
+                  ))}
+
+                  {/* トークンボタン本体（相対配置にし、熟語枠を絶対配置で重ねる） */}
+                  <div className="relative">
+                    {idiomStyle && <div className={idiomStyle} />}
+                    <button
+                      onClick={(ev) => onTokenClick(idx, tid, ev)}
+                      className={[
+                        "rounded-xl border px-2 py-1 transition mx-[1px]",
+                        roleClass,
+                        selected ? "ring-2 ring-black/15" : "hover:bg-gray-50",
+                        fade,
+                      ].join(" ")}
+                      title="クリックで選択（Shiftで範囲）"
+                    >
+                      <div className="text-sm leading-none">{token.text}</div>
+                    </button>
+                  </div>
+
+                  {closes.map((item, i) => (
+                    <button
+                        key={`c-${tid}-${i}`}
+                        onClick={(e) => onSpanClick(item.span, e)}
+                        className={`text-xs select-none cursor-pointer ${item.span.id === selectedSpanId ? 'text-blue-600 font-bold' : 'text-gray-700 hover:text-blue-500'}`}
+                        title="クリックでこの範囲を選択（品詞付与可）"
+                      >
+                        {item.char}
+                      </button>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="mt-1 text-[10px] text-gray-600 min-h-[12px] leading-none">{roleText}</div>
+
+        {/* ★修正: 熟語に含まれる場合は通常の訳（グループ訳など）を表示せず、高さ確保のみ行う */}
+        <div className="mt-0.5 text-[10px] text-gray-500 min-h-[12px] max-w-[240px] text-center break-words">
+          {(() => {
+             // このユニットのどれか一つでも熟語に含まれていれば、通常の訳は非表示（熟語訳に任せる）
+             const isIncludedInIdiom = u.tokenIds.some(tid => idiomByTokenId.has(tid));
+             if (isIncludedInIdiom) {
+                 // 高さを確保するための空文字（invisible）
+                 return <span className="invisible">.</span>;
+             }
+
+             // 通常時
+             return u.groupId && (u.groupJa ?? "").trim()
+               ? (u.groupJa ?? "").trim()
+               : !u.groupId && (u.tokenJa ?? "").trim()
+               ? (u.tokenJa ?? "").trim()
+               : "";
+          })()}
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className="grid gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
@@ -2027,174 +2197,47 @@ export default function CloseReading() {
                       );
                   })}
 
-                  {displayUnits.map((u, ui) => {
-                    const roleText = roleShort(u.roleToShow);
-                    const roleClass = classForRole(u.roleToShow === "NONE" ? "NONE" : u.roleToShow);
+                  {/* ★修正：連続するUnitが同じ熟語に属している場合、divで包んでinline-flexにして改行を防ぐ */}
+                  {(() => {
+                    const nodes = [];
+                    let i = 0;
+                    while (i < displayUnits.length) {
+                      const u = displayUnits[i];
+                      // ユニットの最初のトークンがどの熟語に属しているかを確認
+                      const firstTid = u.tokenIds[0];
+                      const currentIdiom = firstTid ? idiomByTokenId.get(firstTid) : null;
 
-                    const unitHasUnderline = u.tokenIds.some((tid) => {
-                      const tok = currentDoc.tokens[idToIndex.get(tid) ?? -1];
-                      return tok ? shouldUnderlineToken(tok.text) : false;
-                    });
-
-                    // ★修正: DOM計測用にIDを付与
-                    const unitId = u.tokenIds.length > 0 ? `unit-${u.tokenIds[0]}` : undefined;
-
-                    return (
-                      <div 
-                        key={`${ui}-${u.tokenIds.join(",")}`} 
-                        id={unitId}
-                        className="flex flex-col items-center mx-[2px] relative"
-                      >
-                        <div
-                          className={[
-                            "inline-flex items-end pb-1",
-                            unitHasUnderline ? "border-b border-gray-700" : "",
-                          ].join(" ")}
-                        >
-                          {u.tokenIds.map((tid) => {
-                            const idx = idToIndex.get(tid);
-                            const token = idx !== undefined ? currentDoc.tokens[idx] : null;
-                            if (!token || idx === undefined) return null;
-
-                            const selected = selectedIds.includes(tid);
-                            
-                            // ★Detail Group Visualization
-                            const dg = detailGroupByTokenId.get(tid);
-                            const topDetailLabel = dg ? detailShort(dg.detail) : "";
-                            
-                            let isGroupStart = false;
-                            let isGroupEnd = false;
-                            
-                            if (dg && dg.tokenIds.length > 1) {
-                                const pos = dg.tokenIds.indexOf(tid);
-                                isGroupStart = pos === 0;
-                                isGroupEnd = pos === dg.tokenIds.length - 1;
-                            }
-
-                            // ブラケット風のボーダー
-                            const topBorderStyle = dg && dg.tokenIds.length > 1 ? "border-gray-400 border-t" : "";
-                            const leftBorderStyle = isGroupStart ? "border-gray-400 border-l rounded-tl" : "";
-                            const rightBorderStyle = isGroupEnd ? "border-gray-400 border-r rounded-tr" : "";
-                            
-                            // ラベルはグループの先頭（シングルならその単語）にのみ表示
-                            const showLabel = dg ? (dg.tokenIds.length > 1 ? isGroupStart : true) : false;
-
-                            // ★Idiom Visualization (金色の枠)
-                            const idm = idiomByTokenId.get(tid);
-                            let isIdiomStart = false;
-                            let isIdiomEnd = false;
-                            let isIdiomMiddle = false;
-                            let isIdiomSingle = false;
-
-                            if (idm) {
-                                const pos = idm.tokenIds.indexOf(tid);
-                                if (idm.tokenIds.length === 1) {
-                                    isIdiomSingle = true;
-                                } else {
-                                    if (pos === 0) isIdiomStart = true;
-                                    else if (pos === idm.tokenIds.length - 1) isIdiomEnd = true;
-                                    else isIdiomMiddle = true;
-                                }
-                            }
-                            
-                            // 熟語のスタイル（SVOCMや詳細タグと干渉しないよう絶対配置で重ねる）
-                            const idiomStyle = (() => {
-                                if (!idm) return null;
-                                const base = "absolute inset-0 pointer-events-none border-yellow-500 box-border z-10";
-                                if (isIdiomSingle) return `${base} border-2 rounded`;
-                                if (isIdiomStart) return `${base} border-l-2 border-y-2 border-r-0 rounded-l`;
-                                if (isIdiomEnd) return `${base} border-r-2 border-y-2 border-l-0 rounded-r`;
-                                if (isIdiomMiddle) return `${base} border-y-2 border-x-0`;
-                                return null;
-                            })();
-
-                            const opens = spanMarksByTokenId.starts.get(tid) ?? [];
-                            const closes = spanMarksByTokenId.ends.get(tid) ?? [];
-
-                            const fade =
-                              !shouldUnderlineToken(token.text) && !isSpecialPunct(token.text)
-                                ? "opacity-80"
-                                : "";
-
-                            return (
-                              <div key={tid} className="flex flex-col items-center relative">
-                                {/* 上部詳細タグエリア：ボーダーとラベル */}
-                                <div className={`relative w-full h-[18px] flex items-end justify-center ${topBorderStyle} ${leftBorderStyle} ${rightBorderStyle} box-border`}>
-                                   {showLabel && (
-                                     <div className="absolute bottom-[2px] left-0 whitespace-nowrap text-[10px] text-gray-700 leading-none">
-                                          {topDetailLabel}
-                                     </div>
-                                   )}
-                                </div>
-
-                                <div className="flex items-center gap-[0px] px-[1px]">
-                                  {opens.map((item, i) => (
-                                    <button
-                                        key={`o-${tid}-${i}`}
-                                        onClick={(e) => onSpanClick(item.span, e)}
-                                        className={`text-xs select-none cursor-pointer ${item.span.id === selectedSpanId ? 'text-blue-600 font-bold' : 'text-gray-700 hover:text-blue-500'}`}
-                                        title="クリックでこの範囲を選択（品詞付与可）"
-                                    >
-                                      {item.char}
-                                    </button>
-                                  ))}
-
-                                  {/* トークンボタン本体（相対配置にし、熟語枠を絶対配置で重ねる） */}
-                                  <div className="relative">
-                                    {idiomStyle && <div className={idiomStyle} />}
-                                    <button
-                                      onClick={(ev) => onTokenClick(idx, tid, ev)}
-                                      className={[
-                                        "rounded-xl border px-2 py-1 transition mx-[1px]",
-                                        roleClass,
-                                        selected ? "ring-2 ring-black/15" : "hover:bg-gray-50",
-                                        fade,
-                                      ].join(" ")}
-                                      title="クリックで選択（Shiftで範囲）"
-                                    >
-                                      <div className="text-sm leading-none">{token.text}</div>
-                                    </button>
-                                  </div>
-
-                                  {closes.map((item, i) => (
-                                    <button
-                                        key={`c-${tid}-${i}`}
-                                        onClick={(e) => onSpanClick(item.span, e)}
-                                        className={`text-xs select-none cursor-pointer ${item.span.id === selectedSpanId ? 'text-blue-600 font-bold' : 'text-gray-700 hover:text-blue-500'}`}
-                                        title="クリックでこの範囲を選択（品詞付与可）"
-                                    >
-                                      {item.char}
-                                    </button>
-                                  ))}
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-
-                        <div className="mt-1 text-[10px] text-gray-600 min-h-[12px] leading-none">{roleText}</div>
-
-                        {/* ★修正: 熟語に含まれる場合は通常の訳（グループ訳など）を表示せず、高さ確保のみ行う */}
-                        <div className="mt-0.5 text-[10px] text-gray-500 min-h-[12px] max-w-[240px] text-center break-words">
-                          {(() => {
-                             // このユニットのどれか一つでも熟語に含まれていれば、通常の訳は非表示（熟語訳に任せる）
-                             const isIncludedInIdiom = u.tokenIds.some(tid => idiomByTokenId.has(tid));
-                             if (isIncludedInIdiom) {
-                                 // 高さを確保するための空文字（invisible）
-                                 return <span className="invisible">.</span>;
-                             }
-
-                             // 通常時
-                             return u.groupId && (u.groupJa ?? "").trim()
-                               ? (u.groupJa ?? "").trim()
-                               : !u.groupId && (u.tokenJa ?? "").trim()
-                               ? (u.tokenJa ?? "").trim()
-                               : "";
-                          })()}
-                        </div>
-                      </div>
-                    );
-                  })}
+                      if (currentIdiom) {
+                        // 同じ熟語IDを持つ後続のユニットをまとめる
+                        const batch = [u];
+                        let j = i + 1;
+                        while (j < displayUnits.length) {
+                          const nextU = displayUnits[j];
+                          const nextTid = nextU.tokenIds[0];
+                          const nextIdiom = nextTid ? idiomByTokenId.get(nextTid) : null;
+                          if (nextIdiom && nextIdiom.id === currentIdiom.id) {
+                            batch.push(nextU);
+                            j++;
+                          } else {
+                            break;
+                          }
+                        }
+                        
+                        // バッチをひとかたまり（inline-flex）として描画
+                        nodes.push(
+                          <div key={`idiom-block-${currentIdiom.id}-${i}`} className="inline-flex flex-nowrap items-end">
+                            {batch.map((unit, idx) => renderUnit(unit, i + idx))}
+                          </div>
+                        );
+                        i = j;
+                      } else {
+                        // 熟語でない場合は通常描画
+                        nodes.push(renderUnit(u, i));
+                        i++;
+                      }
+                    }
+                    return nodes;
+                  })()}
                 </div>
               )}
             </div>
@@ -2319,7 +2362,7 @@ export default function CloseReading() {
                       句を ( ) で囲む
                     </button>
                     <button
-                      onClick={removeSpansOverlappingSelection}
+                      onClick={() => removeSpansOverlappingSelection}
                       className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
                       title="選択範囲に被る括弧を外す"
                     >
@@ -2335,7 +2378,7 @@ export default function CloseReading() {
             {/* ★追加 4) 熟語パネル */}
             <div className="rounded-2xl border bg-white p-4 shadow-sm space-y-3">
               <div className="text-sm font-medium">熟語（イディオム）を設定 {roleHintText}</div>
-              
+               
               {selectedTokens.length === 0 ? (
                   <div className="text-sm text-gray-500">上の単語を複数選択してください。</div>
               ) : (
@@ -2357,7 +2400,7 @@ export default function CloseReading() {
                           >
                             選択範囲を熟語にする（金色の囲み）
                           </button>
-                          
+                           
                           <button
                             onClick={clearIdiomFromSelected}
                             className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
