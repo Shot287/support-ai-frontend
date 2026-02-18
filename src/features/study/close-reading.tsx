@@ -54,9 +54,9 @@ type Detail =
   | "前"
   | "冠"
   | "代"
-  | "複代" // 複合関係代名詞
-  | "疑副" // ★追加: 疑問副詞
-  | "疑代" // ★追加: 疑問代名詞
+  | "複関代" // ★変更: 複合関係代名詞
+  | "関副"   // ★変更: 関係副詞
+  | "関代"   // ★変更: 関係代名詞
   | "助"
   | "接"
   | "従"
@@ -185,9 +185,9 @@ const DETAIL_LABELS: { detail: Detail; label: string }[] = [
   { detail: "副", label: "副（副詞）" },
   { detail: "名", label: "名（名詞）" },
   { detail: "代", label: "代（代名詞）" },
-  { detail: "複代", label: "複代（複合関係代名詞）" }, 
-  { detail: "疑副", label: "疑副（疑問副詞）" }, // ★追加
-  { detail: "疑代", label: "疑代（疑問代名詞）" }, // ★追加
+  { detail: "関代", label: "関代（関係代名詞）" }, // ★変更
+  { detail: "関副", label: "関副（関係副詞）" },     // ★変更
+  { detail: "複関代", label: "複関代（複合関係代名詞）" }, // ★変更
   { detail: "動", label: "動（動詞）" },
   { detail: "動名", label: "動名（動名詞）" },
   { detail: "不定", label: "不定（不定詞）" },
@@ -404,6 +404,23 @@ function uniqueStringsPreserveOrder(xs: string[]) {
   return Array.from(new Set(xs));
 }
 
+// ★追加：古いラベル名を新しいラベル名に変換するヘルパー
+function normalizeDetailString(d: string): Detail {
+  switch (d) {
+    case "複代": return "複関代";
+    case "疑副": return "関副";
+    case "疑代": return "関代";
+    // 既存の有効な値
+    case "名": case "動": case "動名": case "不定": case "形": case "副":
+    case "前": case "冠": case "代": case "助": case "接": case "従":
+    case "等": case "自": case "他": case "数": case "<自>": case "<他>":
+    case "複関代": case "関副": case "関代":
+      return d as Detail;
+    default:
+      return "NONE";
+  }
+}
+
 function migrateDoc(raw: any): StoreV7 {
   const base = defaultDocV7();
   if (!raw || typeof raw !== "object") return base;
@@ -455,7 +472,10 @@ function migrateDoc(raw: any): StoreV7 {
     (Array.isArray(dGroupsIn) ? dGroupsIn : [])
       .map((g: any) => {
         if (!g || typeof g !== "object") return null;
-        const detail = typeof g.detail === "string" ? (g.detail as Detail) : "NONE";
+        // ★修正: 古いラベルが含まれている可能性があるので変換を通す
+        const rawDetail = typeof g.detail === "string" ? g.detail : "NONE";
+        const detail = normalizeDetailString(rawDetail);
+        
         const tokenIdsRaw: string[] = Array.isArray(g.tokenIds)
           ? (g.tokenIds as unknown[]).filter(isString).filter((id) => tokenSet.has(id))
           : [];
@@ -506,13 +526,15 @@ function migrateDoc(raw: any): StoreV7 {
           : [];
         if (tokenIdsRaw.length === 0) return null;
         
-        const detail = typeof s.detail === "string" ? (s.detail as Detail) : undefined;
+        // ★修正: 古いラベルが含まれている可能性があるので変換を通す
+        const rawDetail = typeof s.detail === "string" ? s.detail : undefined;
+        const detail = rawDetail ? normalizeDetailString(rawDetail) : undefined;
 
         return {
           id: typeof s.id === "string" ? s.id : newId(),
           kind,
           tokenIds: normalizeTokenIds(tokenIdsRaw, idToIndex),
-          detail,
+          detail: detail === "NONE" ? undefined : detail,
         } satisfies Span;
       })
       .filter(Boolean) as Span[];
@@ -555,7 +577,10 @@ function migrateDoc(raw: any): StoreV7 {
         
         tokens.push({ id: tId, text, ja });
 
-        const detail = typeof rt.detail === 'string' ? (rt.detail as Detail) : "NONE";
+        const rawDetail = typeof rt.detail === 'string' ? rt.detail : "NONE";
+        // ★修正: 変換を通す
+        const detail = normalizeDetailString(rawDetail);
+
         if (detail !== "NONE") {
             detailGroups.push({
                 id: newId(),
