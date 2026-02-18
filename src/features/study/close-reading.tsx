@@ -54,6 +54,7 @@ type Detail =
   | "前"
   | "冠"
   | "代"
+  | "複代" // ★追加: 複合関係代名詞
   | "助"
   | "接"
   | "従"
@@ -182,6 +183,7 @@ const DETAIL_LABELS: { detail: Detail; label: string }[] = [
   { detail: "副", label: "副（副詞）" },
   { detail: "名", label: "名（名詞）" },
   { detail: "代", label: "代（代名詞）" },
+  { detail: "複代", label: "複代（複合関係代名詞）" }, // ★追加
   { detail: "動", label: "動（動詞）" },
   { detail: "動名", label: "動名（動名詞）" },
   { detail: "不定", label: "不定（不定詞）" },
@@ -1746,11 +1748,11 @@ export default function CloseReading() {
         const targetUnitStartIds: string[] = [];
 
         displayUnits.forEach(u => {
-             if (u.tokenIds.some(t => idmSet.has(t))) {
-                 if (u.tokenIds.length > 0) {
-                     targetUnitStartIds.push(u.tokenIds[0]);
-                 }
-             }
+              if (u.tokenIds.some(t => idmSet.has(t))) {
+                  if (u.tokenIds.length > 0) {
+                      targetUnitStartIds.push(u.tokenIds[0]);
+                  }
+              }
         });
 
         targetUnitStartIds.forEach(uid => {
@@ -1765,13 +1767,13 @@ export default function CloseReading() {
         });
 
         if (found) {
-             const left = (minLeft + maxRight) / 2 - containerRect.left;
-             // 下線やラベルとの重なりを防ぐため、一番下のラインから少し下に配置
-             // maxBottomは SVOCMラベル(roleText)や 訳スロット(jaText) を含んだUnit全体の底辺。
-             // 訳スロット(jaText)は `invisible` で高さ確保されているため、maxBottomはその下端になる。
-             // ★修正: 他のSVOCMと同じ高さにするため、確保されたスペース内（底辺から高さ分戻った位置）に配置
-             const top = maxBottom - containerRect.top - 15; 
-             newPos[idm.id] = { left, top };
+              const left = (minLeft + maxRight) / 2 - containerRect.left;
+              // 下線やラベルとの重なりを防ぐため、一番下のラインから少し下に配置
+              // maxBottomは SVOCMラベル(roleText)や 訳スロット(jaText) を含んだUnit全体の底辺。
+              // 訳スロット(jaText)は `invisible` で高さ確保されているため、maxBottomはその下端になる。
+              // ★修正: 他のSVOCMと同じ高さにするため、確保されたスペース内（底辺から高さ分戻った位置）に配置
+              const top = maxBottom - containerRect.top - 15; 
+              newPos[idm.id] = { left, top };
         }
       });
       
@@ -2120,7 +2122,7 @@ export default function CloseReading() {
                                 <div className={`relative w-full h-[18px] flex items-end justify-center ${topBorderStyle} ${leftBorderStyle} ${rightBorderStyle} box-border`}>
                                    {showLabel && (
                                      <div className="absolute bottom-[2px] left-0 whitespace-nowrap text-[10px] text-gray-700 leading-none">
-                                         {topDetailLabel}
+                                          {topDetailLabel}
                                      </div>
                                    )}
                                 </div>
