@@ -54,7 +54,9 @@ type Detail =
   | "前"
   | "冠"
   | "代"
-  | "複代" // ★追加: 複合関係代名詞
+  | "複代" // 複合関係代名詞
+  | "疑副" // ★追加: 疑問副詞
+  | "疑代" // ★追加: 疑問代名詞
   | "助"
   | "接"
   | "従"
@@ -183,7 +185,9 @@ const DETAIL_LABELS: { detail: Detail; label: string }[] = [
   { detail: "副", label: "副（副詞）" },
   { detail: "名", label: "名（名詞）" },
   { detail: "代", label: "代（代名詞）" },
-  { detail: "複代", label: "複代（複合関係代名詞）" }, // ★追加
+  { detail: "複代", label: "複代（複合関係代名詞）" }, 
+  { detail: "疑副", label: "疑副（疑問副詞）" }, // ★追加
+  { detail: "疑代", label: "疑代（疑問代名詞）" }, // ★追加
   { detail: "動", label: "動（動詞）" },
   { detail: "動名", label: "動名（動名詞）" },
   { detail: "不定", label: "不定（不定詞）" },
