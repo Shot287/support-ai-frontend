@@ -27,6 +27,8 @@ type Role =
   | "V（進）"
   | "V（過分）"
   | "V（現分）"
+  | "V（現完・進）"
+  | "V（現完・受）"
   | "(V)"
   | "O"
   | "(O)"
@@ -107,7 +109,7 @@ type Span = {
   kind: SpanKind;
   tokenIds: string[];
   detail?: Detail; // 括弧自体に付与する品詞（例：名詞節など）
-  role?: Role;     // 括弧自体に付与するSVOCM（例：[名詞節]Sなど）
+  role?: Role;      // 括弧自体に付与するSVOCM（例：[名詞節]Sなど）
 };
 
 // パネルIDの定義（並び替え用）
@@ -170,6 +172,8 @@ const ROLE_LABELS: { role: Role; label: string }[] = [
   { role: "V（進）", label: "V（進）" },
   { role: "V（過分）", label: "V（過分）" },
   { role: "V（現分）", label: "V（現分）" },
+  { role: "V（現完・進）", label: "V（現完・進）" },
+  { role: "V（現完・受）", label: "V（現完・受）" },
   { role: "(V)", label: "（V）(準動詞)" },
   { role: "O", label: "O（目的語）" },
   { role: "(O)", label: "（O）(準動詞)" },
@@ -311,6 +315,8 @@ function classForRole(role: Role) {
     case "V（進）":
     case "V（過分）":
     case "V（現分）":
+    case "V（現完・進）":
+    case "V（現完・受）":
     case "(V)":
       return "bg-red-100 text-red-800 border-red-200";
 
@@ -1807,7 +1813,7 @@ export default function CloseReading() {
    
   useLayoutEffect(() => {
     if (!currentDoc) return;
-     
+      
     const calc = () => {
       if (!containerRef.current) return;
       const containerRect = containerRef.current.getBoundingClientRect();
@@ -2218,7 +2224,7 @@ export default function CloseReading() {
               <div className="text-sm font-medium">熟語（イディオム）を設定 {roleHintText}</div>
               {moveButtons}
             </div>
-             
+              
             {selectedTokens.length === 0 ? (
                 <div className="text-sm text-gray-500">上の単語を複数選択してください。</div>
             ) : (
@@ -2240,7 +2246,7 @@ export default function CloseReading() {
                         >
                           選択範囲を熟語にする（金色の囲み）
                         </button>
-                         
+                          
                         <button
                           onClick={clearIdiomFromSelected}
                           className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
