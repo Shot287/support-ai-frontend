@@ -300,12 +300,13 @@ function isJaTargetToken(t: string) {
   return isWordToken(t);
 }
 
-function classForRole(role: Role) {
+// ★修正: showRole を受け取り、非表示の場合は色だけ消して枠線を残す
+function classForRole(role: Role, showRole: boolean = true) {
   switch (role) {
     case "S":
     case "S（同）":
     case "(S)":
-      return "bg-blue-100 text-blue-800 border-blue-200";
+      return showRole ? "bg-blue-100 text-blue-800 border-blue-200" : "bg-white text-gray-700 border-blue-200";
 
     case "V":
     case "V（現完）":
@@ -318,31 +319,31 @@ function classForRole(role: Role) {
     case "V（現完・進）":
     case "V（現完・受）":
     case "(V)":
-      return "bg-red-100 text-red-800 border-red-200";
+      return showRole ? "bg-red-100 text-red-800 border-red-200" : "bg-white text-gray-700 border-red-200";
 
     case "O":
     case "(O)":
-      return "bg-amber-100 text-amber-800 border-amber-200";
+      return showRole ? "bg-amber-100 text-amber-800 border-amber-200" : "bg-white text-gray-700 border-amber-200";
 
     case "C":
     case "C（現分）":
     case "C（過分）":
     case "(C)":
-      return "bg-purple-100 text-purple-800 border-purple-200";
+      return showRole ? "bg-purple-100 text-purple-800 border-purple-200" : "bg-white text-gray-700 border-purple-200";
 
     case "M":
     case "(M)":
     case "M（同）":
-      return "bg-emerald-100 text-emerald-800 border-emerald-200";
+      return showRole ? "bg-emerald-100 text-emerald-800 border-emerald-200" : "bg-white text-gray-700 border-emerald-200";
 
     case "SV":
     case "VO":
     case "VC":
     case "VOM":
-      return "bg-slate-100 text-slate-800 border-slate-200";
+      return showRole ? "bg-slate-100 text-slate-800 border-slate-200" : "bg-white text-gray-700 border-slate-200";
 
     case "OTHER":
-      return "bg-gray-100 text-gray-800 border-gray-200";
+      return showRole ? "bg-gray-100 text-gray-800 border-gray-200" : "bg-white text-gray-700 border-gray-200";
 
     case "NONE":
     default:
@@ -1883,7 +1884,9 @@ export default function CloseReading() {
   const renderUnit = (u: typeof displayUnits[0], ui: number) => {
     if (!currentDoc) return null;
     const roleText = roleShort(u.roleToShow);
-    const roleClass = classForRole(u.roleToShow === "NONE" ? "NONE" : u.roleToShow);
+    
+    // ★修正: showRole を渡して色付けを制御
+    const roleClass = classForRole(u.roleToShow === "NONE" ? "NONE" : u.roleToShow, showRole);
 
     const unitHasUnderline = u.tokenIds.some((tid) => {
       const tok = currentDoc.tokens[idToIndex.get(tid) ?? -1];
