@@ -109,7 +109,7 @@ type Span = {
   kind: SpanKind;
   tokenIds: string[];
   detail?: Detail; // 括弧自体に付与する品詞（例：名詞節など）
-  role?: Role;      // 括弧自体に付与するSVOCM（例：[名詞節]Sなど）
+  role?: Role;       // 括弧自体に付与するSVOCM（例：[名詞節]Sなど）
 };
 
 // パネルIDの定義（並び替え用）
@@ -770,6 +770,13 @@ export default function CloseReading() {
   // ★追加: 熟語の座標計算用
   const [idiomPositions, setIdiomPositions] = useState<Record<string, { left: number; top: number }>>({});
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // ★追加: アウトプット表示/非表示設定用ステート
+  const [showJa, setShowJa] = useState(true);
+  const [showEn, setShowEn] = useState(true);
+  const [showDetail, setShowDetail] = useState(true);
+  const [showRole, setShowRole] = useState(true);
+  const [showBracket, setShowBracket] = useState(true);
 
   useEffect(() => {
     setSelectedIds([]);
@@ -1967,7 +1974,7 @@ export default function CloseReading() {
                 {/* 上部詳細タグエリア：ボーダーとラベル */}
                 <div className={`relative w-full h-[18px] flex items-end justify-center ${topBorderStyle} ${leftBorderStyle} ${rightBorderStyle} box-border`}>
                    {showLabel && (
-                     <div className="absolute bottom-[2px] left-0 whitespace-nowrap text-[10px] text-gray-700 leading-none">
+                     <div className={`absolute bottom-[2px] left-0 whitespace-nowrap text-[10px] leading-none ${showDetail ? "text-gray-700" : "text-transparent select-none"}`}>
                           {topDetailLabel}
                      </div>
                    )}
@@ -1978,7 +1985,7 @@ export default function CloseReading() {
                     <button
                         key={`o-${tid}-${i}`}
                         onClick={(e) => onSpanClick(item.span, e)}
-                        className={`text-xs select-none cursor-pointer ${item.span.id === selectedSpanId ? 'text-blue-600 font-bold' : 'text-gray-700 hover:text-blue-500'}`}
+                        className={`text-xs select-none cursor-pointer ${item.span.id === selectedSpanId ? 'text-blue-600 font-bold' : 'text-gray-700 hover:text-blue-500'} ${showBracket ? "" : "text-transparent"}`}
                         title="クリックでこの範囲を選択（品詞付与可）"
                       >
                         {item.char}
@@ -1998,7 +2005,7 @@ export default function CloseReading() {
                       ].join(" ")}
                       title="クリックで選択（Shiftで範囲）"
                     >
-                      <div className="text-sm leading-none">{token.text}</div>
+                      <div className={`text-sm leading-none ${showEn ? "" : "text-transparent"}`}>{token.text}</div>
                     </button>
                   </div>
 
@@ -2006,7 +2013,7 @@ export default function CloseReading() {
                     <button
                         key={`c-${tid}-${i}`}
                         onClick={(e) => onSpanClick(item.span, e)}
-                        className={`text-xs select-none cursor-pointer ${item.span.id === selectedSpanId ? 'text-blue-600 font-bold' : 'text-gray-700 hover:text-blue-500'}`}
+                        className={`text-xs select-none cursor-pointer ${item.span.id === selectedSpanId ? 'text-blue-600 font-bold' : 'text-gray-700 hover:text-blue-500'} ${showBracket ? "" : "text-transparent"}`}
                         title="クリックでこの範囲を選択（品詞付与可）"
                       >
                         {item.char}
@@ -2018,10 +2025,10 @@ export default function CloseReading() {
           })}
         </div>
 
-        <div className="mt-1 text-[10px] text-gray-600 min-h-[12px] leading-none">{roleText}</div>
+        <div className={`mt-1 text-[10px] min-h-[12px] leading-none ${showRole ? "text-gray-600" : "text-transparent select-none"}`}>{roleText}</div>
 
         {/* ★修正: 熟語に含まれる場合は通常の訳（グループ訳など）を表示せず、高さ確保のみ行う */}
-        <div className="mt-0.5 text-[10px] text-gray-500 min-h-[12px] max-w-[240px] text-center break-words">
+        <div className={`mt-0.5 text-[10px] min-h-[12px] max-w-[240px] text-center break-words ${showJa ? "text-gray-500" : "text-transparent select-none"}`}>
           {(() => {
              // このユニットのどれか一つでも熟語に含まれていれば、通常の訳は非表示（熟語訳に任せる）
              const isIncludedInIdiom = u.tokenIds.some(tid => idiomByTokenId.has(tid));
@@ -2530,6 +2537,43 @@ export default function CloseReading() {
               </div>
             </div>
 
+            {/* ★追加: アウトプット表示設定 */}
+            <div className="rounded-2xl border bg-white p-4 shadow-sm space-y-3">
+              <div className="text-sm font-medium">アウトプット表示設定（表示/非表示）</div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={() => setShowJa(!showJa)}
+                  className={`rounded-xl border px-3 py-2 text-sm transition-colors ${showJa ? 'bg-blue-50 border-blue-200 text-blue-800' : 'bg-gray-100 text-gray-500'}`}
+                >
+                  日本語訳 {showJa ? '表示' : '非表示'}
+                </button>
+                <button
+                  onClick={() => setShowEn(!showEn)}
+                  className={`rounded-xl border px-3 py-2 text-sm transition-colors ${showEn ? 'bg-blue-50 border-blue-200 text-blue-800' : 'bg-gray-100 text-gray-500'}`}
+                >
+                  英単語 {showEn ? '表示' : '非表示'}
+                </button>
+                <button
+                  onClick={() => setShowDetail(!showDetail)}
+                  className={`rounded-xl border px-3 py-2 text-sm transition-colors ${showDetail ? 'bg-blue-50 border-blue-200 text-blue-800' : 'bg-gray-100 text-gray-500'}`}
+                >
+                  品詞ラベル {showDetail ? '表示' : '非表示'}
+                </button>
+                <button
+                  onClick={() => setShowRole(!showRole)}
+                  className={`rounded-xl border px-3 py-2 text-sm transition-colors ${showRole ? 'bg-blue-50 border-blue-200 text-blue-800' : 'bg-gray-100 text-gray-500'}`}
+                >
+                  SVOCMラベル {showRole ? '表示' : '非表示'}
+                </button>
+                <button
+                  onClick={() => setShowBracket(!showBracket)}
+                  className={`rounded-xl border px-3 py-2 text-sm transition-colors ${showBracket ? 'bg-blue-50 border-blue-200 text-blue-800' : 'bg-gray-100 text-gray-500'}`}
+                >
+                  括弧 {showBracket ? '表示' : '非表示'}
+                </button>
+              </div>
+            </div>
+
             {/* 表示 */}
             <div className="rounded-2xl border bg-white p-4 shadow-sm space-y-3">
               <div className="flex items-center justify-between gap-3">
@@ -2569,7 +2613,7 @@ export default function CloseReading() {
                               className="absolute -translate-x-1/2 z-30 pointer-events-none w-max max-w-[240px] flex justify-center"
                               style={{ left: pos.left, top: pos.top }}
                           >
-                               <div className="text-[10px] text-gray-500 text-center break-words leading-none">
+                               <div className={`text-[10px] text-center break-words leading-none ${showJa ? "text-gray-500" : "text-transparent select-none"}`}>
                                    {idm.ja}
                                </div>
                           </div>
