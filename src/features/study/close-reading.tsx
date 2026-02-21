@@ -60,6 +60,8 @@ type Detail =
   | "複関代" // 複合関係代名詞
   | "関副"   // 関係副詞
   | "関代"   // 関係代名詞
+  | "疑副"   // ★追加: 疑問副詞
+  | "疑代"   // ★追加: 疑問代名詞
   | "助"
   | "接"
   | "従"
@@ -198,7 +200,9 @@ const DETAIL_LABELS: { detail: Detail; label: string }[] = [
   { detail: "名", label: "名（名詞）" },
   { detail: "代", label: "代（代名詞）" },
   { detail: "関代", label: "関代（関係代名詞）" }, 
+  { detail: "疑代", label: "疑代（疑問代名詞）" }, // ★追加
   { detail: "関副", label: "関副（関係副詞）" },     
+  { detail: "疑副", label: "疑副（疑問副詞）" }, // ★追加
   { detail: "複関代", label: "複関代（複合関係代名詞）" }, 
   { detail: "動", label: "動（動詞）" },
   { detail: "動名", label: "動名（動名詞）" },
@@ -207,7 +211,7 @@ const DETAIL_LABELS: { detail: Detail; label: string }[] = [
   { detail: "他", label: "他（他動詞）" },
   { detail: "数", label: "数（数詞）" },
   { detail: "前", label: "前（前置詞）" },
-  { detail: "群前", label: "群前（群前置詞）" }, // ★追加
+  { detail: "群前", label: "群前（群前置詞）" },
   { detail: "冠", label: "冠（冠詞）" },
   { detail: "助", label: "助（助動詞）" },
   { detail: "接", label: "接（接続詞）" },
@@ -423,13 +427,12 @@ function uniqueStringsPreserveOrder(xs: string[]) {
 function normalizeDetailString(d: string): Detail {
   switch (d) {
     case "複代": return "複関代";
-    case "疑副": return "関副";
-    case "疑代": return "関代";
-    // 既存の有効な値
+    // 既存の有効な値（疑副・疑代は独立したタグにするため古い変換から外し、そのまま通す）
     case "名": case "動": case "動名": case "不定": case "形": case "副":
     case "前": case "冠": case "代": case "助": case "接": case "従":
     case "等": case "自": case "他": case "数": case "<自>": case "<他>":
-    case "複関代": case "関副": case "関代": case "群前": // ★追加
+    case "複関代": case "関副": case "関代": case "群前":
+    case "疑副": case "疑代": // ★追加
       return d as Detail;
     default:
       return "NONE";
