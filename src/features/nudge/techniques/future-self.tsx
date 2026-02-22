@@ -72,6 +72,33 @@ function saveLocal(store: Store) {
   }
 }
 
+// 自動で高さが拡張されるテキストエリアコンポーネント
+interface AutoResizeTextareaProps extends React.TextareaHTMLAttributes<HTMLTextAreaElement> {
+  value: string;
+}
+
+const AutoResizeTextarea: React.FC<AutoResizeTextareaProps> = ({ value, className, ...props }) => {
+  const ref = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (ref.current) {
+      // 高さを一旦autoにしてからスクロールの高さに合わせることで、自動リサイズを実現
+      ref.current.style.height = "auto";
+      ref.current.style.height = `${ref.current.scrollHeight}px`;
+    }
+  }, [value]);
+
+  return (
+    <textarea
+      ref={ref}
+      value={value}
+      // スクロールバーを隠し、手動リサイズを無効化
+      className={`${className} overflow-hidden resize-none`}
+      {...props}
+    />
+  );
+};
+
 export default function FutureSelf() {
   const [store, setStore] = useState<Store>(() => loadLocal());
   const storeRef = useRef(store);
@@ -244,8 +271,8 @@ export default function FutureSelf() {
                 <div className="font-bold text-gray-800 mb-2 border-b border-emerald-50 pb-2">
                   <span className="text-emerald-500 mr-2">▶</span>{g.title}
                 </div>
-                <textarea
-                  className="w-full rounded-lg border-emerald-100 bg-emerald-50/30 px-3 py-2 text-sm focus:ring-emerald-500 focus:border-emerald-500 min-h-[80px] resize-y"
+                <AutoResizeTextarea
+                  className="w-full rounded-lg border-emerald-100 bg-emerald-50/30 px-3 py-2 text-sm focus:ring-emerald-500 focus:border-emerald-500 min-h-[80px]"
                   placeholder="例：第一志望の企業から内定をもらい、親も喜んでくれた！自信に満ち溢れている。"
                   value={g.goodFuture}
                   onChange={(e) => updateGoalField(g.id, "goodFuture", e.target.value)}
@@ -277,8 +304,8 @@ export default function FutureSelf() {
                   {/* 具体的な失敗結果 */}
                   <div>
                     <label className="block text-xs font-bold text-red-600 mb-1">📉 具体的な失敗の結果・点数</label>
-                    <textarea
-                      className="w-full rounded-lg border-red-100 bg-red-50/30 px-3 py-2 text-sm focus:ring-red-500 focus:border-red-500 min-h-[80px] resize-y"
+                    <AutoResizeTextarea
+                      className="w-full rounded-lg border-red-100 bg-red-50/30 px-3 py-2 text-sm focus:ring-red-500 focus:border-red-500 min-h-[80px]"
                       placeholder="例：TOEIC 400点で足切り。GPA 1.2で留年ギリギリ。"
                       value={g.failureResult}
                       onChange={(e) => updateGoalField(g.id, "failureResult", e.target.value)}
@@ -288,8 +315,8 @@ export default function FutureSelf() {
                   {/* 最悪な状況 */}
                   <div>
                     <label className="block text-xs font-bold text-gray-600 mb-1">真っ暗な状況・周囲の目</label>
-                    <textarea
-                      className="w-full rounded-lg border-gray-200 bg-gray-50 px-3 py-2 text-sm focus:ring-gray-400 focus:border-gray-400 min-h-[80px] resize-y"
+                    <AutoResizeTextarea
+                      className="w-full rounded-lg border-gray-200 bg-gray-50 px-3 py-2 text-sm focus:ring-gray-400 focus:border-gray-400 min-h-[80px]"
                       placeholder="例：周りは次々と内定をもらう中、自分だけ無い内定。親には呆れられ、毎日焦りと自己嫌悪で眠れない。"
                       value={g.worstScenario}
                       onChange={(e) => updateGoalField(g.id, "worstScenario", e.target.value)}
