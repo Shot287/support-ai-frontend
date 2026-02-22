@@ -34,7 +34,8 @@ const DOCS = [
   { docKey: "visualize_v1",             localKey: "visualize_v1" },
   { docKey: "selftalk_v1", localKey: "selftalk_v1" },
   { docKey: "minimum_quota_v1", localKey: "minimum_quota_v1" },
-  //{ docKey: "peer_pressure_v1", localKey: "peer_pressure_v1" },
+  { docKey: "peer_pressure_v1", localKey: "peer_pressure_v1" },
+  { docKey: "future_self_v1", localKey: "future_self_v1" },
 ] as const;
 
 // エラー表示用：できるだけ詳細に

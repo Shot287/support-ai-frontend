@@ -111,6 +111,12 @@ export const techniques: Technique[] = [
     description: "誰かに見られているつもりで、今からやることを宣言するノート",
     href: "/nudge/peer-pressure",
   },
+  {
+    id: "future-self",
+    title: "大学卒業 時点の自分",
+    description: "目標達成時の最高の未来と、失敗した時の最悪の現実を描き出す",
+    href: "/nudge/future-self",
+  },
 
   // ⭐ 既存維持
   fiveMinutePing,
