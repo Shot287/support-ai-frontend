@@ -105,6 +105,12 @@ export const techniques: Technique[] = [
     description: "カレンダーで日付を選んで、その日の反省を1枚のノートに書き出す",
     href: "/nudge/reflection-note",
   },
+  {
+    id: "peer-pressure",
+    title: "ピアプレッシャー",
+    description: "誰かに見られているつもりで、今からやることを宣言するノート",
+    href: "/nudge/peer-pressure",
+  },
 
   // ⭐ 既存維持
   fiveMinutePing,
