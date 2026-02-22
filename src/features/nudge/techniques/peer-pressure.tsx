@@ -259,13 +259,17 @@ export default function PeerPressure() {
       myTaskTitle,
       createdAt: Date.now(),
     };
-    setStore((s) => ({ ...s, matches: [newMatch, ...s.matches] }));
+    // ★修正: 新しいマッチを「後ろ（下）」に追加する
+    setStore((s) => ({ ...s, matches: [...s.matches, newMatch] }));
     setPendingVs(null);
   };
 
   const removeMatch = (matchId: string) => {
     setStore((s) => ({ ...s, matches: s.matches.filter((m) => m.id !== matchId) }));
   };
+
+  // ★追加: BATTLE ARENAの表示用に、対戦相手の名前（peerName）のユニークなリストを作成（出現順を維持）
+  const orderedPeerNames = Array.from(new Set(store.matches.map(m => m.peerName || "名無し")));
 
   return (
     <div className="space-y-6">
@@ -352,36 +356,53 @@ export default function PeerPressure() {
       {store.matches.length > 0 && (
         <section className="rounded-2xl border-2 border-red-200 bg-red-50/20 p-4 shadow-sm">
           <h2 className="font-bold text-red-700 mb-4 text-center tracking-widest">🔥 BATTLE ARENA 🔥</h2>
-          <div className="space-y-3">
-            {store.matches.map((m) => (
-              <div key={m.id} className="relative bg-white border border-red-100 rounded-xl p-3 shadow-sm flex flex-col sm:flex-row items-center justify-between gap-4">
-                {/* 相手側（左） */}
-                <div className="flex-1 text-center sm:text-right w-full">
-                  <div className="text-[10px] text-gray-500 mb-1">{m.peerName || "名無し"}</div>
-                  <div className="font-bold text-gray-800 text-sm">{m.peerTaskTitle}</div>
-                </div>
-                
-                {/* VSマーク（中央） */}
-                <div className="flex-shrink-0 font-black text-red-500 text-xl italic px-4">
-                  VS
-                </div>
+          <div className="space-y-6">
+            {/* ★修正: peerNameのグループごとにレンダリング */}
+            {orderedPeerNames.map((pName, index) => {
+              const groupMatches = store.matches.filter(m => (m.peerName || "名無し") === pName);
 
-                {/* 自分側（右） */}
-                <div className="flex-1 text-center sm:text-left w-full">
-                  <div className="text-[10px] text-blue-500 mb-1">{store.myName || "自分"}</div>
-                  <div className="font-bold text-blue-800 text-sm">{m.myTaskTitle}</div>
-                </div>
+              return (
+                <div key={pName} className="space-y-3">
+                  {/* 人物名ごとのタスク一覧 */}
+                  {groupMatches.map((m) => (
+                    <div key={m.id} className="relative bg-white border border-red-100 rounded-xl p-3 shadow-sm flex flex-col sm:flex-row items-center justify-between gap-4">
+                      {/* 相手側（左） */}
+                      <div className="flex-1 text-center sm:text-right w-full">
+                        <div className="text-[10px] text-gray-500 mb-1">{m.peerName || "名無し"}</div>
+                        <div className="font-bold text-gray-800 text-sm">{m.peerTaskTitle}</div>
+                      </div>
+                      
+                      {/* VSマーク（中央） */}
+                      <div className="flex-shrink-0 font-black text-red-500 text-xl italic px-4">
+                        VS
+                      </div>
 
-                {/* 削除ボタン */}
-                <button
-                  onClick={() => removeMatch(m.id)}
-                  className="absolute top-2 right-2 text-gray-300 hover:text-gray-500 transition"
-                  title="勝負を取り下げる"
-                >
-                  ×
-                </button>
-              </div>
-            ))}
+                      {/* 自分側（右） */}
+                      <div className="flex-1 text-center sm:text-left w-full">
+                        <div className="text-[10px] text-blue-500 mb-1">{store.myName || "自分"}</div>
+                        <div className="font-bold text-blue-800 text-sm">{m.myTaskTitle}</div>
+                      </div>
+
+                      {/* 削除ボタン */}
+                      <button
+                        onClick={() => removeMatch(m.id)}
+                        className="absolute top-2 right-2 text-gray-300 hover:text-gray-500 transition"
+                        title="勝負を取り下げる"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+
+                  {/* ★追加: グループ間の区切り線（最後のグループ以外に表示） */}
+                  {index < orderedPeerNames.length - 1 && (
+                    <div className="pt-3 pb-1">
+                      <hr className="border-t-2 border-dashed border-red-200" />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </section>
       )}
